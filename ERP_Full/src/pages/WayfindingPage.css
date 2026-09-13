@@ -1,0 +1,194 @@
+.k-wf-panel .k-panel__body {
+  padding: 0;
+  min-height: 560px;
+}
+
+.k-wf-map {
+  width: 100%;
+  height: min(68vh, 640px);
+  min-height: 480px;
+  border-radius: 0 0 12px 12px;
+  background: #0b1220;
+}
+
+.k-wf-map .leaflet-container {
+  width: 100%;
+  height: 100%;
+  background: #0b1220;
+  font: inherit;
+}
+
+/* Dark basemap without vendor API key: invert free OSM tiles */
+.k-wf-map.is-dark-basemap .leaflet-tile-pane {
+  filter: invert(1) hue-rotate(180deg) brightness(0.95) contrast(0.92);
+}
+
+.k-wf-map.is-dark-basemap .leaflet-container {
+  background: #0b1220;
+}
+
+.k-wf-crumb {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem;
+  margin: 0.35rem 0 0.85rem;
+  font-size: 0.85rem;
+  color: #94a3b8;
+}
+
+.k-wf-crumb__sep {
+  margin: 0 0.2rem;
+  opacity: 0.5;
+}
+
+.k-wf-crumb__btn {
+  border: 0;
+  background: transparent;
+  color: #7dd3fc;
+  cursor: pointer;
+  padding: 0;
+  font: inherit;
+}
+
+.k-wf-crumb__btn:hover {
+  text-decoration: underline;
+}
+
+.k-wf-crumb__here {
+  color: #e2e8f0;
+  font-weight: 600;
+}
+
+.k-wf-steps {
+  list-style: none;
+  margin: 0.75rem 0 0;
+  padding: 0;
+  display: grid;
+  gap: 0.45rem;
+}
+
+.k-wf-steps button {
+  width: 100%;
+  text-align: left;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  background: rgba(15, 23, 42, 0.65);
+  color: inherit;
+  border-radius: 10px;
+  padding: 0.55rem 0.7rem;
+  cursor: pointer;
+  display: grid;
+  gap: 0.15rem;
+}
+
+.k-wf-steps button:hover {
+  border-color: rgba(94, 234, 212, 0.55);
+}
+
+.k-wf-steps strong {
+  font-size: 0.9rem;
+}
+
+.k-wf-steps span {
+  font-size: 0.75rem;
+  color: #94a3b8;
+}
+
+.k-wf-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.85rem;
+}
+
+.k-wf-route-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.45rem;
+}
+
+.k-wf-route-list li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.35rem 0;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.15);
+}
+
+.k-muted {
+  color: #94a3b8;
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.k-wf-label {
+  background: transparent !important;
+  border: 0 !important;
+}
+
+.k-wf-label span {
+  display: inline-block;
+  padding: 0.15rem 0.45rem;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.88);
+  border: 1px solid rgba(125, 211, 252, 0.35);
+  color: #e2e8f0;
+  font-size: 0.68rem;
+  white-space: nowrap;
+  box-shadow: 0 4px 14px rgba(2, 6, 23, 0.45);
+}
+
+.k-wf-label--floor span {
+  border-color: rgba(94, 234, 212, 0.45);
+}
+
+.k-wf-label--unit span {
+  border-color: rgba(148, 163, 184, 0.35);
+}
+
+.k-wf-label--hot span {
+  background: rgba(251, 191, 36, 0.2);
+  border-color: #fbbf24;
+  color: #fef3c7;
+  font-weight: 700;
+}
+
+.k-wf-step {
+  background: transparent !important;
+  border: 0 !important;
+}
+
+.k-wf-step span {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: #fbbf24;
+  color: #0f172a;
+  font-size: 0.72rem;
+  font-weight: 800;
+  box-shadow: 0 0 0 3px rgba(251, 191, 36, 0.25);
+}
+
+.leaflet-tooltip.k-wf-tip {
+  background: #0f172a;
+  color: #e2e8f0;
+  border: 1px solid rgba(125, 211, 252, 0.35);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(2, 6, 23, 0.5);
+}
+
+.leaflet-tooltip.k-wf-tip::before {
+  border-top-color: #0f172a;
+}
+
+@media (max-width: 960px) {
+  .k-wf-map {
+    height: 52vh;
+    min-height: 360px;
+  }
+}

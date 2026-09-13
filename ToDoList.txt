@@ -1,0 +1,252 @@
+# Keiros ERP — ToDo List (Incomplete Items)
+# Created: 2026-09-04
+# Source: FeatureList.txt ([NOT DONE] + [PARTIAL]) + remaining blockers
+#
+# Status: [ ] open · [x] done
+# Priority: P0 = blocker · P1 = high · P2 = medium · P3 = polish
+
+---
+
+## P0 — Database & Firebase connections (blocker)
+
+Automation lives in `DeployCDCI/` — fill `.env` from `REQUIRED_INPUTS.txt`, then `npm run setup`.
+
+[x] Connect Firebase project (Auth + Firestore) to ERP_Full
+[x] Seed sample data into Firestore + Auth users
+[x] ERP Auth uses Firebase when VITE_USE_FIREBASE=true
+[x] Shared ErpDataProvider: every page reads/writes Firestore (optimistic local + persist)
+[ ] Role-based security rules (currently any signed-in user can read/write)
+[ ] Tighten RBAC menu filtering from roles matrix
+[ ] Shared data layer so creates on one page appear on all related pages (no siloed `useState` copies) — DONE via provider
+[x] Map collections to Firebase-Dataset-Inputs.md (seeded)
+[ ] Enforce FK integrity server-side
+[x] Environment config (`.env.local`) for Firebase keys
+[x] Migration path: seed mock data → Firebase once, then switch app to live mode
+[ ] System Health: real Database / Backend connection probe (not mock cards)
+[x] Persist Settings to `erp_settings` via saveSettings()
+
+
+---
+
+## P0 — Auth, RBAC & session (depends on DB)
+
+[ ] Real authentication backend (replace hardcoded demo credentials)
+[ ] Role-based menu filtering in AppShell (only allowed nav items)
+[ ] Unauthorized user cannot open restricted screens (route guards)
+[ ] Read-only users cannot edit
+[ ] Server-driven session expiry (not demo email / manual button only)
+[ ] Remember-me persistence (if product requires)
+[ ] Send real invite / forgot-password / MFA emails (or SMS)
+[ ] Live login events written to audit_logs
+
+---
+
+## P1 — Home Dashboard
+
+[ ] Dedicated building summary KPI
+[ ] Dedicated location count KPI
+[ ] API usage summary KPI on dashboard
+[ ] Live alerts / exceptions feed (not only priority table samples)
+[ ] Clicking each dashboard card / row navigates to the correct page
+[ ] Date filter
+[ ] Property filter
+[ ] Numbers refresh after data updates (live queries)
+[ ] Export button wired (CSV/PDF as required)
+[ ] True empty-data states when portfolio is empty
+
+---
+
+## P1 — Organization / User / Role
+
+[ ] Persist org ↔ property links in DB (shared store)
+[ ] Pagination on org / user lists
+[ ] Column sorting
+[ ] User linked to property (not only organization)
+[ ] Distinct invitation status (Invited / Pending email vs Active)
+[ ] Real email invite delivery
+[ ] Org hard-delete (or soft-delete) with rules
+[ ] Recalculate role `usersCount` from live user assignments
+
+---
+
+## P1 — Property hierarchy (Complex → Building → Floor → Location)
+
+[ ] Full property form fields: state, ZIP, type (where required)
+[ ] Dedicated property detail view (beyond Complexes panel reuse)
+[ ] Postal / address validation service (or clearer rules)
+[ ] Breadcrumb navigation across hierarchy pages
+[ ] Duplicate name/code warnings enforced (building, floor, location)
+[ ] Floor-plan upload / link
+[ ] Discrete floor status (not only mapped %)
+[ ] Location type icons
+[ ] Location counts update globally on floor / building / property after create
+[ ] Back-to-property navigation from Buildings / Floors
+[ ] Delete (or archive) for complexes, buildings, floors, locations
+[ ] Cross-page sync after create/edit (via DB)
+
+---
+
+## P1 — Mapping, approvals, corrections, publishing
+
+[ ] Shared DB pipeline: Field Mapping → Coordinate Review → Approval → Publish
+[ ] Agent create-location from Field Mapping (or deep-link with return)
+[ ] Draft persistence API
+[ ] Upload evidence / photo + preview
+[ ] Full Leaflet (or GIS) pin editor on Coordinate Review (not schematic only)
+[ ] Coordinate history store
+[ ] Approved packages available to mobile app
+[ ] Approved packages available to APIs
+[ ] Draft maps not exposed to app/API (server-side enforcement)
+[ ] Live audit entries on approve / reject / publish
+[ ] Correction returns to approval queue via DB workflow
+[ ] Old vs new value diff viewer
+[ ] Field-agent app visibility for correction tasks
+[ ] Rework notification (email / ERS / push)
+[ ] Device ID consistently present on review rows
+
+---
+
+## P1 — Map packages, property codes, mobile sessions
+
+[ ] Valid code allows real map download
+[ ] Invalid code blocks download (server enforcement)
+[ ] Code linked to correct published map version (enforced delivery)
+[ ] Code link depth: building / floor / zone where required
+[ ] Failed code attempts logged to security/audit pipeline
+[ ] Build real downloadable map package (binary / JSON bundle)
+[ ] Package includes property, building, floor, units, routes, entry/exit, coordinates
+[ ] Current published package downloads to device
+[ ] Deprecated package blocked server-side
+[ ] Mobile app receives correct package
+[ ] Checksum / validation status
+[ ] Package download failure + retry UX (real errors)
+[ ] New session created when mobile app starts
+[ ] Session linked to property code + map version (live)
+[ ] Session end time from device
+[ ] Offline sync status visible
+[ ] App version consistently visible on sessions
+
+---
+
+## P0 — Real-time tracking (not started)
+
+[ ] Mobile movement data reaches backend
+[ ] ERP live tracking screen with active users
+[ ] Current / last-known location on map
+[ ] Live journey path (not only analytics aggregates)
+[ ] Route deviation detection
+[ ] Floor movement display
+[ ] Session timeout detection (wire Settings → sessions)
+[ ] Tracking stops when session ends
+[ ] Live refresh, markers, unavailable/permission messaging
+[ ] Historical journey replay (if required)
+
+---
+
+## P1 — Analytics (dwell / journey live)
+
+[ ] Detect zone enter / exit from live sessions
+[ ] Calculate dwell from real session telemetry
+[ ] Link dwell rows to session IDs
+[ ] Dwell by building / floor views
+[ ] Low-engagement zones view
+[ ] Dwell heatmap (if required)
+[ ] Journey Tracking fed by live route sessions (not only scaled seed)
+
+---
+
+## P1 — API gateway & integrations
+
+[ ] Live API gateway (keys, scopes, rate limits from Settings)
+[ ] Unauthorized API client blocked
+[ ] API client ↔ property linkage (if required)
+[ ] Key expiry date on model + UI
+[ ] One-time full secret copy UX
+[ ] Live usage metering (not seed-only)
+[ ] Detailed error bodies on logs
+[ ] Pagination on API logs
+[ ] Access Integration / RFID real sync (not simulated only)
+[ ] Notifications / ERS real delivery (not toggle-only); add/edit rules
+
+---
+
+## P2 — Routes & Wayfinding polish
+
+[ ] Full route graph node / edge editor
+[ ] Explicit stair / elevator vertical graph tooling
+[ ] Status model: verified / partial / unavailable (align naming)
+[ ] Broken-path integrity engine
+[ ] Route delete / archive
+[ ] Route history / versions
+[ ] Approved vs pending location styling on Wayfinding
+[ ] Low-confidence highlight on Wayfinding
+[ ] Last-updated timestamp on viewer chrome
+[ ] Newly created routes appear in Route Preview (shared store / DB)
+
+---
+
+## P2 — Reports, audit, alerts, health, settings
+
+[ ] Dedicated audit report template on Reports page
+[ ] Reports RBAC (authorized viewers only)
+[ ] PDF export (CSV already exists)
+[ ] Audit write-through on all mutations (login, property, location, approval, correction, publish, API keys, users/roles)
+[ ] Audit date-range filter
+[ ] Timezone normalization on timestamps
+[ ] Auto-generate alerts from live mapping / API / codes / tracking
+[ ] Alert deep-links to correct issue pages
+[ ] System Health RBAC
+[ ] Historical uptime chart (if required)
+[ ] Explicit “last checked” timestamp on health
+[ ] Settings Cancel label (vs Reset only)
+[ ] Settings change history logged
+[ ] Settings RBAC
+
+---
+
+## P2 — UI / UX polish
+
+[ ] Confirmations on more destructive actions
+[ ] Broader icon consistency
+[ ] Global loading states
+[ ] Further mobile/tablet polish on dense tables
+[ ] QA login + shell on real tablet/phone sizes
+
+---
+
+## P0 — End-to-end workflows (blocked until DB + mobile + API)
+
+[ ] Create organization → persisted
+[ ] Create property → persisted + synced
+[ ] Add buildings / floors / units → persisted + synced
+[ ] Submit mapping → review → approve → publish (DB pipeline)
+[ ] Generate property code → validate from mobile app
+[ ] Download correct map package on device
+[ ] Navigate entry → destination on device
+[ ] Track mobile session live
+[ ] View real-time journey in ERP
+[ ] Calculate live dwell → view analytics
+[ ] Create API client → call approved location/route API
+[ ] View live API logs + audit logs + reports from real events
+
+---
+
+## Suggested order of work
+
+1. Firebase project + Auth + Firestore schema (`Firebase-Dataset-Inputs.md`)
+2. Auth/RBAC + replace mock login
+3. Shared data layer for hierarchy + orgs/users
+4. Mapping pipeline persistence + publish packages
+5. Property codes + mobile package/session APIs
+6. Live tracking + dwell
+7. API gateway + usage/logs
+8. Dashboard live KPIs + alerts
+9. E2E verification checklist (FeatureList §29)
+
+---
+
+## Notes
+
+- Field inventory for collections: `Firebase-Dataset-Inputs.md`
+- Current mock UI credentials remain for local demo until Auth is live: `admin@keiros.ai` / `Keiros@1234`
+- Do not mark FeatureList §29 complete until this ToDo P0 set is done

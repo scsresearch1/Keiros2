@@ -1,0 +1,65 @@
+.k-route-map-panel .k-panel__body {
+  padding: 0;
+  min-height: 480px;
+}
+
+.k-route-preview-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.k-route-preview-map {
+  width: 100%;
+  height: min(62vh, 560px);
+  min-height: 420px;
+  background: #0b1220;
+}
+
+.k-route-map-panel .k-bp3d {
+  height: min(62vh, 560px);
+  min-height: 420px;
+  border-radius: 0;
+}
+
+.k-route-preview-map .leaflet-container {
+  width: 100%;
+  height: 100%;
+  background: #0b1220;
+  font: inherit;
+}
+
+.k-route-preview-map.is-dark-basemap .leaflet-tile-pane {
+  filter: invert(1) hue-rotate(180deg) brightness(0.95) contrast(0.92);
+}
+
+.k-route-mini-steps {
+  list-style: none;
+  margin: 0.75rem 0 0;
+  padding: 0;
+  display: grid;
+  gap: 0.35rem;
+  max-height: 220px;
+  overflow: auto;
+}
+
+.k-route-mini-steps li {
+  display: grid;
+  gap: 0.1rem;
+  padding: 0.4rem 0.55rem;
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.55);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  font-size: 0.85rem;
+}
+
+.k-route-mini-steps small {
+  color: #94a3b8;
+  font-size: 0.72rem;
+}
+
+.k-wf-step.is-active-step span {
+  background: #5eead4;
+  box-shadow: 0 0 0 3px rgba(94, 234, 212, 0.35);
+}

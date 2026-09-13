@@ -1,0 +1,25 @@
+{
+  "name": "keiros-deploy-cdci",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Firebase seed + ERP wiring automation for Keiros",
+  "scripts": {
+    "setup": "node scripts/setup.mjs",
+    "provision": "node scripts/00-provision-firebase.mjs",
+    "validate": "node scripts/01-validate-env.mjs",
+    "export-data": "node scripts/02-export-sample-data.mjs",
+    "seed": "node scripts/03-seed-firestore.mjs",
+    "seed:auth": "node scripts/04-seed-auth-users.mjs",
+    "wire": "node scripts/05-wire-erp.mjs",
+    "deploy:rules": "node scripts/06-deploy-rules.mjs"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "firebase-admin": "^13.0.2",
+    "tsx": "^4.19.2"
+  },
+  "devDependencies": {
+    "firebase-tools": "^13.29.1"
+  }
+}

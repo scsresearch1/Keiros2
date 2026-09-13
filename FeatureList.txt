@@ -1,0 +1,600 @@
+# Keiros ERP — Feature completion status
+# Updated: 2026-09-04
+#
+# Context: Database / Firebase connection is NOT completed. UI uses mock seed data
+# (erpData.ts) and in-memory React state. Actions work in the browser session only
+# and reset on refresh. “DONE” = implemented in the UI mock. “PARTIAL” = UI present
+# but incomplete or not wired end-to-end. “NOT DONE” = missing or backend-only.
+#
+# Legend: [DONE] | [PARTIAL] | [NOT DONE]
+
+---
+
+## Summary
+
+| Area | Status |
+|------|--------|
+| 1. Login & Access | PARTIAL — demo auth UI complete; no real backend / RBAC menu |
+| 2. Home Dashboard | PARTIAL — snapshot visible; export/filters/drill-down incomplete |
+| 3. Organization Management | PARTIAL — CRUD + members in local state; no pagination/sort/DB |
+| 4. User & Role Management | PARTIAL — invite/edit/roles matrix local; no real RBAC enforcement |
+| 5–8. Property hierarchy | PARTIAL — add/edit + filters; no delete; pages don’t share live state |
+| 9–13. Mapping / approvals / publish | PARTIAL — interactive mock workflows; not persisted / not live map store |
+| 14. 2D/3D Map Viewer | PARTIAL — OSM 2D + blueprint 3D; not full production GIS |
+| 15. Route Management | PARTIAL — create/edit/preview local; no delete; limited edge model |
+| 16–18. Codes / packages / sessions | PARTIAL — ERP mock screens; no real mobile app handshake |
+| 19. Real-Time Tracking | NOT DONE — no live device telemetry / backend stream |
+| 20. Dwell-Time Analytics | PARTIAL — ERP analytics UI + CSV; not session-derived live dwell |
+| 21–22. API clients / logs | PARTIAL — ERP mock admin; no real API gateway enforcement |
+| 23–27. Reports / audit / alerts / health / settings | PARTIAL — interactive mock; not auth-gated / not persisted |
+| 28. UI / UX Quality | PARTIAL — consistent dark navy theme; some empty/loading gaps |
+| 29. End-to-End Verification | NOT DONE — cannot complete without DB + mobile + real APIs |
+
+---
+
+1. Login & Access
+Major Checks
+ [DONE] Login page opens correctly.
+ [DONE] Email field is visible.
+ [DONE] Password field is visible.
+ [DONE] Sign-in button is visible.
+ [DONE] Forgot password link is visible.
+ [DONE] User can log in with valid details. — Demo only: admin@keiros.ai / Keiros@1234 (and scripted demo emails).
+ [DONE] Invalid login shows proper error message. — Client-side demo rules only.
+ [DONE] User is redirected to the correct dashboard after login.
+ [NOT DONE] User sees only the menu items allowed for their role. — Full nav always shown; role matrix does not filter AppShell.
+ [DONE] Logout works properly. — Client sign-out confirm in shell.
+ [PARTIAL] Session expired message appears when needed. — Demo email / manual shell button only; no server session.
+Minor Checks
+ [DONE] Password show/hide icon works.
+ [DONE] Empty email/password validation works.
+ [DONE] Wrong email format validation works.
+ [DONE] Loading state appears after clicking login.
+ [DONE] Error messages are simple and clear.
+ [DONE] Keiros logo and branding are correct.
+ [PARTIAL] Login screen works on desktop, tablet, and mobile browser. — Responsive layout present; not exhaustively QA’d on all devices.
+
+2. Home Dashboard
+Major Checks
+ [DONE] Dashboard loads after login.
+ [PARTIAL] Property summary is visible. — Property/readiness KPIs shown; dedicated “building / location count” cards incomplete.
+ [PARTIAL] Building summary is visible. — Not a dedicated building KPI; inferred via portfolio/work queue only.
+ [PARTIAL] Location count is visible. — Not a first-class KPI on dashboard.
+ [DONE] Map completeness status is visible. — Via readiness / published KPIs and charts.
+ [DONE] Pending approvals count is visible.
+ [DONE] Active mobile sessions count is visible. — In work-queue panel.
+ [NOT DONE] API usage summary is visible. — No API usage KPI on dashboard.
+ [PARTIAL] Alerts and exceptions are visible. — Corrections/quality appear in priority table; not a live alerts feed.
+ [NOT DONE] Clicking each dashboard card opens the correct page. — Cards/rows not wired to navigation.
+Minor Checks
+ [NOT DONE] Date filter works. — Date is static subtitle text.
+ [NOT DONE] Property filter works.
+ [DONE] Status badges display correctly. — On priority activity rows.
+ [PARTIAL] Empty data state is handled. — Seed data always present; empty states not fully exercised.
+ [DONE] Dashboard cards are not overloaded.
+ [NOT DONE] Numbers refresh correctly after data update. — Dashboard reads seed constants; no live refresh from other pages.
+ [DONE] Charts and cards are readable.
+
+3. Organization Management
+Major Checks
+ [DONE] Organization list page opens.
+ [DONE] New organization can be added. — Local state only; not saved to DB.
+ [DONE] Organization details can be edited.
+ [DONE] Organization can be activated/deactivated. — Active / Pending / Suspended.
+ [PARTIAL] Organization can be linked with properties. — Org name selectable on Complex forms; not a live shared store across pages.
+ [DONE] Organization users can be viewed. — Members panel (local).
+ [DONE] Search and filter work.
+Minor Checks
+ [DONE] Required field validation works.
+ [DONE] Duplicate organization warning appears.
+ [DONE] Status labels are clear.
+ [NOT DONE] Pagination works. — No pagination implemented (mock lists).
+ [NOT DONE] Sorting works. — No column sort.
+ [DONE] Cancel button works. — Modal cancel.
+ [DONE] Success/error messages appear.
+
+4. User & Role Management
+Major Checks
+ [DONE] User list page opens.
+ [DONE] New user can be added. — Invite creates local record; no email sent.
+ [DONE] User role can be assigned.
+ [PARTIAL] User can be linked to organization/property. — Organization yes; property-level assignment not implemented.
+ [DONE] User can be activated/deactivated.
+ [DONE] Role permissions can be viewed. — Access matrix on Role Management.
+ [NOT DONE] Role-based menu access works. — Sidebar not filtered by role.
+ [NOT DONE] Unauthorized user cannot access restricted screens. — Demo login can deny some emails; post-login all pages reachable.
+Minor Checks
+ [PARTIAL] User invitation status is visible. — Invite creates Active/Inactive user; no separate “Invited/Pending email” status.
+ [DONE] Email validation works.
+ [DONE] Duplicate user warning appears.
+ [DONE] Role dropdown shows correct roles.
+ [NOT DONE] Read-only users cannot edit. — No enforced read-only mode after login.
+ [DONE] Search user works.
+ [DONE] User status badge is visible.
+
+5. Property Management
+Major Checks
+ [DONE] Property list page opens. — Complexes page.
+ [DONE] New property can be created.
+ [PARTIAL] Property name, address, city, state, ZIP, and type can be saved. — Name, city, address, org, status; state/ZIP/type not full form fields on Complex.
+ [DONE] Property can be edited.
+ [DONE] Property can be activated/deactivated. — Via status (Draft / Active / Published etc. as modeled).
+ [DONE] Property can be linked to organization.
+ [PARTIAL] Property detail page opens. — Detail panel / same Complexes page (property-form/detail routes reuse Complexes).
+ [DONE] Property hierarchy is visible: Complex → Building → Floor → Unit/Location.
+Minor Checks
+ [PARTIAL] Address validation works. — Required text fields; no postal/geo validation service.
+ [DONE] Required fields are marked / enforced in forms.
+ [DONE] Search property works.
+ [DONE] Property status badge is visible.
+ [DONE] Empty property state is handled. — EmptyHint patterns.
+ [PARTIAL] Map/location summary appears on property detail page. — Summary stats; full map is Wayfinding page.
+ [PARTIAL] Breadcrumb navigation works. — Present on Wayfinding; limited on hierarchy list pages.
+
+6. Building Management
+Major Checks
+ [DONE] Building list opens under selected property. — Buildings page with complex filter (not forced parent drill-down).
+ [DONE] New building can be added. — Including independent buildings.
+ [DONE] Building name/code can be saved.
+ [DONE] Building can be edited.
+ [DONE] Building can be activated/deactivated.
+ [DONE] Building is correctly linked to property. — complexId optional for independent.
+ [DONE] Building floors are visible. — Floor counts / related views.
+Minor Checks
+ [PARTIAL] Duplicate building name/code warning appears. — Not fully enforced everywhere.
+ [DONE] Building status is shown clearly.
+ [DONE] Building search works.
+ [DONE] Floor count is shown.
+ [PARTIAL] Location count is shown. — On floors/locations pages more than building card.
+ [PARTIAL] Back to property button works. — Cross-nav incomplete; Complexes has Buildings shortcut; Buildings page has limited parent back.
+
+7. Floor Management
+Major Checks
+ [DONE] Floor list opens under selected building. — Floors page with building/complex filters.
+ [DONE] New floor can be added.
+ [DONE] Floor number and floor label can be saved.
+ [NOT DONE] Floor plan can be linked/uploaded if included in UI. — No floor-plan upload in current UI.
+ [DONE] Floor can be edited.
+ [DONE] Floor is correctly linked to building.
+ [DONE] Floor locations are visible. — Location count / Locations page filter.
+Minor Checks
+ [PARTIAL] Duplicate floor warning appears. — Not fully enforced.
+ [DONE] Floor order is correct. — Level field.
+ [PARTIAL] Floor status is shown. — Mapped % used more than discrete status.
+ [DONE] Floor search/filter works.
+ [DONE] Empty floor state is handled.
+ [DONE] Floor label is shown consistently across ERP.
+
+8. Room / Unit / Location Management
+Major Checks
+ [DONE] Location list opens under selected floor.
+ [DONE] New unit/room/location can be added.
+ [DONE] Location type can be selected.
+ [DONE] Location name/unit number can be saved.
+ [DONE] Location can be linked to floor, building, and property.
+ [DONE] Entry, exit, stair, elevator, amenity, corridor, and room types are supported.
+ [DONE] Location can be edited.
+ [DONE] Location status is visible. — Mapped / unmapped and related badges.
+Minor Checks
+ [DONE] Required field validation works. — Incl. physical address + lat/lng/elevation.
+ [PARTIAL] Duplicate unit/location warning appears. — Not fully enforced.
+ [NOT DONE] Location type icons display correctly. — Types as text/badges; dedicated icon set not complete.
+ [DONE] Search by unit/room works.
+ [DONE] Filters by location type work.
+ [PARTIAL] Location count updates on floor/building/property pages. — Within page state; not globally synced across hierarchy pages after create.
+
+9. Field Mapping Page
+Major Checks
+ [DONE] Field mapping page opens.
+ [DONE] Agent can select property.
+ [DONE] Agent can select building.
+ [DONE] Agent can select floor.
+ [PARTIAL] Agent can select or create location. — Select/reassign in queue; full create-location depends on Locations page.
+ [DONE] Coordinate fields are visible.
+ [DONE] Agent can enter physical address/unit details.
+ [DONE] Agent can add notes.
+ [DONE] Agent can submit mapping record. — Local queue state.
+ [PARTIAL] Submitted record appears in approval queue. — Mock linked workflow in UI; not shared DB pipeline.
+Minor Checks
+ [DONE] Form is simple for field use.
+ [DONE] Location lock status is visible. — Where modeled in queue.
+ [PARTIAL] Save draft works. — Status transitions; not a dedicated draft persistence API.
+ [DONE] Cancel works.
+ [NOT DONE] Upload evidence/photo option works, if included. — Not implemented.
+ [DONE] Field-agent name and timestamp are captured/displayed. — Mock fields.
+ [DONE] Error message appears if required data is missing.
+
+10. Coordinate Review
+Major Checks
+ [DONE] Captured coordinate details are visible.
+ [DONE] Latitude, longitude, and altitude fields are visible.
+ [DONE] Accuracy/confidence score is visible.
+ [PARTIAL] Device ID is visible. — Where present on seed review rows.
+ [DONE] Field agent ID is visible. — Mapper / agent fields in mock data.
+ [DONE] Timestamp is visible.
+ [DONE] Duplicate risk status is visible.
+ [DONE] Coordinate can be accepted, corrected, or sent for rework.
+Minor Checks
+ [DONE] Coordinate values are formatted clearly.
+ [DONE] Low-confidence status is visually highlighted.
+ [DONE] Reviewer notes can be added. — Local.
+ [NOT DONE] Evidence/photo preview works, if included.
+ [PARTIAL] Map pin preview appears, if included. — Schematic pin stage, not full Leaflet edit canvas.
+ [PARTIAL] Previous coordinate history is visible, if available. — Limited; no full history store.
+
+11. Approval Workflow
+Major Checks
+ [DONE] Approval queue page opens.
+ [DONE] Pending mapping records are listed.
+ [DONE] Reviewer can open a record.
+ [DONE] Reviewer can approve the record.
+ [DONE] Reviewer can reject the record.
+ [DONE] Reviewer can request correction. — Via related correction flow / actions.
+ [DONE] Approval status updates correctly. — Local state.
+ [PARTIAL] Approved records become available for publishing. — UI handoff to Map Publishing; not a shared persisted package store.
+ [PARTIAL] Rejected records do not go to published map. — Enforced in mock UI logic only.
+Minor Checks
+ [DONE] Filter by pending/approved/rejected works.
+ [DONE] Reviewer comments are saved. — Session local.
+ [DONE] Approval date/time is visible.
+ [DONE] Reviewer name is visible.
+ [DONE] Status badges are clear.
+ [DONE] Bulk approval is avoided unless carefully controlled. — Multi-select exists but controlled in UI.
+ [PARTIAL] Audit log entry is created. — Seed audit log exists; approvals do not append live audit rows to a shared store.
+
+12. Correction Workflow
+Major Checks
+ [DONE] Correction request can be created.
+ [DONE] Reason for correction can be entered.
+ [PARTIAL] Corrected record returns to approval queue. — Mock status path; not DB pipeline.
+ [PARTIAL] Old and new values can be compared. — Detail fields; not a full diff viewer.
+ [DONE] Correction status is visible.
+ [PARTIAL] Field agent can see correction task. — Visible in ERP Corrections page; no field-agent app.
+Minor Checks
+ [DONE] Correction comments are visible.
+ [PARTIAL] Correction history is preserved. — Within page state only.
+ [NOT DONE] Rework notification appears. — No push/email/ERS delivery.
+ [DONE] Completed corrections are marked clearly.
+ [DONE] Empty correction state is handled.
+
+13. Map Publishing
+Major Checks
+ [PARTIAL] Only approved records can be published. — Mock validation in publishing UI.
+ [DONE] New map version can be created. — Local versions list.
+ [DONE] Map version can be reviewed before publishing.
+ [NOT DONE] Published map becomes available to mobile app. — No real mobile package delivery.
+ [NOT DONE] Published map becomes available to APIs. — No live API surface.
+ [DONE] Old map version can be deprecated. — Archive / deprecate actions in UI.
+ [PARTIAL] Draft map is not exposed to app/API. — Concept in UI; no real exposure control.
+Minor Checks
+ [DONE] Version number is visible.
+ [DONE] Published by user name is visible.
+ [DONE] Published date/time is visible.
+ [DONE] Change summary is visible.
+ [DONE] Map package size is visible. — Where modeled.
+ [DONE] Warning appears before publishing.
+ [DONE] Publish success message appears.
+
+14. 2D / 3D Map Viewer
+Major Checks
+ [DONE] Map viewer page opens. — Wayfinding Map.
+ [DONE] Property map is visible. — OSM tiles + overlays.
+ [DONE] Buildings are visible.
+ [DONE] Floors are visible. — Floor switch / levels.
+ [DONE] Rooms/units/locations are visible.
+ [DONE] Entry and exit points are visible. — When typed/mapped in data.
+ [DONE] Routes are visible. — Path overlay when selected.
+ [PARTIAL] Approved and pending locations are visually different. — Mapped vs unmapped emphasized; full approval styling incomplete.
+ [DONE] Clicking a location opens location details.
+Minor Checks
+ [DONE] Zoom in/out works.
+ [DONE] Floor switcher works.
+ [DONE] Map labels are readable.
+ [DONE] Map loads within acceptable time. — Client-side mock.
+ [DONE] Empty map state is handled.
+ [PARTIAL] Low-confidence locations are highlighted. — Stronger on Coordinate Review than Wayfinding.
+ [PARTIAL] Last updated timestamp is visible. — Not consistently on viewer chrome.
+
+15. Route Management
+Major Checks
+ [PARTIAL] Route node creation works. — Routes use From/To locations; not a full graph-node editor.
+ [PARTIAL] Route edge creation works. — Implicit via waypoints recompute, not manual edge tool.
+ [DONE] Entry-to-destination route can be defined.
+ [DONE] Room-to-room route can be defined.
+ [DONE] Floor-to-floor route can be defined. — Via multi-floor location pairs / elevation.
+ [PARTIAL] Stair/elevator route connection works. — Accessible mode / location types; not full vertical graph tooling.
+ [PARTIAL] Route status can be marked as verified, partial, or unavailable. — Active/Draft (and related) statuses; not exact three-state naming.
+ [PARTIAL] Broken route paths are detected or flagged. — Limited; no deep path integrity engine.
+Minor Checks
+ [DONE] Route names are clear.
+ [DONE] Route preview works.
+ [DONE] Route distance/time estimate displays, if included.
+ [DONE] Route edit works.
+ [NOT DONE] Route delete/archive works. — No delete/archive action.
+ [DONE] Route status badge is visible.
+ [NOT DONE] Route history is preserved. — No version history store.
+
+16. Property Code Service
+Major Checks
+ [DONE] Unique property code can be generated. — Local generate + QR payload.
+ [PARTIAL] Code can be linked to property/building/floor/zone. — Linked to site property; building/floor/zone depth limited.
+ [DONE] Code can be activated.
+ [DONE] Code can be deactivated.
+ [DONE] Code can be expired. — Expiry field / status handling in UI.
+ [DONE] Code can be revoked.
+ [NOT DONE] Valid code allows map download. — No real mobile download handshake.
+ [NOT DONE] Invalid code blocks map download. — ERP mock only.
+ [PARTIAL] Code is linked to the correct published map version. — Display/association in mock data; not enforced delivery.
+Minor Checks
+ [DONE] Code format is readable.
+ [DONE] Code copy button works.
+ [DONE] QR code display works, if included.
+ [DONE] Expiry date is visible.
+ [DONE] Code usage count is visible. — Code Usage page.
+ [PARTIAL] Failed code attempts are logged. — Usage mock; not a security audit pipeline.
+ [DONE] Code status badge is clear.
+
+17. Map Package Service
+Major Checks
+ [PARTIAL] Downloadable map package can be created. — Map Downloads page simulates packages; not binary package build.
+ [PARTIAL] Map package includes property, building, floor, room/unit, route, entry, exit, and coordinate data. — Assumed in mock metadata; package contents not generated as files.
+ [PARTIAL] Correct map package is linked to correct property code. — Mock linkage.
+ [DONE] Map package version is visible.
+ [NOT DONE] Current published package downloads correctly. — No real package blob to device.
+ [NOT DONE] Deprecated map package is blocked. — UI status only.
+ [NOT DONE] App receives the correct package. — No mobile app integration.
+Minor Checks
+ [DONE] Package size is visible.
+ [PARTIAL] Checksum or validation status is visible. — If modeled in mock rows.
+ [DONE] Last updated timestamp is visible.
+ [PARTIAL] Package download failure is shown. — Simulated refresh/status; limited failure UX.
+ [PARTIAL] Retry option is available.
+ [DONE] Package status is clear: draft, published, deprecated. — Where statuses exist in UI.
+
+18. Mobile Session Service
+Major Checks
+ [NOT DONE] New session is created when app starts. — No real mobile app; ERP shows seed sessions.
+ [PARTIAL] Session is linked to property code. — Mock FK fields.
+ [PARTIAL] Session is linked to map version.
+ [DONE] Session start time is recorded. — In mock rows.
+ [PARTIAL] Session end time is recorded. — End/wake actions in ERP mock.
+ [DONE] Active session appears in ERP.
+ [DONE] Expired session is marked correctly. — Status model in UI.
+ [DONE] Session history is available. — List/filter on Mobile Sessions.
+Minor Checks
+ [DONE] Device type is visible. — Device / platform fields where present.
+ [PARTIAL] App version is visible. — Not always present on every row.
+ [DONE] Last active time is visible. — Via startedAt / status.
+ [PARTIAL] Pause/resume state is shown, if applicable. — Idle / Active / Ended.
+ [NOT DONE] Offline sync status is visible.
+ [DONE] Session filter works.
+ [DONE] Session detail page opens correctly. — Detail panel.
+
+19. Real-Time Tracking
+Major Checks
+ [NOT DONE] Mobile movement data reaches backend. — No backend / device stream.
+ [NOT DONE] Active user appears on ERP tracking screen. — No live tracking map page.
+ [NOT DONE] Current or last known location is visible. — Analytics journey is aggregated mock, not live GPS.
+ [PARTIAL] Journey path is displayed. — Journey Tracking analytics + Route Preview only (not live).
+ [NOT DONE] Route deviation is shown.
+ [NOT DONE] Floor movement is shown, if available.
+ [NOT DONE] Session timeout is detected. — Settings value not wired to sessions.
+ [NOT DONE] Tracking stops when session ends.
+Minor Checks
+ [NOT DONE] Tracking timestamp is visible. — N/A without live tracking.
+ [NOT DONE] Last active time updates correctly.
+ [NOT DONE] Tracking unavailable message appears when permission/network is missing.
+ [NOT DONE] Live refresh works.
+ [NOT DONE] User marker is clear.
+ [NOT DONE] Map path is not visually confusing.
+ [NOT DONE] Historical journey replay works, if included.
+
+20. Dwell-Time Analytics
+Major Checks
+ [NOT DONE] System detects when user enters a zone/location. — Requires live tracking backend.
+ [NOT DONE] System detects when user exits a zone/location.
+ [NOT DONE] Time spent is calculated correctly. — ERP shows seeded aggregates only.
+ [DONE] Dwell time appears by property. — Dwell-Time page filters.
+ [PARTIAL] Dwell time appears by building/floor. — Zone/location oriented; building/floor via property links.
+ [DONE] Dwell time appears by room/zone/amenity.
+ [DONE] Dwell-time report is visible in ERP.
+ [NOT DONE] Dwell data is linked to correct session. — Aggregates not session-joined in UI.
+Minor Checks
+ [DONE] Average dwell time is shown.
+ [DONE] Top visited zones are shown. — Peak windows / ranking.
+ [PARTIAL] Low-engagement zones are shown. — Via threshold filter (high dwell emphasis); low-engagement view limited.
+ [NOT DONE] Heatmap displays correctly, if included.
+ [DONE] Date filter works. — Period scale on mock data.
+ [DONE] Export works, if included. — CSV.
+ [DONE] Empty analytics state is handled.
+
+21. API Client Management
+Major Checks
+ [DONE] API client can be created. — Local register.
+ [DONE] API key/token can be generated. — Prefix shown; full secret not persisted (mock).
+ [PARTIAL] API client can be linked to property. — Linked to organization; property link not primary.
+ [DONE] API scopes can be assigned.
+ [DONE] API client can be activated/deactivated.
+ [DONE] API key can be rotated.
+ [NOT DONE] Unauthorized API client is blocked. — No real API gateway.
+ [DONE] API client details are visible in ERP.
+Minor Checks
+ [DONE] Client name validation works.
+ [DONE] API key is masked after creation.
+ [PARTIAL] Copy key button works. — Prefix/copy patterns where implemented; full one-time secret UX limited.
+ [DONE] Scope labels are clear.
+ [NOT DONE] Expiry date is visible. — Not on keys model currently.
+ [DONE] Last used timestamp is visible.
+ [DONE] API client search works.
+
+22. API Logs & Usage
+Major Checks
+ [DONE] API request logs are visible.
+ [DONE] Successful API calls are logged. — Seed logs.
+ [DONE] Failed API calls are logged.
+ [PARTIAL] Unauthorized API attempts are logged. — Represented as 401/403-style rows if present in seed.
+ [DONE] Endpoint name is visible. — Path / endpoint fields.
+ [DONE] API client name is visible.
+ [DONE] Request timestamp is visible.
+ [PARTIAL] API usage count is accurate. — Accurate to mock seed + filters; not live metering.
+Minor Checks
+ [DONE] Filter by client works.
+ [DONE] Filter by endpoint works. — Usage page / search.
+ [DONE] Filter by success/failure works. — Status band filters.
+ [DONE] Latency is shown, if included.
+ [PARTIAL] Error message is readable. — Status codes; detailed error body limited.
+ [DONE] Export logs works, if included.
+ [NOT DONE] Pagination works.
+
+23. Reports
+Major Checks
+ [DONE] Mapping completeness report opens. — Reports templates + live Mapping Quality page.
+ [DONE] Route readiness report opens. — Via routing / journey-related templates.
+ [DONE] Mobile session report opens.
+ [DONE] Dwell-time report opens.
+ [DONE] API usage report opens.
+ [PARTIAL] Audit report opens. — Audit Logs page + export; not a dedicated “audit report” template card.
+ [DONE] Reports show correct filtered data. — Relative to mock filters / job scope.
+ [NOT DONE] Reports can be viewed by authorized users only. — No RBAC gate.
+Minor Checks
+ [DONE] Date range filter works. — Period on Reports.
+ [DONE] Property filter works.
+ [PARTIAL] Export PDF/Excel works, if included. — CSV only (Excel-openable); no PDF.
+ [DONE] Charts are readable. — On linked live pages.
+ [DONE] Report empty state is handled.
+ [DONE] Report loading state is shown. — Generating → Ready.
+ [DONE] Report title and timestamp are visible.
+
+24. Audit Logs
+Major Checks
+ [PARTIAL] Login events are logged. — Seed may include; live login does not append audit rows.
+ [PARTIAL] Property changes are logged. — Seed samples; live Complex edits do not append.
+ [PARTIAL] Location changes are logged. — Same limitation.
+ [PARTIAL] Approval actions are logged.
+ [PARTIAL] Correction actions are logged.
+ [PARTIAL] Map publishing actions are logged.
+ [PARTIAL] API key actions are logged.
+ [PARTIAL] User/role changes are logged.
+ — Why: Audit page filters/exports seed data; CRUD pages do not write a shared audit store (no DB).
+Minor Checks
+ [DONE] Audit log search works.
+ [DONE] Filter by user works. — Actor filter.
+ [DONE] Filter by action works.
+ [NOT DONE] Filter by date works. — No dedicated date-range control.
+ [DONE] Audit detail opens.
+ [DONE] Old audit entries remain unchanged. — Read-only seed in UI.
+ [PARTIAL] Timezone is shown correctly. — Timestamps as stored strings; no TZ normalization.
+
+25. Alerts & Exceptions
+Major Checks
+ [PARTIAL] Low-confidence coordinate alert appears. — Sample alerts / quality issues; not auto-generated from live mapping.
+ [PARTIAL] Duplicate location alert appears.
+ [PARTIAL] Broken route alert appears.
+ [PARTIAL] Stale map alert appears.
+ [PARTIAL] Failed API alert appears.
+ [PARTIAL] Expired property code alert appears.
+ [PARTIAL] Tracking failure alert appears.
+ [PARTIAL] Alerts open the correct issue page. — Link to System Health / related; not full deep-link matrix.
+Minor Checks
+ [DONE] Alert priority is visible. — Severity.
+ [DONE] Alert can be marked reviewed. — Acknowledge / reopen.
+ [DONE] Alert count updates correctly. — Local KPIs.
+ [DONE] Alert filter works.
+ [DONE] Alert empty state is handled.
+ [DONE] Alert message is easy to understand.
+
+26. System Health
+Major Checks
+ [PARTIAL] Backend status is visible. — Mock services list (not literal Backend/DB cards for every named service).
+ [PARTIAL] Database status is visible. — Not a dedicated DB probe (no DB connected).
+ [DONE] API status is visible. — API Gateway service card.
+ [PARTIAL] Map package service status is visible. — Map Rendering / related services; naming differs.
+ [PARTIAL] Tracking service status is visible. — Mobile Sync / Analytics style services in seed.
+ [DONE] Notification service status is visible. — Notification Bus.
+ [DONE] Failed job/service warning appears. — Degraded/Down badges.
+ [NOT DONE] System health page is available to authorized users only.
+Minor Checks
+ [DONE] Status colors are clear.
+ [PARTIAL] Last checked time is visible. — Refresh updates metrics; explicit “last checked” label limited.
+ [DONE] Refresh button works.
+ [DONE] Service detail opens.
+ [DONE] Downtime/error message is readable.
+ [NOT DONE] Historical uptime chart works, if included.
+
+27. Settings
+Major Checks
+ [DONE] ERP settings page opens.
+ [DONE] Property-code rules can be configured. — Local form save.
+ [DONE] Tracking rules can be configured.
+ [DONE] Dwell-time rules can be configured.
+ [DONE] API limits can be configured.
+ [DONE] Notification settings can be configured.
+ [NOT DONE] Only authorized users can change settings.
+Minor Checks
+ [DONE] Save button works. — Local state.
+ [PARTIAL] Cancel button works. — Reset discards unsaved; no separate Cancel label.
+ [DONE] Reset/default option works, if included. — Reset to last saved snapshot.
+ [DONE] Unsaved changes warning appears. — Inline “Unsaved changes”.
+ [DONE] Success/error message appears.
+ [NOT DONE] Settings history is logged.
+ — Why: Settings do not persist to DB and do not drive codes/API/session timeout elsewhere yet.
+
+28. UI / UX Quality Checks
+Major Checks
+ [DONE] All pages follow the same Keiros design style. — Dark navy theme.
+ [DONE] Navigation menu is clear.
+ [DONE] Page titles are clear.
+ [DONE] Buttons are consistent.
+ [DONE] Forms are easy to use.
+ [PARTIAL] Important actions have confirmation messages. — Some (logout, delete role); not universal.
+ [DONE] Critical errors are visible.
+ [PARTIAL] No page looks like a generic CRUD screen. — Branded shell + help notes; some tables still operational CRUD.
+Minor Checks
+ [DONE] Fonts are readable.
+ [PARTIAL] Icons are consistent. — Limited icon system.
+ [DONE] Spacing is clean.
+ [PARTIAL] Cards are aligned properly. — Health/report grids; dashboard OK.
+ [DONE] Empty states are designed. — EmptyHint pattern.
+ [PARTIAL] Loading states are designed. — Login + some generate flows; not global.
+ [DONE] Success messages are designed. — Inline notices.
+ [DONE] Error messages are designed.
+ [PARTIAL] Mobile/tablet responsiveness is acceptable. — Shell collapses; not fully polished on all pages.
+
+29. Final End-to-End Verification
+
+Before marking the ERP complete, verify these full workflows.
+Status: NOT DONE as a closed loop — UI steps can be demonstrated with mock data, but database, mobile app, and live APIs are not connected.
+
+ [PARTIAL] Create organization. — UI yes; not persisted.
+ [PARTIAL] Create property. — UI yes; not persisted / not synced to all pages’ seed copies.
+ [PARTIAL] Add buildings. — UI yes.
+ [PARTIAL] Add floors. — UI yes.
+ [PARTIAL] Add rooms/units/locations. — UI yes.
+ [PARTIAL] Submit coordinate mapping. — UI yes.
+ [PARTIAL] Review coordinate quality. — UI yes.
+ [PARTIAL] Approve mapped location. — UI yes.
+ [PARTIAL] Publish map version. — UI yes; no real package publish.
+ [PARTIAL] Generate property code. — UI + QR yes.
+ [NOT DONE] Validate property code from mobile app.
+ [NOT DONE] Download correct map package.
+ [PARTIAL] Navigate from entry point to destination. — Wayfinding / Route Preview in ERP only.
+ [PARTIAL] Track mobile session. — ERP session list mock only.
+ [NOT DONE] View real-time journey in ERP.
+ [NOT DONE] Calculate dwell time. — Live calculation from sessions not available.
+ [PARTIAL] View dwell-time analytics. — Seeded analytics UI yes.
+ [PARTIAL] Create API client. — UI yes.
+ [NOT DONE] Call approved location/route API. — No live API server.
+ [PARTIAL] View API logs. — Seed logs yes.
+ [PARTIAL] View audit logs. — Seed logs yes.
+ [PARTIAL] Generate reports. — Mock report jobs + CSV yes.
+
+---
+
+## Blockers to mark ERP “complete”
+
+1. Firebase / database connection and shared persistence across pages.
+2. Real authentication + role-based menu and route guards.
+3. Mobile app integration (codes, packages, sessions, live tracking).
+4. Live API gateway (keys, scopes, usage metering, unauthorized blocking).
+5. Cross-page global state (or DB) so creates on one page appear everywhere.
+6. Pagination, sorting, and real audit write-through on mutations.

@@ -1,0 +1,209 @@
+.tour-shell {
+  position: relative;
+  height: 100%;
+  width: 100%;
+  max-width: 430px;
+  margin: 0 auto;
+  overflow: hidden;
+  background:
+    radial-gradient(120% 80% at 50% -10%, rgba(43, 125, 233, 0.28), transparent 55%),
+    radial-gradient(90% 60% at 100% 100%, rgba(20, 184, 166, 0.12), transparent 50%),
+    var(--keiros-navy);
+  box-shadow: var(--shadow-md);
+}
+
+@media (min-width: 480px) {
+  .tour-shell {
+    border-left: 1px solid var(--border);
+    border-right: 1px solid var(--border);
+  }
+}
+
+.tour-sheet {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 20;
+  max-height: min(58vh, 520px);
+  padding: 0 1.1rem calc(1rem + var(--safe-bottom));
+  background: linear-gradient(180deg, rgba(16, 31, 53, 0.94), rgba(7, 17, 30, 0.98));
+  border-radius: 28px 28px 0 0;
+  border: 1px solid var(--border);
+  border-bottom: none;
+  backdrop-filter: blur(16px);
+  box-shadow: 0 -12px 40px rgba(0, 0, 0, 0.35);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.tour-sheet-handle {
+  width: 40px;
+  height: 4px;
+  border-radius: 99px;
+  background: var(--border-strong);
+  margin: 0.65rem auto 0.4rem;
+  flex-shrink: 0;
+}
+
+.tour-sheet-head h2 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 1.2rem;
+  font-weight: 600;
+}
+
+.tour-sheet-head p {
+  margin: 0.35rem 0 0;
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+}
+
+.tour-sheet-body {
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.tour-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--tap);
+  width: 100%;
+  padding: 0 1.25rem;
+  border-radius: 999px;
+  border: none;
+  font-weight: 700;
+}
+
+.tour-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.tour-btn--primary {
+  background: linear-gradient(135deg, var(--keiros-blue), var(--keiros-blue-bright));
+  color: #fff;
+  box-shadow: var(--shadow-glow);
+}
+
+.tour-btn--teal {
+  background: linear-gradient(135deg, #0d9488, var(--keiros-teal));
+  color: #042f2e;
+}
+
+.tour-btn--ghost {
+  background: transparent;
+  border: 1px solid var(--border-strong);
+  color: var(--text);
+}
+
+.tour-btn--light {
+  background: #fff;
+  color: #0a1628;
+}
+
+.tour-back {
+  width: 42px;
+  height: 42px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(7, 17, 30, 0.55);
+  color: #fff;
+  backdrop-filter: blur(8px);
+  display: grid;
+  place-items: center;
+}
+
+.tour-error {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem 0.9rem;
+  border-radius: 14px;
+  background: rgba(248, 113, 113, 0.12);
+  border: 1px solid rgba(248, 113, 113, 0.35);
+  color: #fecaca;
+  font-size: 0.88rem;
+  margin-bottom: 0.75rem;
+}
+
+.tour-error button {
+  border: 1px solid rgba(248, 113, 113, 0.5);
+  background: transparent;
+  color: #fecaca;
+  border-radius: 999px;
+  padding: 0.3rem 0.65rem;
+  font-weight: 600;
+}
+
+.tour-error p {
+  margin: 0;
+}
+
+.prop-card {
+  border-radius: 28px;
+  overflow: hidden;
+  box-shadow: 0 24px 50px rgba(0, 0, 0, 0.4);
+}
+
+.prop-card-media {
+  position: relative;
+  min-height: 340px;
+  background-size: cover;
+  background-position: center;
+}
+
+.prop-card-scrim {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(7, 17, 30, 0.15) 20%, rgba(7, 17, 30, 0.92) 100%);
+}
+
+.prop-badge {
+  position: absolute;
+  top: 1rem;
+  left: 1rem;
+  z-index: 1;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #042f2e;
+  background: var(--keiros-teal);
+  border-radius: 999px;
+  padding: 0.35rem 0.7rem;
+}
+
+.prop-card-copy {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 1;
+  padding: 1.25rem;
+}
+
+.prop-card-copy h3 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 1.55rem;
+  color: #fff;
+}
+
+.prop-card-copy p {
+  margin: 0.35rem 0 0.9rem;
+  color: rgba(234, 240, 248, 0.82);
+}
+
+.prop-cta {
+  appearance: none;
+  border: none;
+  background: #fff;
+  color: #0a1628;
+  font-weight: 700;
+  border-radius: 999px;
+  padding: 0.7rem 1.15rem;
+}

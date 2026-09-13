@@ -1,0 +1,23 @@
+.tour-outdoor-map {
+  width: 100%;
+  height: 100%;
+  background: #0b1220;
+}
+
+.tour-map-chip {
+  background: rgba(7, 17, 30, 0.88);
+  border: 1px solid rgba(173, 201, 232, 0.2);
+  color: #eaf0f8;
+  padding: 0.45rem 0.65rem;
+  border-radius: 10px;
+  font-size: 0.72rem;
+  margin: 0 0 12px 8px;
+  backdrop-filter: blur(8px);
+  max-width: 220px;
+  line-height: 1.35;
+}
+
+.leaflet-container {
+  font: inherit;
+  background: #0b1220;
+}

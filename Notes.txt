@@ -1,0 +1,42 @@
+Prepare to build 3D rendering 
+Will be published later on Netlify and Render 
+Need to push this on GitHub 
+
+Default username and password - 
+admin@keiros.ai 
+Keiros@1234
+
+Color theme must stay the same across all pages (home, login, workspace, and later screens). Do not mix palettes.
+
+Auth demo emails (any password 8+ chars unless noted):
+- admin@keiros.ai / Keiros@1234 — direct login
+- any other valid email — MFA (code not 000000)
+- setup@keiros.com — first-time setup
+- locked@keiros.com — account locked
+- inactive@keiros.com — account inactive
+- unauthorized@keiros.com — access denied
+- expired@keiros.com — session expired
+- fail@keiros.com — forgot-password send failure
+Forgot password success → Continue to reset password.
+
+After login: full ERP shell with sidebar menu and 40 pages (dashboard through help). Same dark navy theme.
+
+Property hierarchy: Complex → Building (or Independent) → Floor → Unit/Location.
+Each Unit/Location has physical address + coordinate address (latitude, longitude, elevation).
+Nav Properties: Complexes, Buildings, Floors, Units / Locations, Wayfinding Map, Route Management, Route Preview.
+Wayfinding Map auto-builds overlays from coordinates (complex / building / floor / unit) on free OSM tiles (no API key). 3D mode shows a CAD-style building blueprint wireframe. Routing is merged into Properties.
+Mock data: 7 complexes, 17 buildings, 38 mapped floors, 200+ locations across US metros; ops/analytics/API arrays populated to match.
+
+When any page needs user inputs, document fields in Firebase-Dataset-Inputs.md (for later Firebase collections). Keep that file updated as forms are added.
+
+API_DEMO (port 5174) + ERP_Full/server (port 8787): map navigation client + Firestore-backed navigate API.
+Demo API key (legacy prefix): keiros_live_ot_demo_map_nav_2026
+Prefer: ERP → API Clients → Create client → API Keys → Issue secret (copy once) → paste into API_DEMO.
+Usage: API Usage / API Logs / API Navigation Live auto-refresh from Firestore after each call.
+
+API Demo Process: 
+Run ERP and API Demo 
+Use the Key 
+keiros_live_ot_demo_map_nav_2026 or 
+keiros_live_ot_demo_map_nav_2026
+Navigate 

@@ -1,0 +1,30 @@
+---
+description: Always document user-input fields for Firebase dataset planning
+alwaysApply: true
+---
+
+# Firebase input field notes
+
+Whenever you create or change a page/form that collects user input (text, select, checkbox, textarea, file, coordinates, etc.):
+
+1. Update `f:\KeirosPhase2All\Firebase-Dataset-Inputs.md` in the same turn.
+2. Add or revise a section for that page with:
+   - Page name
+   - Collection / entity suggestion (short snake or camel name)
+   - Each input: field key, label, type, required?, notes/enums
+3. Do not wait until the end of the project — keep the note current as UIs are built.
+4. Filters/search used only for UI filtering can be listed under “UI-only filters” (not persisted), or omitted if ephemeral.
+5. Persistable create/edit/settings fields must always be listed.
+
+## Entity / correlation rules (keep in sync)
+
+Canonical schema: `ERP_Full/src/data/schema.ts` · join helpers: `ERP_Full/src/data/entityMap.ts` · overview: Entity model section in `Firebase-Dataset-Inputs.md`.
+
+When documenting fields:
+
+1. Prefer **ID refs** (`propertyId`, `organizationId`, `floorId`, `locationId`, `mapVersionId`, `routeId`, `propertyCodeId`, `apiClientId`, `roleId`, …) over display names.
+2. If a UI shows a name (`propertyName`, `org`, `mapper`), note it as a **cached label**; store the FK for Firebase.
+3. Ops entities (codes, routes, versions, sessions, mapping queue, analytics) join through **`SiteProperty`** via `propertyId` (complex id or independent building id).
+4. If you change the entity graph or add a new FK, update the **Entity model (joins)** section in `Firebase-Dataset-Inputs.md` in the same turn.
+
+Do not invent Firebase schemas beyond what the UI collects; this note is the source for later dataset design.

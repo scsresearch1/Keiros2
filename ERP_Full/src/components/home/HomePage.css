@@ -1,0 +1,275 @@
+.land {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  color: #eaf0f8;
+  background: #07111e;
+}
+
+.land-grid {
+  position: absolute;
+  inset: -8%;
+  z-index: -1;
+  background:
+    radial-gradient(900px 420px at 85% 12%, rgba(43, 125, 233, 0.22), transparent 60%),
+    linear-gradient(rgba(148, 180, 220, 0.08) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(148, 180, 220, 0.08) 1px, transparent 1px);
+  background-size: auto, 64px 64px, 64px 64px;
+  animation: grid-drift 28s linear infinite;
+}
+
+.land-scan {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 18%;
+  z-index: 0;
+  pointer-events: none;
+  background: linear-gradient(180deg, transparent, rgba(43, 125, 233, 0.08), transparent);
+  animation: scan 7.5s ease-in-out infinite;
+}
+
+.land-nav,
+.land-hero {
+  position: relative;
+  z-index: 1;
+}
+
+.land-nav {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1.25rem 2.25rem;
+}
+
+.logo-plate {
+  display: inline-flex;
+  background: #fff;
+  border-radius: 8px;
+  padding: 0.4rem 0.75rem;
+}
+
+.logo-plate img {
+  height: 34px;
+  width: auto;
+  display: block;
+}
+
+.btn {
+  border-radius: 6px;
+  padding: 0.55rem 1.1rem;
+  font-size: 0.84rem;
+  font-weight: 650;
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+
+.btn.solid {
+  background: #2b7de9;
+  color: #fff;
+  align-self: flex-start;
+  margin-top: 1.75rem;
+  padding: 0.8rem 1.35rem;
+}
+
+.btn.solid:hover {
+  background: #4b94f0;
+}
+
+.btn.ghost {
+  background: transparent;
+  color: #d5e2f2;
+  border-color: rgba(213, 226, 242, 0.28);
+}
+
+.btn.ghost:hover {
+  border-color: rgba(213, 226, 242, 0.55);
+  color: #fff;
+}
+
+.land-hero {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 2rem 2.25rem 5rem;
+  max-width: 860px;
+}
+
+.kicker {
+  margin: 0;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: #7eb3ff;
+}
+
+.land-hero h1 {
+  margin: 0.85rem 0 0;
+  font-size: clamp(2.4rem, 5.8vw, 4.2rem);
+  line-height: 1.04;
+  letter-spacing: -0.045em;
+  font-weight: 650;
+  color: #f5f8fd;
+}
+
+.land-hero h1 em {
+  display: block;
+  margin-top: 0.08em;
+  font-style: normal;
+  font-weight: 500;
+  color: #9cb8d9;
+}
+
+.lead {
+  margin: 1.2rem 0 0;
+  max-width: 32rem;
+  font-size: 1.08rem;
+  line-height: 1.6;
+  color: rgba(226, 236, 250, 0.78);
+}
+
+.features {
+  margin-top: 1.7rem;
+}
+
+.feature-track {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0;
+  padding: 0;
+}
+
+.feature-track button {
+  border: 1px solid rgba(173, 201, 232, 0.2);
+  background: rgba(8, 20, 38, 0.35);
+  color: #9cb3cc;
+  border-radius: 999px;
+  padding: 0.42rem 0.75rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.feature-track button.is-on {
+  color: #fff;
+  border-color: rgba(43, 125, 233, 0.85);
+  background: rgba(43, 125, 233, 0.28);
+  box-shadow: 0 0 0 4px rgba(43, 125, 233, 0.12);
+  animation: feature-pulse 2.8s ease-in-out;
+}
+
+.feature-copy {
+  margin: 0.85rem 0 0;
+  min-height: 2.6em;
+  max-width: 34rem;
+  font-size: 0.98rem;
+  line-height: 1.5;
+  color: #c5d6ea;
+  animation: copy-in 0.45s ease;
+}
+
+.rise {
+  opacity: 0;
+  animation: rise 0.7s ease forwards;
+}
+
+.delay-1 {
+  animation-delay: 0.08s;
+}
+
+.delay-2 {
+  animation-delay: 0.18s;
+}
+
+.delay-3 {
+  animation-delay: 0.3s;
+}
+
+.delay-4 {
+  animation-delay: 0.42s;
+}
+
+.delay-5 {
+  animation-delay: 0.54s;
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes copy-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes feature-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 4px rgba(43, 125, 233, 0.1);
+  }
+  50% {
+    box-shadow: 0 0 0 8px rgba(43, 125, 233, 0.16);
+  }
+}
+
+@keyframes grid-drift {
+  from {
+    transform: translate3d(0, 0, 0);
+  }
+  to {
+    transform: translate3d(-32px, -32px, 0);
+  }
+}
+
+@keyframes scan {
+  0% {
+    top: -10%;
+  }
+  100% {
+    top: 95%;
+  }
+}
+
+@media (max-width: 720px) {
+  .land-nav,
+  .land-hero {
+    padding-left: 1.15rem;
+    padding-right: 1.15rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .land-grid,
+  .land-scan,
+  .rise,
+  .feature-copy,
+  .feature-track button.is-on {
+    animation: none;
+  }
+
+  .rise {
+    opacity: 1;
+  }
+}

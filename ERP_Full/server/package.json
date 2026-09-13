@@ -1,0 +1,17 @@
+{
+  "name": "keiros-erp-api",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Keiros navigation & map API (Firestore-backed) for API_DEMO clients",
+  "scripts": {
+    "start": "node index.mjs",
+    "dev": "node --watch index.mjs"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "firebase-admin": "^13.0.2"
+  }
+}

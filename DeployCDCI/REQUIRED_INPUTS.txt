@@ -1,0 +1,16 @@
+# Provide these values → DeployCDCI/.env  (then: npm install && npm run setup)
+
+## Already captured for keiros-erp
+- Project ID: keiros-erp
+- Web SDK config (apiKey, authDomain, storageBucket, messagingSenderId, appId)
+- Service account path (Downloads): keiros-erp-firebase-adminsdk-fbsvc-3458fd48df.json
+
+## Automation also does
+- Enable Email/Password Authentication (script 00-provision)
+- Create Firestore database in FIRESTORE_LOCATION (default asia-south1)
+- Seed collections + Auth users + wire ERP_Full/.env.local
+
+## Run
+cd f:\KeirosPhase2All\DeployCDCI
+npm install
+npm run setup
