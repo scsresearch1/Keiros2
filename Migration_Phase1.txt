@@ -1,0 +1,252 @@
+# Migration Phase 1 — Netlify + Render prepare
+Date: 2026-09-28
+Repo: https://github.com/scsresearch1/Keiros2
+
+Goal: Deploy ERP web + API Demo on Netlify, and the Express navigation API on Render.
+No AWS DB cutover in this phase (Firestore remains the API data source).
+
+================================================================================
+PART A — WHAT CHANGED IN CODE (this prepare pass)
+================================================================================
+
+1. ERP_Full/netlify.toml  (NEW)
+   - Build: npm ci && npm run build
+   - Publish: dist
+   - SPA redirect /* → /index.html
+   - Node 22
+   - Documents required VITE_FIREBASE_* env vars
+
+2. API_DEMO/netlify.toml  (NEW)
+   - Same SPA pattern for API Demo
+   - Documents VITE_API_BASE → Render URL
+
+3. render.yaml  (NEW, repo root)
+   - Blueprint for Web Service: keiros-erp-api
+   - rootDir: ERP_Full/server
+   - healthCheckPath: /api/health
+   - Declares env placeholders (set real values in Render UI)
+
+4. ERP_Full/.env.example  (NEW)
+   - Template for Netlify / local Vite Firebase public config
+
+5. API_DEMO/.env.example  (NEW)
+   - Template for VITE_API_BASE
+
+6. ERP_Full/server/.env.example  (UPDATED)
+   - Added FIREBASE_SERVICE_ACCOUNT_JSON (Render-friendly)
+   - Expanded CORS_ORIGINS notes
+   - Documented FIRESTORE_LOCAL_FALLBACK
+
+7. ERP_Full/server/lib/firebase.mjs  (UPDATED)
+   - Accepts FIREBASE_SERVICE_ACCOUNT_JSON (raw JSON or base64)
+   - Still supports GOOGLE_APPLICATION_CREDENTIALS file path locally
+
+8. ERP_Full/server/index.mjs  (UPDATED)
+   - Listens on 0.0.0.0 (required for Render / containers)
+
+9. ERP_Full/server/package.json  (UPDATED)
+   - engines.node >= 20
+
+10. ERP_Full/server/README.md  (UPDATED)
+    - Points to Migration_Phase1.txt and Render credential option
+
+11. API_DEMO/README.md  (UPDATED)
+    - Deploy section + VITE_API_BASE notes
+
+12. Migration_Phase1.txt  (THIS FILE)
+
+NOT changed in this pass:
+- ERP React pages / Tour App / Firestore schema
+- Demo API key behavior
+- Netlify/Render accounts (you create those in the UI)
+
+================================================================================
+PART B — WHAT YOU NEED BEFORE CLICKING DEPLOY
+================================================================================
+
+Accounts
+- GitHub repo access (already: scsresearch1/Keiros2 — public)
+- Netlify account (login with GitHub recommended)
+- Render account (login with GitHub recommended)
+
+Secrets / values to have ready
+- Firebase web config (same as DeployCDCI VITE_FIREBASE_*)
+- Firebase service account JSON (Project settings → Service accounts → Generate key)
+- Decide CORS origins AFTER Netlify gives you URLs (or use temporary * only for smoke test)
+
+Push this prepare commit to GitHub before deploying so Netlify/Render see the new config files.
+
+================================================================================
+PART C — STEP-BY-STEP DEPLOY ORDER
+================================================================================
+
+Recommended order: Render API first → Netlify ERP → Netlify API Demo
+(API Demo build needs the Render URL in VITE_API_BASE.)
+
+
+------------------------------------------------------------------------------
+STEP 0 — Push prepare commit to GitHub
+------------------------------------------------------------------------------
+From your machine (when ready):
+
+  git add ERP_Full/netlify.toml API_DEMO/netlify.toml render.yaml Migration_Phase1.txt
+  git add ERP_Full/.env.example API_DEMO/.env.example
+  git add ERP_Full/server/.env.example ERP_Full/server/lib/firebase.mjs
+  git add ERP_Full/server/index.mjs ERP_Full/server/package.json ERP_Full/server/README.md
+  git commit -m "Prepare Netlify + Render deployment configs (Phase 1)."
+  git push origin main
+
+
+------------------------------------------------------------------------------
+STEP 1 — Deploy API on Render
+------------------------------------------------------------------------------
+1. Open https://dashboard.render.com → New → Web Service
+   (or New → Blueprint and select render.yaml from the repo)
+
+2. Connect repository: scsresearch1/Keiros2
+
+3. If manual Web Service (not Blueprint), set:
+   - Name: keiros-erp-api
+   - Root Directory: ERP_Full/server
+   - Runtime: Node
+   - Build Command: npm install
+   - Start Command: npm start
+   - Instance: Free is OK for demo (spins down when idle)
+
+4. Environment variables (Render → Environment):
+
+   NODE_ENV=production
+   FIREBASE_PROJECT_ID=<your Firebase project id>
+   FIRESTORE_PREFER_REST=true
+   FIRESTORE_LOCAL_FALLBACK=false
+
+   FIREBASE_SERVICE_ACCOUNT_JSON=<paste entire service-account JSON as one line>
+     Tip: open the JSON in an editor, minify to one line, paste into Render Secret.
+
+   CORS_ORIGINS=<comma-separated, NO spaces issues if trimmed>
+     Start with:
+       http://localhost:5174,http://localhost:5173
+     After Netlify sites exist, ADD:
+       https://YOUR-ERP-SITE.netlify.app,https://YOUR-API-DEMO-SITE.netlify.app
+     Then restart/redeploy the Render service.
+
+5. Deploy. Wait until status is Live.
+
+6. Copy the service URL, e.g.:
+   https://keiros-erp-api.onrender.com
+
+7. Smoke test in a browser:
+   https://keiros-erp-api.onrender.com/api/health
+   Expect JSON with ok/health and dataMode.
+
+
+------------------------------------------------------------------------------
+STEP 2 — Deploy ERP on Netlify
+------------------------------------------------------------------------------
+1. Open https://app.netlify.com → Add new site → Import an existing project
+2. Choose GitHub → scsresearch1/Keiros2
+3. Configure:
+   - Base directory: ERP_Full
+   - Build command: (from netlify.toml) npm ci && npm run build
+   - Publish directory: dist
+4. Site configuration → Environment variables → Add:
+
+   VITE_USE_FIREBASE=true
+   VITE_FIREBASE_API_KEY=...
+   VITE_FIREBASE_AUTH_DOMAIN=...
+   VITE_FIREBASE_PROJECT_ID=...
+   VITE_FIREBASE_STORAGE_BUCKET=...
+   VITE_FIREBASE_MESSAGING_SENDER_ID=...
+   VITE_FIREBASE_APP_ID=...
+   VITE_FIREBASE_MEASUREMENT_ID=...   (optional)
+
+5. Deploy site. Copy URL: https://xxxx.netlify.app
+
+6. Smoke test:
+   - Open ERP URL
+   - Login (Firebase Auth must allow this web domain)
+   - Firebase Console → Authentication → Settings → Authorized domains
+     → add YOUR-ERP-SITE.netlify.app
+
+
+------------------------------------------------------------------------------
+STEP 3 — Deploy API Demo on Netlify (second site)
+------------------------------------------------------------------------------
+1. Netlify → Add new site → Import same GitHub repo again
+2. Configure:
+   - Base directory: API_DEMO
+   - Build / publish from netlify.toml
+3. Environment variables:
+
+   VITE_API_BASE=https://keiros-erp-api.onrender.com
+   (use your real Render URL, no trailing slash)
+
+4. Deploy. Copy URL: https://yyyy.netlify.app
+
+5. IMPORTANT: go back to Render → CORS_ORIGINS and add both Netlify URLs, then redeploy API.
+
+
+------------------------------------------------------------------------------
+STEP 4 — End-to-end smoke test
+------------------------------------------------------------------------------
+1. API health: GET /api/health on Render → OK
+2. ERP Netlify: login works
+3. API Demo Netlify:
+   - Paste API key (ERP-issued or demo prefix key)
+   - Hierarchy dropdowns load
+   - Navigate returns map journey
+4. ERP → API Logs / API Navigation Live shows the call (if Firestore writable)
+
+
+------------------------------------------------------------------------------
+STEP 5 — Optional hardening
+------------------------------------------------------------------------------
+- Custom domains on Netlify + Render
+- Restrict CORS_ORIGINS to production URLs only (remove *)
+- Keep FIRESTORE_LOCAL_FALLBACK=false in real demos
+- Free Render sleeps after idle ~15 min; first request may take 30–60s
+- Never commit service-account JSON or .env files
+
+================================================================================
+PART D — ENV CHEAT SHEET
+================================================================================
+
+Render (API)
+  FIREBASE_PROJECT_ID
+  FIREBASE_SERVICE_ACCOUNT_JSON
+  CORS_ORIGINS
+  FIRESTORE_PREFER_REST=true
+  FIRESTORE_LOCAL_FALLBACK=false
+  PORT          → automatic on Render (do not hardcode)
+
+Netlify ERP
+  VITE_USE_FIREBASE=true
+  VITE_FIREBASE_* (web SDK keys)
+
+Netlify API_DEMO
+  VITE_API_BASE=https://<render-host>
+
+================================================================================
+PART E — TROUBLESHOOTING
+================================================================================
+
+API Demo: "offline" / failed fetch
+  - VITE_API_BASE missing or wrong → rebuild Netlify site after fixing
+  - CORS blocked → add Netlify origin to Render CORS_ORIGINS and restart
+  - Render asleep → wait for cold start, retry
+
+ERP: Firebase auth fails on Netlify
+  - Add netlify.app domain under Firebase Auth authorized domains
+  - Confirm all VITE_FIREBASE_* were present at BUILD time (Vite inlines them)
+
+API: dataMode local-seed on Render
+  - FIREBASE_SERVICE_ACCOUNT_JSON invalid/missing
+  - Or Firestore quota → check Firebase console
+
+Build fails on Netlify
+  - Base directory wrong (must be ERP_Full or API_DEMO)
+  - Node version: netlify.toml sets 22
+
+================================================================================
+END
+================================================================================

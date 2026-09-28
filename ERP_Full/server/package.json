@@ -4,6 +4,9 @@
   "version": "1.0.0",
   "type": "module",
   "description": "Keiros navigation & map API (Firestore-backed) for API_DEMO clients",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "start": "node index.mjs",
     "dev": "node --watch index.mjs"

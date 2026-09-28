@@ -736,8 +736,8 @@ app.use((err, _req, res, _next) => {
   res.status(500).json({ error: 'Unhandled error' })
 })
 
-app.listen(PORT, () => {
-  console.log(`Keiros ERP API listening on http://localhost:${PORT}`)
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Keiros ERP API listening on http://0.0.0.0:${PORT}`)
   console.log(`Health: http://localhost:${PORT}/api/health`)
   console.log(`Demo key example: keiros_live_ot_demo_map_nav_2026`)
 })

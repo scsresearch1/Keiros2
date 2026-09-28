@@ -1,0 +1,28 @@
+# Render Blueprint — Keiros ERP Navigation API
+# Dashboard → New → Blueprint → connect https://github.com/scsresearch1/Keiros2
+# Or create a Web Service manually using the same settings below.
+
+services:
+  - type: web
+    name: keiros-erp-api
+    runtime: node
+    rootDir: ERP_Full/server
+    plan: free
+    region: oregon
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: FIREBASE_PROJECT_ID
+        sync: false
+      - key: FIREBASE_SERVICE_ACCOUNT_JSON
+        sync: false
+      - key: FIRESTORE_PREFER_REST
+        value: "true"
+      - key: CORS_ORIGINS
+        sync: false
+      # Optional: set "true" only if Firestore quota blocks demos
+      - key: FIRESTORE_LOCAL_FALLBACK
+        value: "false"

@@ -2,10 +2,15 @@
 
 Map navigation client for the Keiros ERP navigation API.
 
+## Deploy
+
+Production: Netlify site with base directory `API_DEMO` + `VITE_API_BASE` pointing at Render.
+See repo root **`Migration_Phase1.txt`**.
+
 ## Prerequisites
 
 1. Firestore seeded (DeployCDCI)
-2. ERP API server running:
+2. ERP API server running locally or on Render:
 
 ```bash
 cd ../ERP_Full/server
@@ -13,7 +18,7 @@ npm install
 npm start
 ```
 
-Listens on `http://localhost:8787`.
+Local API: `http://localhost:8787`. Production: your Render URL.
 
 ## Run
 
@@ -23,6 +28,14 @@ npm run dev
 ```
 
 Opens on **http://localhost:5174** (proxies `/api` → `:8787`).
+
+For a production-like local build against Render:
+
+```bash
+# .env.local
+VITE_API_BASE=https://YOUR-SERVICE.onrender.com
+npm run build && npm run preview
+```
 
 ## Journey
 

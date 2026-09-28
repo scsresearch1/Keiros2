@@ -56,12 +56,29 @@ function memStore(collection) {
 
 export function getAdmin() {
   if (app) return app
-  const credPath = process.env.GOOGLE_APPLICATION_CREDENTIALS
-  if (!credPath || !existsSync(credPath)) {
-    noteFallback('missing GOOGLE_APPLICATION_CREDENTIALS')
-    return null
+
+  let sa = null
+  const inline = process.env.FIREBASE_SERVICE_ACCOUNT_JSON?.trim()
+  if (inline) {
+    try {
+      sa = JSON.parse(inline)
+    } catch {
+      try {
+        sa = JSON.parse(Buffer.from(inline, 'base64').toString('utf8'))
+      } catch {
+        noteFallback('invalid FIREBASE_SERVICE_ACCOUNT_JSON')
+        return null
+      }
+    }
+  } else {
+    const credPath = process.env.GOOGLE_APPLICATION_CREDENTIALS
+    if (!credPath || !existsSync(credPath)) {
+      noteFallback('missing GOOGLE_APPLICATION_CREDENTIALS / FIREBASE_SERVICE_ACCOUNT_JSON')
+      return null
+    }
+    sa = JSON.parse(readFileSync(credPath, 'utf8'))
   }
-  const sa = JSON.parse(readFileSync(credPath, 'utf8'))
+
   app = admin.initializeApp({
     credential: admin.credential.cert(sa),
     projectId: process.env.FIREBASE_PROJECT_ID || sa.project_id,

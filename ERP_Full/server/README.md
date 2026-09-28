@@ -2,6 +2,18 @@
 
 Express server that reads Firestore hierarchy and serves map navigation for **API_DEMO**.
 
+## Deploy (Netlify + Render)
+
+See repo root **`Migration_Phase1.txt`** for the full checklist.
+
+Quick map:
+
+| App | Host | Base / root |
+|-----|------|-------------|
+| ERP web | Netlify | `ERP_Full` |
+| API Demo | Netlify (2nd site) | `API_DEMO` |
+| Navigation API | Render | `ERP_Full/server` |
+
 ## Run
 
 ```bash
@@ -10,9 +22,10 @@ npm install
 npm start
 ```
 
-Uses `DeployCDCI/.env` / `server/.env` for `GOOGLE_APPLICATION_CREDENTIALS`.
+Uses `DeployCDCI/.env` / `server/.env` for credentials.
+On Render, prefer `FIREBASE_SERVICE_ACCOUNT_JSON` (inline JSON) instead of a file path.
 
-Default port: **8787**
+Default port: **8787** (Render injects `PORT` automatically).
 
 ## Endpoints
 
