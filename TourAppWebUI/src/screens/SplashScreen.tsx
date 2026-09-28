@@ -10,13 +10,15 @@ export function SplashScreen() {
       <div className="hero-photo" style={{ backgroundImage: `url(${photos.splash})` }} aria-hidden />
       <div className="hero-overlay" />
       <div className="splash-brand">
-        <p className="splash-eyebrow">Indoor wayfinding</p>
+        <p className="splash-eyebrow">Self-guided property tour</p>
         <h1 className="splash-logo">Keiros</h1>
-        <p className="splash-tag">Tour any property with confidence — from lobby to unit.</p>
+        <p className="splash-tag">
+          Explore the whole community at your pace — lobby, amenities, and model homes.
+        </p>
       </div>
       <div className="splash-cta">
         <PrimaryButton variant="light" onClick={goNext}>
-          Start tour
+          Begin my tour
         </PrimaryButton>
       </div>
     </section>

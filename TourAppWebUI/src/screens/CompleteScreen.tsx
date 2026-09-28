@@ -6,7 +6,15 @@ import { getTrackingEvents, completeDwellTracking } from '../mock/tracking'
 import { photos } from '../media/photos'
 
 export function CompleteScreen() {
-  const { destination, resetTour, property, navigateResult, trackingEnabled } = useTour()
+  const {
+    destination,
+    resetTour,
+    property,
+    navigateResult,
+    trackingEnabled,
+    tourStops,
+    visitedStopIds,
+  } = useTour()
   const [rating, setRating] = useState(5)
   const [done, setDone] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -15,14 +23,14 @@ export function CompleteScreen() {
     const events = trackingEnabled ? getTrackingEvents() : []
     const indoorMin = navigateResult?.indoor.walkMinutes ?? 0
     const walkMin = navigateResult?.walk?.durationMinutes ?? 0
-    const distM =
-      (navigateResult?.indoor.distanceM ?? 0) + (navigateResult?.walk?.distanceM ?? 0)
     return {
-      dwell: Math.max(1, Math.round(indoorMin + walkMin + events.filter((e) => e.kind === 'dwell').length * 2)),
-      miles: (distM / 1609).toFixed(2),
-      floors: navigateResult?.indoor.floorChanges ?? 1,
+      minutes: Math.max(1, Math.round(indoorMin + walkMin + events.filter((e) => e.kind === 'dwell').length * 2)),
+      visited: visitedStopIds.length || (destination ? 1 : 0),
+      planned: tourStops.length || 1,
     }
-  }, [navigateResult, trackingEnabled])
+  }, [navigateResult, trackingEnabled, visitedStopIds, destination, tourStops])
+
+  const visitedNames = tourStops.filter((s) => visitedStopIds.includes(s.id)).map((s) => s.title)
 
   async function submit() {
     setBusy(true)
@@ -30,7 +38,7 @@ export function CompleteScreen() {
     await submitTourFeedback({
       rating,
       interestUnits: destination ? [destination.name] : [],
-      interestAmenities: [],
+      interestAmenities: visitedNames,
       comments: '',
       contactOptIn: false,
     })
@@ -43,29 +51,39 @@ export function CompleteScreen() {
       <div className="hero-photo soft" style={{ backgroundImage: `url(${photos.unit})` }} />
       <div className="hero-overlay" />
       <BottomSheet
-        title={done ? 'Thank you' : 'Journey complete'}
+        title={done ? 'Thanks for visiting' : 'Tour complete'}
         subtitle={
           done
-            ? 'Feedback recorded.'
-            : `${property?.name ?? ''}${destination ? ` · ${destination.name}` : ''}`
+            ? 'We saved your feedback.'
+            : `${property?.name ?? 'Property'}${visitedNames.length ? ` · ${visitedNames.slice(0, 2).join(', ')}` : ''}`
         }
       >
         {!done ? (
           <>
             <div className="leg-row">
               <div>
-                <strong>{summary.dwell}m</strong>
-                <span>Dwell</span>
+                <strong>{summary.visited}</strong>
+                <span>Stops seen</span>
               </div>
               <div>
-                <strong>{summary.miles}</strong>
-                <span>Miles</span>
+                <strong>{summary.planned}</strong>
+                <span>On your list</span>
               </div>
               <div>
-                <strong>{summary.floors}</strong>
-                <span>Floors</span>
+                <strong>{summary.minutes}m</strong>
+                <span>Tour time</span>
               </div>
             </div>
+            {visitedNames.length > 0 && (
+              <ul className="tour-checklist">
+                {tourStops.map((s) => (
+                  <li key={s.id} className={visitedStopIds.includes(s.id) ? 'seen' : ''}>
+                    {visitedStopIds.includes(s.id) ? '✓' : '○'} {s.title}
+                  </li>
+                ))}
+              </ul>
+            )}
+            <p className="muted">How was this self-guided tour?</p>
             <div className="rating-row" role="group" aria-label="Rating">
               {[1, 2, 3, 4, 5].map((n) => (
                 <button
@@ -79,11 +97,11 @@ export function CompleteScreen() {
               ))}
             </div>
             <PrimaryButton onClick={() => void submit()} disabled={busy}>
-              {busy ? 'Saving…' : 'Finish'}
+              {busy ? 'Saving…' : 'Submit & finish'}
             </PrimaryButton>
           </>
         ) : (
-          <PrimaryButton onClick={resetTour}>Start another tour</PrimaryButton>
+          <PrimaryButton onClick={resetTour}>Tour another property</PrimaryButton>
         )}
       </BottomSheet>
     </section>

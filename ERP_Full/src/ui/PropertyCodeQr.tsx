@@ -20,14 +20,54 @@ export const ACCESS_QR_BASE = 'https://keiros.ai/access'
 
 /** Payload scanned by Keiros mobile / Tour App to unlock a property map. */
 export function buildAccessPayload(code: string, propertyName: string, label?: string, propertyId?: string) {
-  const params = new URLSearchParams({
-    code: code.trim(),
-    property: propertyName,
-  })
-  if (propertyId) params.set('propertyId', propertyId)
+  const params = new URLSearchParams()
+  if (propertyId?.trim()) params.set('propertyId', propertyId.trim())
+  params.set('code', code.trim())
+  params.set('property', propertyName)
   if (label) params.set('label', label)
-  // HTTPS first so generic scanners work; apps can still deep-link from this URL.
+  // HTTPS first so phone cameras can read it. Tour App reads propertyId from this link.
   return `${ACCESS_QR_BASE}?${params.toString()}`
+}
+
+export type AccessScan = {
+  propertyId: string
+  code: string
+  propertyName: string
+}
+
+/** Property ID is the value the Tour App keeps after a scan. */
+export function parseAccessScan(raw: string): AccessScan {
+  const text = raw.trim()
+  let propertyId = ''
+  let code = ''
+  let propertyName = ''
+  try {
+    if (/^https?:\/\//i.test(text) || /^keiros:\/\//i.test(text)) {
+      const normalized = text.replace(/^keiros:\/\//i, 'https://keiros.local/')
+      const url = new URL(normalized)
+      propertyId = url.searchParams.get('propertyId')?.trim() ?? ''
+      code = url.searchParams.get('code')?.trim() ?? ''
+      propertyName = url.searchParams.get('property')?.trim() ?? ''
+    }
+  } catch {
+    /* plain text */
+  }
+  if (!propertyId) {
+    const idMatch = text.match(/[?&]propertyId=([^&\s#]+)/i)
+    if (idMatch?.[1]) {
+      try {
+        propertyId = decodeURIComponent(idMatch[1]).trim()
+      } catch {
+        propertyId = idMatch[1].trim()
+      }
+    }
+  }
+  if (!code) code = parseAccessCodeFromScan(text)
+  return {
+    propertyId,
+    code: code.toUpperCase().replace(/\s+/g, '-'),
+    propertyName,
+  }
 }
 
 /** Extract a property access code from a raw QR scan (URL, deep link, or plain code). */
@@ -253,6 +293,7 @@ export function PropertyCodeQr({
           <Icon icon={MapPin} size={13} />
           <span>{propertyName}</span>
         </p>
+        {propertyId ? <p className="k-qr-pass__label">Property ID · {propertyId}</p> : null}
         {label ? <p className="k-qr-pass__label">{label}</p> : null}
         <p className="k-qr-pass__payload" title={payload}>
           {payload}

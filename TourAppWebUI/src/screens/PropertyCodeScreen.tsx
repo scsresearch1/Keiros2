@@ -27,9 +27,12 @@ export function PropertyCodeScreen() {
       <div className="screen-top">
         <BackChip onClick={goBack} />
       </div>
-      <BottomSheet title="Enter or scan property code" subtitle="Code at the lobby, leasing office, or unit door.">
+      <BottomSheet
+        title="Join this property tour"
+        subtitle="Scan the code at the lobby, leasing desk, or model unit door."
+      >
         <label className="field">
-          <span>Property code</span>
+          <span>Tour access code</span>
           <input
             value={code}
             onChange={(e) => setCode(e.target.value)}
@@ -39,17 +42,14 @@ export function PropertyCodeScreen() {
             spellCheck={false}
           />
         </label>
-        <p className="field-hint">
-          Paste a code or a scanned Keiros access link (`https://keiros.ai/access?code=…`). Uses active
-          codes from ERP → Property Codes.
-        </p>
+        <p className="field-hint">You can also paste a scanned Keiros access link.</p>
         {codeError && <p className="field-error">{codeError}</p>}
         <div className="btn-stack">
           <PrimaryButton variant="ghost" onClick={() => setCode(DEMO_CODES[0])}>
-            Simulate QR scan
+            Use demo scan
           </PrimaryButton>
           <PrimaryButton onClick={submit} disabled={!code.trim() || busy}>
-            {busy ? 'Checking…' : 'Validate code'}
+            {busy ? 'Opening tour…' : 'Start with this code'}
           </PrimaryButton>
         </div>
       </BottomSheet>

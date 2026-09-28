@@ -286,7 +286,7 @@ All Mobile Access nav pages are interactive (codes / usage / downloads / session
 |-----|-------|------|-----|-------|
 | propertyId | Site property | ref | yes | → siteProperties / complex or independent building |
 | propertyName | Property | string | yes | display cache |
-| code | Code | string | yes | unique; QR encodes `keiros://access?code=&propertyId=` |
+| code | Code | string | yes | unique; QR encodes `https://keiros.ai/access?propertyId=&code=` |
 | label | Label | string | no | |
 | status | Status | enum | yes | Active \| Expired \| Revoked |
 | expiresAt | Expires | date \| null | no | |

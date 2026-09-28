@@ -5,6 +5,32 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    // Tour App looks up a scanned property without an ERP login.
+    match /property_codes/{id} {
+      allow read: if true;
+      allow write: if signedIn();
+    }
+    match /site_properties/{id} {
+      allow read: if true;
+      allow write: if signedIn();
+    }
+    match /complexes/{id} {
+      allow read: if true;
+      allow write: if signedIn();
+    }
+    match /buildings/{id} {
+      allow read: if true;
+      allow write: if signedIn();
+    }
+    match /floors/{id} {
+      allow read: if true;
+      allow write: if signedIn();
+    }
+    match /locations/{id} {
+      allow read: if true;
+      allow write: if signedIn();
+    }
+
     // Bootstrap: authenticated users can read/write.
     // Tighten with role claims before production.
     match /{document=**} {

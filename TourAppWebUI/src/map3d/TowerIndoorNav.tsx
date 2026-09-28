@@ -11,6 +11,7 @@ type Props = {
   activeIndoorStep: number
   selectedFloorId: string | null
   selectedUnitId: string | null
+  showAllUnits?: boolean
   onSelectFloor: (floorId: string) => void
   onSelectUnit: (unitId: string) => void
   onSelectRouteStep?: (index: number) => void
@@ -22,6 +23,7 @@ export function TowerIndoorNav({
   activeIndoorStep,
   selectedFloorId,
   selectedUnitId,
+  showAllUnits = false,
   onSelectFloor,
   onSelectUnit,
   onSelectRouteStep,
@@ -90,6 +92,7 @@ export function TowerIndoorNav({
       routeStops={routeStops}
       activeRouteIndex={activeIndoorStep}
       alwaysShowUnits
+      showAllUnits={showAllUnits}
       showLabels
       onSelectFloor={onSelectFloor}
       onSelectUnit={onSelectUnit}

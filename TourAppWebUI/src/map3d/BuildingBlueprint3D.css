@@ -53,9 +53,10 @@
 
 .k-bp3d__svg {
   width: 100%;
-  height: calc(100% - 42px);
+  height: calc(100% - 36px);
   display: block;
   pointer-events: auto;
+  max-height: none;
 }
 
 .k-bp3d__controls {
@@ -124,11 +125,40 @@
 }
 
 .tour-bp3d .k-bp3d__caption {
-  bottom: 4.6rem;
-  padding: 0.4rem 0.75rem;
-  font-size: 0.72rem;
-  background: linear-gradient(180deg, transparent, rgba(2, 8, 24, 0.75));
+  bottom: 4.2rem;
+  padding: 0.35rem 0.7rem;
+  font-size: 0.7rem;
+  background: linear-gradient(180deg, transparent, rgba(2, 8, 24, 0.65));
   border-top: none;
+}
+
+.tour-bp3d .k-bp3d__svg {
+  height: 100%;
+  transform: scale(1.08);
+  transform-origin: center 42%;
+}
+
+@media (max-width: 430px) {
+  .tour-bp3d .k-bp3d__svg {
+    transform: scale(1.14);
+    transform-origin: center 40%;
+  }
+
+  .tour-bp3d .k-bp3d__caption {
+    bottom: 3.9rem;
+    font-size: 0.66rem;
+  }
+
+  .tour-bp3d .k-bp3d__controls {
+    top: 3.4rem;
+    right: 0.4rem;
+  }
+
+  .tour-bp3d .k-bp3d__ctrl {
+    width: 32px;
+    height: 32px;
+    font-size: 1rem;
+  }
 }
 
 .k-bp3d__label {

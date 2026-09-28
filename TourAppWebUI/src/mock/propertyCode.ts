@@ -90,12 +90,12 @@ export async function simulateMapDownload(
   onProgress: (pct: number, label: string) => void,
 ): Promise<void> {
   const stages = [
-    [12, 'Authorizing map package…'],
-    [28, 'Downloading floors & units…'],
-    [48, 'Loading amenities & routes…'],
-    [68, 'Syncing Keiros coordinates…'],
-    [86, 'Building indoor model…'],
-    [100, 'Map ready'],
+    [12, 'Opening your property tour…'],
+    [28, 'Loading floors & spaces…'],
+    [48, 'Gathering amenities & highlights…'],
+    [68, 'Lining up your tour stops…'],
+    [86, 'Preparing indoor guide…'],
+    [100, 'Tour ready'],
   ] as const
   for (const [pct, label] of stages) {
     await delay(380 + Math.random() * 220)

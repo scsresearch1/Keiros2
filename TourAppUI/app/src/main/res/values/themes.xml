@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.TourApp" parent="android:Theme.Material.NoActionBar">
+        <item name="android:statusBarColor">#07111E</item>
+        <item name="android:navigationBarColor">#07111E</item>
+        <item name="android:windowBackground">#050B14</item>
+    </style>
+</resources>

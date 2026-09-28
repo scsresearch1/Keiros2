@@ -28,23 +28,26 @@ export function PermissionsScreen() {
       <div className="screen-top">
         <BackChip onClick={goBack} />
       </div>
-      <BottomSheet title="Allow permissions" subtitle="Used only while you tour this property.">
+      <BottomSheet
+        title="Help us guide you"
+        subtitle="Only used while you’re on this self-guided tour."
+      >
         <ul className="perm-list">
           <li>
             <strong>Location</strong>
-            <span>Place you on the map</span>
+            <span>Show where you are on the property</span>
           </li>
           <li>
-            <strong>Navigation</strong>
-            <span>Turn-by-turn indoor & outdoor</span>
+            <strong>Directions</strong>
+            <span>Guide you from stop to stop</span>
           </li>
           <li>
-            <strong>Tracking</strong>
-            <span>Optional — enable later during the tour</span>
+            <strong>Visit timing</strong>
+            <span>Optional — you can turn this on later</span>
           </li>
         </ul>
         <PrimaryButton onClick={allowAll} disabled={busy}>
-          {busy ? 'Requesting…' : 'Continue'}
+          {busy ? 'One moment…' : 'Continue'}
         </PrimaryButton>
         <button type="button" className="linkish" onClick={goNext}>
           Continue without location

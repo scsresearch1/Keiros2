@@ -1,38 +1,25 @@
 # Keiros Tour App (Web UI)
 
-Capacitor-ready visitor tour experience for U.S. multifamily & commercial properties.
+Capacitor-ready visitor **self-guided property tour** for U.S. multifamily & commercial properties.
 
 ## Stack
 
 - React 19 + Vite + TypeScript
-- Leaflet (outdoor route)
-- Glossy SVG tower blueprint (ERP-style, colorful) for indoor nav + destination pick
+- Leaflet (outside path)
+- Glossy SVG tower blueprint for indoor explore + stop picking
 - Keiros navy theme (aligned with ERP)
-- Live ERP APIs: `GET /api/v1/hierarchy`, `POST /api/v1/navigate`, `POST /api/v1/tracking/dwell`, `POST /api/v1/access/validate`
-- Mocked: map download progress animation, door access, feedback
-- Journey tracking (when consented) heartbeats dwell every ~5s to ERP **Analytics → Dwell-Time**
-- Property codes come from ERP **Property Codes** (e.g. `OC-CHI-2026`)
+- Live ERP APIs: hierarchy, navigate, access validate, dwell tracking
+- Guided tour itinerary built from property amenities + model homes
 
-## Run
+## Tour experience
 
-1. Start ERP API server on **8787** (`ERP_Full/server`).
-2. In this folder:
+1. Scan / enter property code  
+2. Welcome → **Start self-guided tour** (or browse places)  
+3. Visit curated stops (lobby → amenities → model home)  
+4. Directions between stops; change stop anytime inside  
+5. Optional amenity unlocks → rate your visit  
 
-```bash
-npm install
-npm run dev
-```
-
-Open **http://localhost:5175**
-
-Demo property codes: `KEIROS-DEMO`, `KEIROS-ATL`, `KEIROS-DEN`  
-API key (`.env`): `keiros_live_ot_demo_map_nav_2026`
-
-Without ERP, splash → permissions → code → download still work; overview/search show a clear offline error with retry.
-
-## Tour flow
-
-Splash → Permissions → Property code / QR → Map download → Overview → Search destination → Route preview → Indoor 3D nav → Door access (optional) → Feedback
+Demo code: `OC-CHI-2026` (ERP Property Codes).
 
 ## Capacitor (later Android / iOS)
 

@@ -16,9 +16,10 @@ export function ValidatingScreen() {
       <div className="hero-overlay dense" />
       <div className="validate-card">
         <div className="success-ring">✓</div>
-        <p className="splash-eyebrow">Property found</p>
+        <p className="splash-eyebrow">You’re in</p>
         <h2>{property?.name}</h2>
         <p className="muted">{property?.address}</p>
+        <p className="muted">Preparing your self-guided tour…</p>
       </div>
     </section>
   )

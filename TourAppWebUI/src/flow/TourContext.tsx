@@ -17,9 +17,11 @@ import type { ConsentState } from '../permissions'
 import { validatePropertyCode, type PropertyMeta } from '../mock/propertyCode'
 import { simulateMapDownload } from '../mock/propertyCode'
 import { startTrackingSession, recordTrackingEvent, setTrackingSyncEnabled } from '../mock/tracking'
+import { buildGuidedTour, type TourStop } from '../tour/curatedTour'
 import { nextStep, prevStep, type TourStep } from './steps'
 
 export type DestinationPick = Hierarchy['units'][number]
+export type TourMode = 'guided' | 'browse' | null
 
 type TourContextValue = {
   step: TourStep
@@ -41,11 +43,24 @@ type TourContextValue = {
   setSelectedComplexId: (id: string | null) => void
   destination: DestinationPick | null
   setDestination: (u: DestinationPick | null) => void
+  tourMode: TourMode
+  tourStops: TourStop[]
+  currentStopIndex: number
+  visitedStopIds: string[]
+  /** True after the visitor has entered the building — remaining stops are indoor-only. */
+  insideBuilding: boolean
+  startGuidedTour: () => void
+  startBrowseTour: () => void
+  selectTourStop: (index: number) => void
+  markInsideBuilding: () => void
+  /** Leave the tour early — always available. */
+  endTourEarly: () => void
+  /** After arriving at a stop — mark visited and open next, or finish. */
+  completeCurrentStop: () => Promise<'next' | 'done'>
   navigateResult: NavigateResult | null
   navigateError: string | null
   navigateLoading: boolean
   runNavigate: () => Promise<void>
-  /** Re-route to a unit while staying on the navigation screen. */
   navigateToUnitId: (unitId: string, floorId?: string) => Promise<void>
   patchNavigateResult: (partial: Partial<NavigateResult>) => void
   activeStepIndex: number
@@ -74,6 +89,11 @@ export function TourProvider({ children }: { children: ReactNode }) {
   const [hierarchyError, setHierarchyError] = useState<string | null>(null)
   const [selectedComplexId, setSelectedComplexId] = useState<string | null>(null)
   const [destination, setDestination] = useState<DestinationPick | null>(null)
+  const [tourMode, setTourMode] = useState<TourMode>(null)
+  const [tourStops, setTourStops] = useState<TourStop[]>([])
+  const [currentStopIndex, setCurrentStopIndex] = useState(0)
+  const [visitedStopIds, setVisitedStopIds] = useState<string[]>([])
+  const [insideBuilding, setInsideBuilding] = useState(false)
   const [navigateResult, setNavigateResult] = useState<NavigateResult | null>(null)
   const [navigateError, setNavigateError] = useState<string | null>(null)
   const [navigateLoading, setNavigateLoading] = useState(false)
@@ -115,14 +135,14 @@ export function TourProvider({ children }: { children: ReactNode }) {
         setSelectedComplexId(data.complexes[0].id)
       }
     } catch (e) {
-      setHierarchyError(e instanceof Error ? e.message : 'Backend offline')
+      setHierarchyError(e instanceof Error ? e.message : 'Map couldn’t load — try again')
       setHierarchy(null)
     }
   }, [selectedComplexId, property])
 
   const runDownload = useCallback(async () => {
     setDownloadPct(0)
-    setDownloadLabel('Preparing…')
+    setDownloadLabel('Preparing your tour…')
     await simulateMapDownload((pct, label) => {
       setDownloadPct(pct)
       setDownloadLabel(label)
@@ -130,6 +150,44 @@ export function TourProvider({ children }: { children: ReactNode }) {
     await reloadHierarchy()
     setStep('overview')
   }, [reloadHierarchy])
+
+  const startGuidedTour = useCallback(() => {
+    if (!hierarchy) return
+    const stops = buildGuidedTour(hierarchy, selectedComplexId)
+    setTourMode('guided')
+    setTourStops(stops)
+    setCurrentStopIndex(0)
+    setVisitedStopIds([])
+    setInsideBuilding(false)
+    setDestination(stops[0]?.unit ?? null)
+    setStep('search')
+  }, [hierarchy, selectedComplexId])
+
+  const startBrowseTour = useCallback(() => {
+    setTourMode('browse')
+    setTourStops([])
+    setCurrentStopIndex(0)
+    setInsideBuilding(false)
+    setStep('search')
+  }, [])
+
+  const markInsideBuilding = useCallback(() => {
+    setInsideBuilding(true)
+  }, [])
+
+  const endTourEarly = useCallback(() => {
+    setStep('doorAccess')
+  }, [])
+
+  const selectTourStop = useCallback(
+    (index: number) => {
+      const stop = tourStops[index]
+      if (!stop) return
+      setCurrentStopIndex(index)
+      setDestination(stop.unit)
+    },
+    [tourStops],
+  )
 
   const runNavigate = useCallback(async () => {
     if (!destination) return
@@ -152,13 +210,13 @@ export function TourProvider({ children }: { children: ReactNode }) {
       }
       recordTrackingEvent({
         kind: 'destination',
-        label: `Route to ${destination.name}`,
+        label: `Tour stop: ${destination.name}`,
         latitude: destination.latitude,
         longitude: destination.longitude,
       })
       setStep('routePreview')
     } catch (e) {
-      setNavigateError(e instanceof Error ? e.message : 'Navigate failed')
+      setNavigateError(e instanceof Error ? e.message : 'Could not plan that stop')
       setNavigateResult(null)
     } finally {
       setNavigateLoading(false)
@@ -184,7 +242,7 @@ export function TourProvider({ children }: { children: ReactNode }) {
         navigateResult?.map3d.selectedFloorId
 
       if (!buildingId || !resolvedFloor) {
-        setNavigateError('Could not resolve building / floor for that place.')
+        setNavigateError('That place isn’t on the tour map yet.')
         return
       }
 
@@ -199,8 +257,11 @@ export function TourProvider({ children }: { children: ReactNode }) {
           source: 'TOUR_APP',
         })
         setNavigateResult(result)
-        if (fromHierarchy) setDestination(fromHierarchy)
-        else {
+        if (fromHierarchy) {
+          setDestination(fromHierarchy)
+          const stopIdx = tourStops.findIndex((s) => s.id === unitId)
+          if (stopIdx >= 0) setCurrentStopIndex(stopIdx)
+        } else {
           const loc = result.map3d.locations.find((l) => l.id === unitId)
           if (loc) {
             setDestination({
@@ -229,19 +290,74 @@ export function TourProvider({ children }: { children: ReactNode }) {
         }
         recordTrackingEvent({
           kind: 'destination',
-          label: `Changed destination to ${result.destination.label}`,
+          label: `Exploring ${result.destination.label}`,
           latitude: result.destination.latitude,
           longitude: result.destination.longitude,
         })
         setStep('navigation')
       } catch (e) {
-        setNavigateError(e instanceof Error ? e.message : 'Navigate failed')
+        setNavigateError(e instanceof Error ? e.message : 'Could not open that place')
       } finally {
         setNavigateLoading(false)
       }
     },
-    [hierarchy, navigateResult, consent.tracking],
+    [hierarchy, navigateResult, consent.tracking, tourStops],
   )
+
+  const completeCurrentStop = useCallback(async (): Promise<'next' | 'done'> => {
+    const current = tourStops[currentStopIndex]
+    if (current) {
+      setVisitedStopIds((ids) => (ids.includes(current.id) ? ids : [...ids, current.id]))
+    }
+
+    // Completing the entry stop (or any stop) means we are inside for the rest of the tour
+    setInsideBuilding(true)
+
+    if (tourMode !== 'guided' || !tourStops.length) {
+      setStep('doorAccess')
+      return 'done'
+    }
+
+    const nextIndex = currentStopIndex + 1
+    if (nextIndex >= tourStops.length) {
+      setStep('doorAccess')
+      return 'done'
+    }
+
+    const next = tourStops[nextIndex]
+    setCurrentStopIndex(nextIndex)
+    setDestination(next.unit)
+    setNavigateLoading(true)
+    setNavigateError(null)
+    try {
+      const result = await navigate(getApiKey(), {
+        complexId: next.unit.complexId,
+        buildingId: next.unit.buildingId,
+        floorId: next.unit.floorId,
+        unitId: next.unit.id,
+        source: 'TOUR_APP',
+      })
+      setNavigateResult(result)
+      // Stay inside — jump straight to indoor tips for the next place
+      const firstIndoor = result.journey.steps.findIndex((s) => s.phase === 'indoor')
+      setActiveStepIndex(firstIndoor >= 0 ? firstIndoor : 0)
+      startTrackingSession(result.sessionId)
+      recordTrackingEvent({
+        kind: 'destination',
+        label: `Inside tour → ${next.title}`,
+        latitude: next.unit.latitude,
+        longitude: next.unit.longitude,
+      })
+      setStep('navigation')
+      return 'next'
+    } catch (e) {
+      setNavigateError(e instanceof Error ? e.message : 'Could not open the next place')
+      setStep('search')
+      return 'next'
+    } finally {
+      setNavigateLoading(false)
+    }
+  }, [tourMode, tourStops, currentStopIndex])
 
   const patchNavigateResult = useCallback((partial: Partial<NavigateResult>) => {
     setNavigateResult((prev) => (prev ? { ...prev, ...partial } : prev))
@@ -265,6 +381,11 @@ export function TourProvider({ children }: { children: ReactNode }) {
     setHierarchyError(null)
     setSelectedComplexId(null)
     setDestination(null)
+    setTourMode(null)
+    setTourStops([])
+    setCurrentStopIndex(0)
+    setVisitedStopIds([])
+    setInsideBuilding(false)
     setNavigateResult(null)
     setNavigateError(null)
     setActiveStepIndex(0)
@@ -292,6 +413,17 @@ export function TourProvider({ children }: { children: ReactNode }) {
       setSelectedComplexId,
       destination,
       setDestination,
+      tourMode,
+      tourStops,
+      currentStopIndex,
+      visitedStopIds,
+      insideBuilding,
+      startGuidedTour,
+      startBrowseTour,
+      selectTourStop,
+      markInsideBuilding,
+      endTourEarly,
+      completeCurrentStop,
       navigateResult,
       navigateError,
       navigateLoading,
@@ -321,6 +453,17 @@ export function TourProvider({ children }: { children: ReactNode }) {
       reloadHierarchy,
       selectedComplexId,
       destination,
+      tourMode,
+      tourStops,
+      currentStopIndex,
+      visitedStopIds,
+      insideBuilding,
+      startGuidedTour,
+      startBrowseTour,
+      selectTourStop,
+      markInsideBuilding,
+      endTourEarly,
+      completeCurrentStop,
       navigateResult,
       navigateError,
       navigateLoading,

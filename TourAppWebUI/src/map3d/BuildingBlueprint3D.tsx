@@ -50,6 +50,8 @@ type Props = {
   activeRouteIndex?: number
   /** When true, show unit dots on selected floor even if a route is drawn */
   alwaysShowUnits?: boolean
+  /** Show every unit in the building (not only the selected floor). */
+  showAllUnits?: boolean
   onSelectFloor?: (floorId: string) => void
   onSelectUnit?: (unitId: string) => void
   onSelectRouteStep?: (index: number) => void
@@ -58,7 +60,7 @@ type Props = {
 type Pt = { x: number; y: number }
 type Camera = { yaw: number; pitch: number; zoom: number }
 
-const DEFAULT_CAM: Camera = { yaw: 0.55, pitch: 0.55, zoom: 1 }
+const DEFAULT_CAM: Camera = { yaw: 0.48, pitch: 0.52, zoom: 1.12 }
 
 function clamp(n: number, min: number, max: number) {
   return Math.min(max, Math.max(min, n))
@@ -123,6 +125,7 @@ export function BuildingBlueprint3D({
   routeStops,
   activeRouteIndex = 0,
   alwaysShowUnits = false,
+  showAllUnits = false,
   onSelectFloor,
   onSelectUnit,
   onSelectRouteStep,
@@ -145,16 +148,16 @@ export function BuildingBlueprint3D({
     [floors, building.id],
   )
 
-  const storyCount = Math.min(Math.max(building.floors, mappedFloors.length, 4), compact ? 10 : 16)
-  const W = compact ? 3.2 : 4.2
-  const D = compact ? 2.4 : 3.2
-  const storyH = compact ? 0.38 : 0.48
+  const storyCount = Math.min(Math.max(building.floors, mappedFloors.length, 4), compact ? 10 : 22)
+  const W = compact ? 3.2 : 4.8
+  const D = compact ? 2.4 : 3.6
+  const storyH = compact ? 0.38 : 0.42
   const groundH = storyH * 1.35
-  const vbW = compact ? 280 : 440
-  const vbH = compact ? 260 : 420
-  const baseScale = compact ? 36 : 48
+  const vbW = compact ? 280 : 520
+  const vbH = compact ? 260 : 640
+  const baseScale = compact ? 36 : 58
   const ox = vbW / 2
-  const oy = vbH / 2 + (compact ? 12 : 18)
+  const oy = vbH / 2 + (compact ? 12 : 28)
 
   const stories = useMemo(() => {
     const rows: Array<{
@@ -187,6 +190,11 @@ export function BuildingBlueprint3D({
     () => (selectedFloorId ? locations.filter((l) => l.floorId === selectedFloorId) : []),
     [locations, selectedFloorId],
   )
+
+  const unitsToRender = useMemo(() => {
+    if (showAllUnits) return locations.filter((l) => l.buildingId === building.id)
+    return floorUnits
+  }, [showAllUnits, locations, building.id, floorUnits])
 
   const buildingLocs = useMemo(
     () => locations.filter((l) => l.buildingId === building.id),
@@ -566,13 +574,15 @@ export function BuildingBlueprint3D({
 
         {showLabels &&
           showUnits &&
-          floorUnits.slice(0, compact ? 4 : 10).map((unit, index) => {
+          unitsToRender.slice(0, compact ? 6 : showAllUnits ? 60 : 16).map((unit, index) => {
             const story = stories.find((s) => s.floor?.id === unit.floorId)
             if (!story) return null
-            const cols = 4
-            const u = (index % cols) / cols
-            const v = Math.floor(index / cols) / 3
-            const p = corner(0.45 + u * (W - 0.9), 0.35 + v * (D - 0.7), story.z1 + 0.02)
+            const cols = showAllUnits ? 5 : 4
+            const peers = unitsToRender.filter((u) => u.floorId === unit.floorId)
+            const localIndex = peers.findIndex((u) => u.id === unit.id)
+            const u = ((localIndex >= 0 ? localIndex : index) % cols) / cols
+            const v = Math.floor((localIndex >= 0 ? localIndex : index) / cols) / 4
+            const p = corner(0.4 + u * (W - 0.8), 0.3 + v * (D - 0.6), story.z1 + 0.02)
             const hot = unit.id === selectedUnitId
             return (
               <g
@@ -584,15 +594,17 @@ export function BuildingBlueprint3D({
                 <circle
                   cx={p.x}
                   cy={p.y}
-                  r={hot ? 6 : 4}
+                  r={hot ? 7 : 4.5}
                   fill={hot ? '#f472b6' : '#34d399'}
                   stroke={hot ? '#fce7f3' : '#ecfdf5'}
-                  strokeWidth={hot ? 2 : 1.2}
+                  strokeWidth={hot ? 2.2 : 1.2}
                   filter={`url(#bp-glow-${building.id})`}
                 />
-                <text x={p.x + 8} y={p.y + 3} className={hot ? 'k-bp3d__label is-hot' : 'k-bp3d__label'}>
-                  {unit.name}
-                </text>
+                {(hot || !showAllUnits || peers.length <= 8) && (
+                  <text x={p.x + 8} y={p.y + 3} className={hot ? 'k-bp3d__label is-hot' : 'k-bp3d__label'}>
+                    {unit.name}
+                  </text>
+                )}
               </g>
             )
           })}

@@ -254,9 +254,9 @@ export function PropertyCodesPage({ onNavigate }: PageProps) {
         }
       />
       <HelpNote title="Property codes">
-        Each code generates a scannable HTTPS QR (`https://keiros.ai/access?code=…`) with the Keiros
-        logo. Phone cameras and QR apps can read it; the Tour / mobile app extracts the access code
-        from the link. Print or download for lobbies and desks. Revoke immediately if leaked.
+        Each code generates a scannable HTTPS QR (`https://keiros.ai/access?propertyId=…&code=…`)
+        with the Keiros logo. The Tour App camera reads the property ID from that link. Print or
+        download for lobbies and desks. Revoke immediately if leaked.
       </HelpNote>
       <KpiRow
         items={[
