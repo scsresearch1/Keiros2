@@ -234,7 +234,12 @@ export function KeriosaImportPanel() {
       </Panel>
 
       {review ? (
-        <div className="k-modal-backdrop" role="presentation">
+        <div
+          className="k-modal-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Confirm field lock"
+        >
           <form className="k-modal k-modal--wide" onSubmit={(e) => void confirmReview(e)}>
             <div className="k-modal__head">
               <h2>Confirm field lock → ERP location</h2>
@@ -338,8 +343,8 @@ export function KeriosaImportPanel() {
                 </div>
               </div>
               <label className="k-confirm">
-                <input type="checkbox" checked={confirmed} onChange={(e) => setConfirmed(e.target.checked)} />I
-                reviewed this mapping and approve creating the ERP location.
+                <input type="checkbox" checked={confirmed} onChange={(e) => setConfirmed(e.target.checked)} />
+                I reviewed this mapping and approve creating the ERP location.
               </label>
             </div>
             <div className="k-modal__actions">
