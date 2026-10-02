@@ -41,6 +41,44 @@ export type ComplexStatus = PropertyStatus
 export type BuildingStatus = 'Active' | 'Draft' | 'Inactive'
 export type OrgStatus = 'Active' | 'Suspended' | 'Pending'
 export type MappingQueueStatus = 'Queued' | 'In Progress' | 'Blocked' | 'Complete'
+export type KeriosaImportStatus = 'Pending' | 'Confirmed' | 'Rejected'
+
+/** Field lock from keriosa RTDB awaiting ERP confirmation. */
+export type KeriosaImport = {
+  id: string
+  lockKey: string
+  status: KeriosaImportStatus
+  lockedAt: string
+  deviceId: string
+  source: {
+    property: string
+    building: string
+    floor: string
+    house: string
+    pointType: string
+    latitude: string
+    longitude: string
+    altitude: string
+    confidence: string
+  }
+  proposed: {
+    complexName: string
+    buildingName: string
+    floorLabel: string
+    unitName: string
+    locationType: LocationType
+    latitude: number
+    longitude: number
+    elevation: number
+    physicalAddress: string
+  }
+  matchComplexId: string | null
+  matchBuildingId: string | null
+  matchFloorId: string | null
+  resolvedLocationId: string | null
+  syncedAt: string
+  reviewedAt: string | null
+}
 export type QualitySeverity = 'Low' | 'Medium' | 'High' | 'Critical'
 export type ApprovalStatus = 'Pending' | 'Approved' | 'Rejected'
 export type CorrectionStatus = 'Open' | 'Assigned' | 'Resolved'

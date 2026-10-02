@@ -70,6 +70,7 @@ import {
   type TenantActivity,
   type Tour,
   type User,
+  type KeriosaImport,
 } from './erpData'
 import { isFirebaseEnabled } from '../firebase/config'
 import {
@@ -131,6 +132,7 @@ export type ErpSnapshot = {
   alerts: Alert[]
   auditLogs: AuditLog[]
   systemHealthServices: SystemHealthService[]
+  keriosaImports: KeriosaImport[]
   dashboardKpis: typeof seedDashboardKpis
   erpSettings: ErpSettings
 }
@@ -183,6 +185,7 @@ function seedSnapshot(): ErpSnapshot {
     alerts: structuredClone(seedAlerts),
     auditLogs: structuredClone(seedAudit),
     systemHealthServices: structuredClone(seedHealth),
+    keriosaImports: [],
     dashboardKpis: { ...seedDashboardKpis },
     erpSettings: { ...DEFAULT_SETTINGS },
   }

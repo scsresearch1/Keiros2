@@ -45,6 +45,7 @@ const ARRAY_KEYS = [
   'alerts',
   'auditLogs',
   'systemHealthServices',
+  'keriosaImports',
 ] as const satisfies readonly CollectionKey[]
 
 export type ArrayCollectionKey = (typeof ARRAY_KEYS)[number]

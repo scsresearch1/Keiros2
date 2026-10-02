@@ -40,3 +40,10 @@ Use the Key
 keiros_live_ot_demo_map_nav_2026 or 
 keiros_live_ot_demo_map_nav_2026
 Navigate 
+
+--- Dual DB access (keep both; DIFFERENT Google accounts) ---
+1) keiros-erp → Cloud Firestore (ERP + Render API) — Google account A
+2) keriosa → Realtime Database https://keriosa-default-rtdb.firebaseio.com — Google account B
+Cross-invite one admin email into BOTH projects, or use two browser profiles.
+Keep both service-account JSON files offline (one per project). Never commit.
+Details: Migration_Phase1.txt SECTION 8–9

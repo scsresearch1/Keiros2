@@ -24,6 +24,7 @@ import {
   SplitView,
   Toolbar,
 } from '../ui/primitives'
+import { KeriosaImportPanel } from '../components/keriosa/KeriosaImportPanel'
 import './pages.css'
 
 type PageProps = { onNavigate?: (page: PageId) => void }
@@ -890,6 +891,7 @@ export function LocationsPage() {
   return (
     <>
       <PageHeader title="Units / Locations" subtitle="Wayfinding destinations and navigable features." actions={<button type="button" className="k-btn k-btn--primary" onClick={openAdd}>Add location</button>} />
+      <KeriosaImportPanel />
       <HelpNote label="Locations">
         Hierarchy: <b>Complex → Building → Floor → Unit / Location</b>.
         Every unit/location requires a <b>physical address</b> and a <b>coordinate address</b> (latitude, longitude, elevation in meters).

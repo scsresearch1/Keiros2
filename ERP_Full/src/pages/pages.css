@@ -418,6 +418,88 @@ button.k-map-pin.is-selected {
   width: min(100%, 720px);
 }
 
+.k-panel__lede {
+  margin: 0 0 0.75rem;
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  line-height: 1.45;
+}
+
+.k-action-bar--tight {
+  margin-bottom: 0.75rem;
+}
+
+.k-inline-notice--danger {
+  color: var(--danger, #b42318);
+}
+
+.k-btn--sm {
+  padding: 0.35rem 0.65rem;
+  font-size: 0.78rem;
+}
+
+.k-inline-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.k-keriosa-map-cell {
+  display: inline-block;
+  font-size: 0.78rem;
+  line-height: 1.55;
+}
+
+.k-map-arrow {
+  margin: 0 0.35rem;
+  color: var(--text-muted);
+}
+
+.k-keriosa-review-grid {
+  display: grid;
+  grid-template-columns: 1fr 1.2fr;
+  gap: 1.25rem;
+  margin-bottom: 1rem;
+}
+
+@media (max-width: 720px) {
+  .k-keriosa-review-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.k-keriosa-review-grid h3 {
+  margin: 0 0 0.5rem;
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-secondary);
+}
+
+.k-dl-compact {
+  margin: 0;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.25rem 0.75rem;
+  font-size: 0.82rem;
+}
+
+.k-dl-compact dt {
+  color: var(--text-muted);
+}
+
+.k-dl-compact dd {
+  margin: 0;
+  font-weight: 600;
+}
+
+.k-field-hint {
+  display: block;
+  margin-top: 0.25rem;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+}
+
 .k-help-note {
   margin: 0 0 1rem;
   padding: 0.9rem 1.05rem;

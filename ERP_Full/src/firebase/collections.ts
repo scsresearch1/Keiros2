@@ -31,5 +31,6 @@ export const COLLECTIONS = {
   auditLogs: 'audit_logs',
   systemHealthServices: 'system_health_services',
   dashboardKpis: 'dashboard_kpis',
+  keriosaImports: 'keriosa_imports',
   meta: '_meta',
 } as const

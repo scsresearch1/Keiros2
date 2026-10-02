@@ -10,6 +10,7 @@
     { "exportName": "buildings", "firestore": "buildings", "order": 60 },
     { "exportName": "floors", "firestore": "floors", "order": 70 },
     { "exportName": "locations", "firestore": "locations", "order": 80 },
+    { "exportName": "keriosaImports", "firestore": "keriosa_imports", "order": 85 },
     { "exportName": "mappingQueue", "firestore": "mapping_queue", "order": 90 },
     { "exportName": "qualityIssues", "firestore": "quality_issues", "order": 100 },
     { "exportName": "approvals", "firestore": "approvals", "order": 110 },

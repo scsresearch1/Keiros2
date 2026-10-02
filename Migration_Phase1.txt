@@ -1,12 +1,293 @@
-# Migration Phase 1 — Netlify + Render prepare
+# Migration Phase 1 — Netlify + Render
 Date: 2026-09-28
-Repo: https://github.com/scsresearch1/Keiros2
+Status: COMPLETE (live and verified)
+Repo: https://github.com/scsresearch1/Keiros2 (public)
 
 Goal: Deploy ERP web + API Demo on Netlify, and the Express navigation API on Render.
 No AWS DB cutover in this phase (Firestore remains the API data source).
 
 ================================================================================
-PART A — WHAT CHANGED IN CODE (this prepare pass)
+PART F — FINAL LIVE CONFIGURATION (source of truth)
+================================================================================
+
+================================================================================
+SECTION 1 — LIVE URLs
+================================================================================
+
+  ERP (Netlify)
+    https://keiros2.netlify.app/
+
+  API Demo (Netlify)
+    https://keirosapi.netlify.app/
+
+  Navigation API (Render)
+    https://keiros-erp-api.onrender.com
+
+  API health check
+    https://keiros-erp-api.onrender.com/api/health
+
+  GitHub repository
+    https://github.com/scsresearch1/Keiros2
+
+  Firebase console
+    https://console.firebase.google.com/project/keiros-erp
+
+  Expected health JSON includes:
+    "ok": true
+    "service": "keiros-erp-api"
+    "dataMode": "firestore"
+
+
+================================================================================
+SECTION 2 — LOGIN & ACCESS DETAILS
+================================================================================
+
+  ERP web login (https://keiros2.netlify.app/)
+    Email:     admin@keiros.ai
+    Password:  Keiros@1234
+
+  API Demo access (https://keirosapi.netlify.app/)
+    No user login — paste an ERP API key, then Continue.
+
+    Required scope for Navigate / hierarchy:
+      maps:read  (navigate also accepts routes:read)
+
+    Recommended keys:
+      - Orion Mobile App   → scopes: maps:read, routes:read
+      - Summit Wayfinding  → scopes: maps:read, routes:read, codes:read
+      - Legacy demo key    → keiros_live_ot_demo_map_nav_2026
+
+    Do NOT use:
+      - Harbor POS Integration → scopes: locations:read, analytics:read only
+        (error: "API key lacks required scope")
+
+  Notes:
+    - Rotate/issue secrets in ERP → API Keys (full secret shown once).
+    - Seed passwords also documented in Notes.txt / DeployCDCI/.env (local only).
+
+
+================================================================================
+SECTION 3 — FIREBASE PROJECT
+================================================================================
+
+  Project ID:          keiros-erp
+  Auth domain:         keiros-erp.firebaseapp.com
+  Storage bucket:      keiros-erp.firebasestorage.app
+  Admin SA email:      firebase-adminsdk-fbsvc@keiros-erp.iam.gserviceaccount.com
+
+  Firebase Auth → Authorized domains (must include):
+    - localhost
+    - keiros-erp.firebaseapp.com
+    - keiros2.netlify.app
+
+
+================================================================================
+SECTION 4 — RENDER (keiros-erp-api)
+================================================================================
+
+  Root Directory:      ERP_Full/server
+  Build Command:       npm install
+  Start Command:       npm start
+  Runtime:             Node
+  Health check:        /api/health
+  Primary URL:         https://keiros-erp-api.onrender.com
+
+  Environment variables (set in Render UI — do NOT commit secrets):
+
+    NODE_ENV=production
+    FIREBASE_PROJECT_ID=keiros-erp
+    FIRESTORE_PREFER_REST=true
+    FIRESTORE_LOCAL_FALLBACK=false
+    FIREBASE_SERVICE_ACCOUNT_JSON=<full service-account JSON, one line, Secret>
+      Local file used to populate this (never commit):
+      C:\Users\sdnil\Downloads\keiros-erp-firebase-adminsdk-fbsvc-3458fd48df.json
+
+    CORS_ORIGINS=
+      http://localhost:5174,http://localhost:5173,https://keiros2.netlify.app,https://keirosapi.netlify.app
+
+  Notes:
+  - Free Render may sleep after idle; first request can take 30–60s.
+  - PORT is injected by Render (observed listen on 0.0.0.0:10000).
+
+
+================================================================================
+SECTION 5 — NETLIFY ERP (keiros2)
+================================================================================
+
+  Site URL:            https://keiros2.netlify.app/
+  Base directory:      ERP_Full
+  Build command:       npm ci && npm run build
+  Publish directory:   dist
+  Config file:         ERP_Full/netlify.toml
+
+  Environment variables:
+
+    VITE_USE_FIREBASE=true
+    VITE_FIREBASE_API_KEY=AIzaSyAYy5V4KGW9AULayGp7L_BN4YNk1W6PlhI
+    VITE_FIREBASE_AUTH_DOMAIN=keiros-erp.firebaseapp.com
+    VITE_FIREBASE_PROJECT_ID=keiros-erp
+    VITE_FIREBASE_STORAGE_BUCKET=keiros-erp.firebasestorage.app
+    VITE_FIREBASE_MESSAGING_SENDER_ID=271660139761
+    VITE_FIREBASE_APP_ID=1:271660139761:web:057f5f4f17a73597495550
+
+  Login credentials: see SECTION 2.
+
+
+================================================================================
+SECTION 6 — NETLIFY API DEMO (keirosapi)
+================================================================================
+
+  Site URL:            https://keirosapi.netlify.app/
+  Base directory:      API_DEMO
+  Build command:       npm ci && npm run build
+  Publish directory:   dist
+  Config file:         API_DEMO/netlify.toml
+
+  Environment variables:
+
+    VITE_API_BASE=https://keiros-erp-api.onrender.com
+    (no trailing slash; must Clear-cache redeploy after changing)
+
+  API keys / scopes: see SECTION 2.
+
+
+================================================================================
+SECTION 7 — VERIFICATION CHECKLIST (passed)
+================================================================================
+  [x] Render deploy live
+  [x] GET /api/health → ok + dataMode firestore
+  [x] ERP Netlify loads + Firebase login
+  [x] API Demo Netlify reaches Render (not offline)
+  [x] Navigate works with correct-scoped API key
+  [x] CORS includes both Netlify origins
+
+
+================================================================================
+SECTION 8 — LIVE DEVICE / LOCATION DATA SOURCE (Realtime Database)
+Recorded: 2026-10-02 — await further instructions before wiring code
+================================================================================
+
+  IMPORTANT: DIFFERENT Firebase product/project AND DIFFERENT Google account
+  than Phase 1 ERP Firestore. One login will not see both unless you cross-invite.
+
+  Phase 1 ERP/API uses:
+    Google account:  Account A (keiros-erp owner)
+    Project:         keiros-erp
+    Database:        Cloud Firestore
+
+  Live field/device data shown in console uses:
+    Google account:      Account B (keriosa owner — different from Account A)
+    Project (from URL):  keriosa
+    Database type:       Firebase Realtime Database (RTDB)
+    Database URL:        https://keriosa-default-rtdb.firebaseio.com
+    Region:              us-central1
+    Console path:        Realtime Database → Data
+
+  Observed data shape (root):
+    keiros/
+      live/          (collapsed in screenshot — live telemetry)
+      locked/
+        {timestamp}/   e.g. 2026-08-21_15-36-03
+          altitude, building, device_id, floor, hdop, house,
+          latitude, locked_at, longitude
+        Example record:
+          device_id:  441D64BE2C94
+          building:   Pond
+          floor:      Near
+          house:      Bench
+          latitude:   17.726113
+          longitude:  78.256738
+          altitude:   552.1
+          hdop:       2.1
+          locked_at:  2026-08-21 15:36:03
+
+  Security (console warning):
+    RTDB rules are currently PUBLIC (anyone can read/write/delete).
+    Must be locked down before production; do not expose this URL in clients
+    without Auth + tight rules.
+
+  Access status for this workspace / Phase 1 deploy:
+    - Projects live under two separate Google accounts — switching Firebase project
+      in the same browser session will fail until that account is invited.
+    - keiros-erp service account (Render/ERP) does NOT access keriosa RTDB.
+    - Operator console: log in with Account B for keriosa RTDB (or cross-invite — §9).
+    - App/API access later needs a keriosa service account JSON generated while
+      logged into Account B (plus databaseURL = keriosa-default-rtdb.firebaseio.com).
+    - No RTDB wiring in Keiros2 code yet (ERP still on Firestore keiros-erp).
+
+  ERP mapping (2026-10-02): Units / Locations → “Field locks from Keriosa” panel.
+  Locked RTDB rows sync as Pending in Firestore keriosa_imports; user confirms before
+  creating complex/building/floor/location (property→complex, building→building,
+  floor→floor, house→unit + point_type→location type).
+
+
+================================================================================
+SECTION 9 — MAINTAIN ACCESS TO BOTH DATABASES
+Policy: keep operator + future app credentials for BOTH projects
+NOTE: The two DBs are on DIFFERENT Google accounts (not the same login).
+================================================================================
+
+  DB A — ERP / API operations (Phase 1 live)
+    Google account:    <account that owns keiros-erp — e.g. your ERP/Firebase login>
+    Project:           keiros-erp
+    Product:           Cloud Firestore
+    Used by:           Netlify ERP, Render API, Auth users
+    Console:           https://console.firebase.google.com/project/keiros-erp/firestore
+    App access:        Render FIREBASE_SERVICE_ACCOUNT_JSON (keiros-erp SA)
+                       Netlify VITE_FIREBASE_* → keiros-erp
+    Local SA file:     C:\Users\sdnil\Downloads\keiros-erp-firebase-adminsdk-fbsvc-3458fd48df.json
+
+  DB B — Live device / lock telemetry
+    Google account:    <different account that owns keriosa — the one used for RTDB console>
+    Project:           keriosa
+    Product:           Realtime Database
+    URL:               https://keriosa-default-rtdb.firebaseio.com
+    Console:           https://console.firebase.google.com/project/keriosa/database
+    App access:        NOT in Keiros2 yet — needs keriosa service account JSON
+    Local SA file:     generate under keriosa account → store offline (never commit)
+
+  ---------------------------------------------------------------------------
+  Because accounts are DIFFERENT — do this
+  ---------------------------------------------------------------------------
+  1. Do NOT assume one Google login can open both projects.
+     Keep passwords / MFA / recovery for BOTH Google accounts.
+
+  2. Cross-invite (recommended so one daily login sees both):
+     Option A — Invite ERP account into keriosa as Owner/Editor
+       keriosa console → ⚙️ Users and permissions → Add member → your ERP Google email
+     Option B — Invite keriosa account into keiros-erp as Owner/Editor
+       keiros-erp console → Users and permissions → Add member → keriosa Google email
+     Best: invite a shared org admin email into BOTH projects as Owner.
+
+  3. Service accounts stay separate (one SA per project / per Google Cloud project):
+       A) keiros-erp-…adminsdk….json     → Render / ERP API
+       B) keriosa-…adminsdk….json        → future RTDB API access
+     Store both in a password manager; label which Google account owns which.
+
+  4. Browser tip: use two Chrome profiles (or one normal + one Incognito)
+       Profile 1 = keiros-erp account
+       Profile 2 = keriosa account
+     Or after cross-invite, one profile can switch projects in the Firebase switcher.
+
+  5. Never merge by deleting either project. Apps will use both credentials later.
+
+  6. Security: keriosa RTDB rules are PUBLIC — lock down under the keriosa account
+     (Realtime Database → Rules) when ready; that change must be done while logged
+     into the keriosa Google account (unless cross-invited).
+
+  ---------------------------------------------------------------------------
+  Future app/API dual access (when you say to wire it)
+  ---------------------------------------------------------------------------
+    FIREBASE_PROJECT_ID=keiros-erp
+    FIREBASE_SERVICE_ACCOUNT_JSON=...     # from keiros-erp account
+    RTDB_DATABASE_URL=https://keriosa-default-rtdb.firebaseio.com
+    RTDB_SERVICE_ACCOUNT_JSON=...         # from keriosa account
+
+
+
+
+================================================================================
+PART A — WHAT CHANGED IN CODE (prepare pass)
 ================================================================================
 
 1. ERP_Full/netlify.toml  (NEW)
@@ -14,7 +295,6 @@ PART A — WHAT CHANGED IN CODE (this prepare pass)
    - Publish: dist
    - SPA redirect /* → /index.html
    - Node 22
-   - Documents required VITE_FIREBASE_* env vars
 
 2. API_DEMO/netlify.toml  (NEW)
    - Same SPA pattern for API Demo
@@ -24,229 +304,74 @@ PART A — WHAT CHANGED IN CODE (this prepare pass)
    - Blueprint for Web Service: keiros-erp-api
    - rootDir: ERP_Full/server
    - healthCheckPath: /api/health
-   - Declares env placeholders (set real values in Render UI)
 
 4. ERP_Full/.env.example  (NEW)
-   - Template for Netlify / local Vite Firebase public config
-
 5. API_DEMO/.env.example  (NEW)
-   - Template for VITE_API_BASE
-
 6. ERP_Full/server/.env.example  (UPDATED)
-   - Added FIREBASE_SERVICE_ACCOUNT_JSON (Render-friendly)
-   - Expanded CORS_ORIGINS notes
-   - Documented FIRESTORE_LOCAL_FALLBACK
-
+   - FIREBASE_SERVICE_ACCOUNT_JSON for Render
 7. ERP_Full/server/lib/firebase.mjs  (UPDATED)
-   - Accepts FIREBASE_SERVICE_ACCOUNT_JSON (raw JSON or base64)
-   - Still supports GOOGLE_APPLICATION_CREDENTIALS file path locally
-
+   - Inline JSON / base64 service account support
 8. ERP_Full/server/index.mjs  (UPDATED)
-   - Listens on 0.0.0.0 (required for Render / containers)
-
+   - Listen on 0.0.0.0
 9. ERP_Full/server/package.json  (UPDATED)
    - engines.node >= 20
+10. ERP_Full/server/README.md + API_DEMO/README.md  (UPDATED)
+11. Migration_Phase1.txt  (THIS FILE)
 
-10. ERP_Full/server/README.md  (UPDATED)
-    - Points to Migration_Phase1.txt and Render credential option
-
-11. API_DEMO/README.md  (UPDATED)
-    - Deploy section + VITE_API_BASE notes
-
-12. Migration_Phase1.txt  (THIS FILE)
-
-NOT changed in this pass:
-- ERP React pages / Tour App / Firestore schema
-- Demo API key behavior
-- Netlify/Render accounts (you create those in the UI)
 
 ================================================================================
-PART B — WHAT YOU NEED BEFORE CLICKING DEPLOY
+PART B — DEPLOY ORDER USED
 ================================================================================
 
-Accounts
-- GitHub repo access (already: scsresearch1/Keiros2 — public)
-- Netlify account (login with GitHub recommended)
-- Render account (login with GitHub recommended)
+  1. Push prepare commit to GitHub (done — main)
+  2. Render API first → health check
+  3. Netlify ERP (keiros2) + Firebase authorized domain
+  4. Netlify API Demo (keirosapi) with VITE_API_BASE
+  5. Update Render CORS_ORIGINS with both Netlify URLs
+  6. Clear-cache redeploy API Demo if VITE_API_BASE was added late
+  7. Use maps:read-scoped key for Navigate
 
-Secrets / values to have ready
-- Firebase web config (same as DeployCDCI VITE_FIREBASE_*)
-- Firebase service account JSON (Project settings → Service accounts → Generate key)
-- Decide CORS origins AFTER Netlify gives you URLs (or use temporary * only for smoke test)
-
-Push this prepare commit to GitHub before deploying so Netlify/Render see the new config files.
 
 ================================================================================
-PART C — STEP-BY-STEP DEPLOY ORDER
+PART C — TROUBLESHOOTING (lessons from this deploy)
 ================================================================================
 
-Recommended order: Render API first → Netlify ERP → Netlify API Demo
-(API Demo build needs the Render URL in VITE_API_BASE.)
+API Demo shows "offline — run ERP_Full/server" / Failed to fetch
+  → VITE_API_BASE missing at build time; set and Clear-cache redeploy
+  → Or Render asleep; hit /api/health once
+  → Or CORS missing the Netlify origin
 
+"API key lacks required scope"
+  → Key missing maps:read (Harbor POS will fail)
+  → Use Orion / Summit / legacy demo key
 
-------------------------------------------------------------------------------
-STEP 0 — Push prepare commit to GitHub
-------------------------------------------------------------------------------
-From your machine (when ready):
+ERP login fails on Netlify
+  → Add keiros2.netlify.app to Firebase Auth authorized domains
+  → Confirm VITE_FIREBASE_* present before build
 
-  git add ERP_Full/netlify.toml API_DEMO/netlify.toml render.yaml Migration_Phase1.txt
-  git add ERP_Full/.env.example API_DEMO/.env.example
-  git add ERP_Full/server/.env.example ERP_Full/server/lib/firebase.mjs
-  git add ERP_Full/server/index.mjs ERP_Full/server/package.json ERP_Full/server/README.md
-  git commit -m "Prepare Netlify + Render deployment configs (Phase 1)."
-  git push origin main
+Health dataMode: local-seed
+  → FIREBASE_SERVICE_ACCOUNT_JSON invalid/missing on Render
 
-
-------------------------------------------------------------------------------
-STEP 1 — Deploy API on Render
-------------------------------------------------------------------------------
-1. Open https://dashboard.render.com → New → Web Service
-   (or New → Blueprint and select render.yaml from the repo)
-
-2. Connect repository: scsresearch1/Keiros2
-
-3. If manual Web Service (not Blueprint), set:
-   - Name: keiros-erp-api
-   - Root Directory: ERP_Full/server
-   - Runtime: Node
-   - Build Command: npm install
-   - Start Command: npm start
-   - Instance: Free is OK for demo (spins down when idle)
-
-4. Environment variables (Render → Environment):
-
-   NODE_ENV=production
-   FIREBASE_PROJECT_ID=<your Firebase project id>
-   FIRESTORE_PREFER_REST=true
-   FIRESTORE_LOCAL_FALLBACK=false
-
-   FIREBASE_SERVICE_ACCOUNT_JSON=<paste entire service-account JSON as one line>
-     Tip: open the JSON in an editor, minify to one line, paste into Render Secret.
-
-   CORS_ORIGINS=<comma-separated, NO spaces issues if trimmed>
-     Start with:
-       http://localhost:5174,http://localhost:5173
-     After Netlify sites exist, ADD:
-       https://YOUR-ERP-SITE.netlify.app,https://YOUR-API-DEMO-SITE.netlify.app
-     Then restart/redeploy the Render service.
-
-5. Deploy. Wait until status is Live.
-
-6. Copy the service URL, e.g.:
-   https://keiros-erp-api.onrender.com
-
-7. Smoke test in a browser:
-   https://keiros-erp-api.onrender.com/api/health
-   Expect JSON with ok/health and dataMode.
-
-
-------------------------------------------------------------------------------
-STEP 2 — Deploy ERP on Netlify
-------------------------------------------------------------------------------
-1. Open https://app.netlify.com → Add new site → Import an existing project
-2. Choose GitHub → scsresearch1/Keiros2
-3. Configure:
-   - Base directory: ERP_Full
-   - Build command: (from netlify.toml) npm ci && npm run build
-   - Publish directory: dist
-4. Site configuration → Environment variables → Add:
-
-   VITE_USE_FIREBASE=true
-   VITE_FIREBASE_API_KEY=...
-   VITE_FIREBASE_AUTH_DOMAIN=...
-   VITE_FIREBASE_PROJECT_ID=...
-   VITE_FIREBASE_STORAGE_BUCKET=...
-   VITE_FIREBASE_MESSAGING_SENDER_ID=...
-   VITE_FIREBASE_APP_ID=...
-   VITE_FIREBASE_MEASUREMENT_ID=...   (optional)
-
-5. Deploy site. Copy URL: https://xxxx.netlify.app
-
-6. Smoke test:
-   - Open ERP URL
-   - Login (Firebase Auth must allow this web domain)
-   - Firebase Console → Authentication → Settings → Authorized domains
-     → add YOUR-ERP-SITE.netlify.app
-
-
-------------------------------------------------------------------------------
-STEP 3 — Deploy API Demo on Netlify (second site)
-------------------------------------------------------------------------------
-1. Netlify → Add new site → Import same GitHub repo again
-2. Configure:
-   - Base directory: API_DEMO
-   - Build / publish from netlify.toml
-3. Environment variables:
-
-   VITE_API_BASE=https://keiros-erp-api.onrender.com
-   (use your real Render URL, no trailing slash)
-
-4. Deploy. Copy URL: https://yyyy.netlify.app
-
-5. IMPORTANT: go back to Render → CORS_ORIGINS and add both Netlify URLs, then redeploy API.
-
-
-------------------------------------------------------------------------------
-STEP 4 — End-to-end smoke test
-------------------------------------------------------------------------------
-1. API health: GET /api/health on Render → OK
-2. ERP Netlify: login works
-3. API Demo Netlify:
-   - Paste API key (ERP-issued or demo prefix key)
-   - Hierarchy dropdowns load
-   - Navigate returns map journey
-4. ERP → API Logs / API Navigation Live shows the call (if Firestore writable)
-
-
-------------------------------------------------------------------------------
-STEP 5 — Optional hardening
-------------------------------------------------------------------------------
-- Custom domains on Netlify + Render
-- Restrict CORS_ORIGINS to production URLs only (remove *)
-- Keep FIRESTORE_LOCAL_FALLBACK=false in real demos
-- Free Render sleeps after idle ~15 min; first request may take 30–60s
-- Never commit service-account JSON or .env files
 
 ================================================================================
-PART D — ENV CHEAT SHEET
+PART D — ENV CHEAT SHEET (FINAL)
 ================================================================================
 
-Render (API)
-  FIREBASE_PROJECT_ID
-  FIREBASE_SERVICE_ACCOUNT_JSON
-  CORS_ORIGINS
+Render
+  FIREBASE_PROJECT_ID=keiros-erp
+  FIREBASE_SERVICE_ACCOUNT_JSON=<secret JSON>
   FIRESTORE_PREFER_REST=true
   FIRESTORE_LOCAL_FALLBACK=false
-  PORT          → automatic on Render (do not hardcode)
+  CORS_ORIGINS=http://localhost:5174,http://localhost:5173,https://keiros2.netlify.app,https://keirosapi.netlify.app
 
-Netlify ERP
+Netlify ERP (keiros2)
   VITE_USE_FIREBASE=true
-  VITE_FIREBASE_* (web SDK keys)
+  VITE_FIREBASE_* (values in Part F above)
 
-Netlify API_DEMO
-  VITE_API_BASE=https://<render-host>
+Netlify API_DEMO (keirosapi)
+  VITE_API_BASE=https://keiros-erp-api.onrender.com
 
-================================================================================
-PART E — TROUBLESHOOTING
-================================================================================
-
-API Demo: "offline" / failed fetch
-  - VITE_API_BASE missing or wrong → rebuild Netlify site after fixing
-  - CORS blocked → add Netlify origin to Render CORS_ORIGINS and restart
-  - Render asleep → wait for cold start, retry
-
-ERP: Firebase auth fails on Netlify
-  - Add netlify.app domain under Firebase Auth authorized domains
-  - Confirm all VITE_FIREBASE_* were present at BUILD time (Vite inlines them)
-
-API: dataMode local-seed on Render
-  - FIREBASE_SERVICE_ACCOUNT_JSON invalid/missing
-  - Or Firestore quota → check Firebase console
-
-Build fails on Netlify
-  - Base directory wrong (must be ERP_Full or API_DEMO)
-  - Node version: netlify.toml sets 22
 
 ================================================================================
-END
+END — Phase 1 complete
 ================================================================================

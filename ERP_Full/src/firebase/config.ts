@@ -18,6 +18,12 @@ export function getFirebaseWebConfig() {
   }
 }
 
+/** keriosa Realtime Database (separate Firebase project / Google account). */
+export function getKeriosaRtdbUrl(): string {
+  const fromEnv = import.meta.env.VITE_KERIOSA_RTDB_URL as string | undefined
+  return (fromEnv?.trim() || 'https://keriosa-default-rtdb.firebaseio.com').replace(/\/$/, '')
+}
+
 export function assertFirebaseConfig() {
   const cfg = getFirebaseWebConfig()
   const missing = Object.entries(cfg)
