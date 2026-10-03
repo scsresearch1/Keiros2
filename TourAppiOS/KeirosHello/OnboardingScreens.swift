@@ -1,4 +1,5 @@
 import SwiftUI
+import AVFoundation
 
 struct TourRootView: View {
     @StateObject private var store = TourStore()
