@@ -67,13 +67,18 @@ struct BackChip: View {
 struct HeroBackdrop: View {
     var url: String
     var body: some View {
-        ZStack {
-            AsyncImage(url: URL(string: url)) { image in
-                image.resizable().scaledToFill()
-            } placeholder: {
-                KeirosColor.navy
+        GeometryReader { geo in
+            ZStack {
+                AsyncImage(url: URL(string: url)) { image in
+                    image.resizable().scaledToFill()
+                } placeholder: {
+                    KeirosColor.navy
+                }
+                .frame(width: geo.size.width, height: geo.size.height)
+                .clipped()
+                LinearGradient(colors: [Color.black.opacity(0.25), KeirosColor.navy.opacity(0.92)], startPoint: .top, endPoint: .bottom)
             }
-            LinearGradient(colors: [Color.black.opacity(0.25), KeirosColor.navy.opacity(0.92)], startPoint: .top, endPoint: .bottom)
+            .frame(width: geo.size.width, height: geo.size.height)
         }
         .ignoresSafeArea()
     }
@@ -84,16 +89,30 @@ struct SheetCard<Content: View>: View {
     var subtitle: String
     @ViewBuilder var content: () -> Content
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Capsule().fill(KeirosColor.secondary.opacity(0.4)).frame(width: 40, height: 4).frame(maxWidth: .infinity)
-            Text(title).font(.system(size: 22, weight: .semibold)).foregroundStyle(KeirosColor.text)
-            Text(subtitle).font(.system(size: 14)).foregroundStyle(KeirosColor.secondary)
+        VStack(alignment: .leading, spacing: 10) {
+            Capsule().fill(Color.white.opacity(0.35)).frame(width: 40, height: 4).frame(maxWidth: .infinity)
+            Text(title)
+                .font(.system(size: 22, weight: .semibold))
+                .foregroundStyle(.white)
+                .fixedSize(horizontal: false, vertical: true)
+            Text(subtitle)
+                .font(.system(size: 14))
+                .foregroundStyle(Color.white.opacity(0.72))
+                .fixedSize(horizontal: false, vertical: true)
             content()
         }
-        .padding(18)
+        .padding(.horizontal, 18)
+        .padding(.top, 12)
+        .padding(.bottom, 22)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(KeirosColor.navy.opacity(0.96))
-        .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+        .background(
+            LinearGradient(
+                colors: [Color(red: 0.063, green: 0.122, blue: 0.208), KeirosColor.navy],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        )
+        .clipShape(UnevenRoundedRectangle(cornerRadii: .init(topLeading: 28, bottomLeading: 0, bottomTrailing: 0, topTrailing: 28), style: .continuous))
     }
 }
 
