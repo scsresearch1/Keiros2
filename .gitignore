@@ -7,6 +7,10 @@ node_modules/
 .env.*.local
 *.local
 secrets/
+*.p8
+*.p12
+*.mobileprovision
+*.cer
 *-firebase-adminsdk*.json
 serviceAccount*.json
 

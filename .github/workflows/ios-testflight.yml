@@ -1,0 +1,128 @@
+name: iOS TestFlight
+
+on:
+  workflow_dispatch:
+
+jobs:
+  testflight:
+    runs-on: macos-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install signing assets
+        env:
+          P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          PROFILE_BASE64: ${{ secrets.APPLE_PROVISIONING_PROFILE_BASE64 }}
+          KEY_BASE64: ${{ secrets.APPLE_API_KEY_P8_BASE64 }}
+          KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64, os, pathlib
+          temp = pathlib.Path(os.environ["RUNNER_TEMP"])
+          (temp / "cert.p12").write_bytes(base64.b64decode(os.environ["P12_BASE64"]))
+          (temp / "profile.mobileprovision").write_bytes(base64.b64decode(os.environ["PROFILE_BASE64"]))
+          key_dir = pathlib.Path.home() / "private_keys"
+          key_dir.mkdir(parents=True, exist_ok=True)
+          key_path = key_dir / f"AuthKey_{os.environ['KEY_ID']}.p8"
+          key_path.write_bytes(base64.b64decode(os.environ["KEY_BASE64"]))
+          for extra in (
+              pathlib.Path.home() / ".private_keys",
+              pathlib.Path.home() / ".appstoreconnect" / "private_keys",
+          ):
+              extra.mkdir(parents=True, exist_ok=True)
+              (extra / key_path.name).write_bytes(key_path.read_bytes())
+          PY
+          KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 24)"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$RUNNER_TEMP/cert.p12" -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+          UUID="$(python3 - <<'PY'
+          import os, pathlib, subprocess, plistlib
+          profile = pathlib.Path(os.environ["RUNNER_TEMP"]) / "profile.mobileprovision"
+          plist = subprocess.check_output(["security", "cms", "-D", "-i", str(profile)])
+          print(plistlib.loads(plist)["UUID"])
+          PY
+          )"
+          cp "$RUNNER_TEMP/profile.mobileprovision" "$HOME/Library/MobileDevice/Provisioning Profiles/$UUID.mobileprovision"
+          echo "Installed profile $UUID"
+
+      - name: Archive
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project TourAppiOS/KeirosHello.xcodeproj \
+            -scheme KeirosHello \
+            -configuration Release \
+            -destination "generic/platform=iOS" \
+            -archivePath "$RUNNER_TEMP/KeirosHello.xcarchive" \
+            CURRENT_PROJECT_VERSION="${GITHUB_RUN_NUMBER}" \
+            archive
+
+      - name: Export IPA
+        env:
+          TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os, pathlib
+          method = "app-store-connect"
+          plist = f"""<?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key>
+            <string>{method}</string>
+            <key>destination</key>
+            <string>export</string>
+            <key>signingStyle</key>
+            <string>manual</string>
+            <key>teamID</key>
+            <string>{os.environ["TEAM_ID"]}</string>
+            <key>signingCertificate</key>
+            <string>Apple Distribution</string>
+            <key>provisioningProfiles</key>
+            <dict>
+              <key>com.keiros.tenantapp</key>
+              <string>Keiros Tenant App Store</string>
+            </dict>
+            <key>uploadSymbols</key>
+            <true/>
+            <key>manageAppVersionAndBuildNumber</key>
+            <false/>
+          </dict>
+          </plist>
+          """
+          pathlib.Path(os.environ["RUNNER_TEMP"], "ExportOptions.plist").write_text(plist.strip() + "\n")
+          PY
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/KeirosHello.xcarchive" \
+            -exportPath "$RUNNER_TEMP/export" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist"
+          find "$RUNNER_TEMP/export" -name "*.ipa" -print
+
+      - name: Upload to TestFlight
+        env:
+          KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          IPA="$(find "$RUNNER_TEMP/export" -name "*.ipa" | head -n 1)"
+          test -n "$IPA"
+          if ! xcrun altool --upload-app --type ios --file "$IPA" --apiKey "$KEY_ID" --apiIssuer "$ISSUER_ID"; then
+            xcrun iTMSTransporter -m upload -assetFile "$IPA" -apiKey "$KEY_ID" -apiIssuer "$ISSUER_ID" -v informational
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: keiros-hello-ipa
+          path: ${{ runner.temp }}/export/*.ipa
+          retention-days: 7
