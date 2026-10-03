@@ -542,25 +542,41 @@ struct DoorAccessScreen: View {
             VStack { HStack { BackChip(action: store.goBack); Spacer() }; Spacer() }.padding(14)
             SheetCard(title: "Almost done", subtitle: seen > 0 ? "Nice — you visited \(seen) tour stop\(seen == 1 ? "" : "s"). Unlock amenities if you need access." : "Optional door unlocks for guest amenities.") {
                 ForEach(store.state.tour.facilities) { facility in
-                    HStack {
-                        VStack(alignment: .leading) {
-                            Text(facility.name).font(.system(size: 15, weight: .bold)).foregroundStyle(KeirosColor.text)
-                            Text("Guest access").font(.system(size: 12)).foregroundStyle(KeirosColor.muted)
+                    HStack(spacing: 12) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(facility.name)
+                                .font(.system(size: 15, weight: .bold))
+                                .foregroundStyle(.white)
+                                .fixedSize(horizontal: false, vertical: true)
+                            Text("Guest access")
+                                .font(.system(size: 12))
+                                .foregroundStyle(Color.white.opacity(0.65))
                         }
-                        Spacer()
+                        .frame(maxWidth: .infinity, alignment: .leading)
                         Button(store.state.doorBusyId == facility.id ? "…" : "Unlock") { store.unlock(facility.id) }
                             .font(.system(size: 14, weight: .bold))
-                            .padding(.horizontal, 16).padding(.vertical, 10)
-                            .background(KeirosColor.teal)
                             .foregroundStyle(Color(red: 0.016, green: 0.18, blue: 0.18))
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 10)
+                            .background(KeirosColor.teal)
                             .clipShape(Capsule())
                             .disabled(store.state.doorBusyId == facility.id)
                     }
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.white.opacity(0.08))
+                    .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.white.opacity(0.14), lineWidth: 1))
+                    .clipShape(RoundedRectangle(cornerRadius: 16))
                 }
                 if let result = store.state.doorResult {
-                    VStack(alignment: .leading) {
-                        Text("\(result.facilityName): \(result.granted ? "Unlocked" : "Unavailable")").font(.system(size: 15, weight: .bold)).foregroundStyle(KeirosColor.text)
-                        Text(result.message).font(.system(size: 13)).foregroundStyle(KeirosColor.secondary)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("\(result.facilityName): \(result.granted ? "Unlocked" : "Unavailable")")
+                            .font(.system(size: 15, weight: .bold))
+                            .foregroundStyle(.white)
+                        Text(result.message)
+                            .font(.system(size: 13))
+                            .foregroundStyle(Color.white.opacity(0.72))
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(12)
@@ -570,6 +586,8 @@ struct DoorAccessScreen: View {
                 PrimaryButton(label: "Wrap up my tour", action: store.goNext)
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .clipped()
     }
 }
 
@@ -583,22 +601,33 @@ struct CompleteScreen: View {
                 subtitle: store.state.feedbackDone ? "We saved your feedback." : (store.state.property?.name ?? "Property")
             ) {
                 if !store.state.feedbackDone {
-                    HStack {
+                    HStack(alignment: .top, spacing: 8) {
                         stat("\(store.state.visitedStopIds.count)", "Stops seen")
                         stat("\(store.state.tour.stops.count)", "On your list")
                         stat("18m", "Tour time")
                     }
-                    ForEach(store.state.tour.stops) { stop in
-                        let seen = store.state.visitedStopIds.contains(stop.id)
-                        Text("\(seen ? "✓" : "○") \(stop.title)")
-                            .foregroundStyle(seen ? Color(red: 0.431, green: 0.906, blue: 0.718) : KeirosColor.secondary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(store.state.tour.stops) { stop in
+                            let seen = store.state.visitedStopIds.contains(stop.id)
+                            Text("\(seen ? "✓" : "○") \(stop.title)")
+                                .font(.system(size: 14))
+                                .foregroundStyle(seen ? Color(red: 0.431, green: 0.906, blue: 0.718) : Color.white.opacity(0.72))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     }
-                    Text("How was this self-guided tour?").foregroundStyle(KeirosColor.secondary)
-                    HStack {
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.white.opacity(0.06))
+                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.12), lineWidth: 1))
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    Text("How was this self-guided tour?")
+                        .foregroundStyle(Color.white.opacity(0.72))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    HStack(spacing: 8) {
                         ForEach(1...5, id: \.self) { n in
                             Button { store.setRating(n) } label: {
-                                Text("★").font(.system(size: 28)).foregroundStyle(n <= store.state.rating ? KeirosColor.amber : KeirosColor.muted)
+                                Text("★").font(.system(size: 28)).foregroundStyle(n <= store.state.rating ? KeirosColor.amber : Color.white.opacity(0.35))
                             }
                         }
                     }
@@ -609,13 +638,26 @@ struct CompleteScreen: View {
                 }
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .clipped()
     }
 
     private func stat(_ value: String, _ label: String) -> some View {
-        VStack {
-            Text(value).font(.system(size: 16, weight: .semibold)).foregroundStyle(KeirosColor.text)
-            Text(label).font(.system(size: 11)).foregroundStyle(KeirosColor.muted)
+        VStack(spacing: 2) {
+            Text(value)
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(.white)
+            Text(label)
+                .font(.system(size: 11))
+                .foregroundStyle(Color.white.opacity(0.65))
+                .multilineTextAlignment(.center)
+                .lineLimit(2)
+                .minimumScaleFactor(0.8)
         }
-        .frame(maxWidth: .infinity).padding(8).background(Color.white.opacity(0.06)).clipShape(RoundedRectangle(cornerRadius: 14))
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 8)
+        .padding(.horizontal, 4)
+        .background(Color.white.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 14))
     }
 }
