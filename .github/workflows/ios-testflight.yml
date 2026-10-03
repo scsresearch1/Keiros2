@@ -55,6 +55,24 @@ jobs:
           cp "$RUNNER_TEMP/profile.mobileprovision" "$HOME/Library/MobileDevice/Provisioning Profiles/$UUID.mobileprovision"
           echo "Installed profile $UUID"
 
+      - name: Write Firebase config
+        env:
+          FIREBASE_API_KEY: ${{ secrets.FIREBASE_API_KEY }}
+          FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          api = os.environ.get("FIREBASE_API_KEY", "").replace("\\", "\\\\").replace('"', '\\"')
+          project = os.environ.get("FIREBASE_PROJECT_ID", "").replace("\\", "\\\\").replace('"', '\\"')
+          Path("TourAppiOS/KeirosHello/FirebaseConfig.swift").write_text(
+              "enum FirebaseConfig {\n"
+              f'    static let apiKey = "{api}"\n'
+              f'    static let projectId = "{project}"\n'
+              "}\n"
+          )
+          PY
+
       - name: Archive
         run: |
           set -euo pipefail

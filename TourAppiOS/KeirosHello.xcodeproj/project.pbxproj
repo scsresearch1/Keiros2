@@ -11,6 +11,15 @@
 		A10000000000000000000002 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		A10000000000000000000003 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		A10000000000000000000004 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		A10000000000000000000006 /* FirebaseConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FirebaseConfig.swift; sourceTree = "<group>"; };
+		A10000000000000000000007 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
+		A10000000000000000000008 /* FirebaseTour.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FirebaseTour.swift; sourceTree = "<group>"; };
+		A10000000000000000000009 /* TourStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TourStore.swift; sourceTree = "<group>"; };
+		A1000000000000000000000A /* Chrome.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Chrome.swift; sourceTree = "<group>"; };
+		A1000000000000000000000B /* MapAndScan.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MapAndScan.swift; sourceTree = "<group>"; };
+		A1000000000000000000000C /* OnboardingScreens.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingScreens.swift; sourceTree = "<group>"; };
+		A1000000000000000000000D /* ExploreScreens.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExploreScreens.swift; sourceTree = "<group>"; };
+		A1000000000000000000000E /* GuideScreens.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GuideScreens.swift; sourceTree = "<group>"; };
 		A10000000000000000000005 /* KeirosHello.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = KeirosHello.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -19,6 +28,15 @@
 		B10000000000000000000002 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000002 /* ContentView.swift */; };
 		B10000000000000000000003 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000003 /* Assets.xcassets */; };
 		B10000000000000000000004 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000004 /* PrivacyInfo.xcprivacy */; };
+		B10000000000000000000006 /* FirebaseConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000006 /* FirebaseConfig.swift */; };
+		B10000000000000000000007 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000007 /* Models.swift */; };
+		B10000000000000000000008 /* FirebaseTour.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000008 /* FirebaseTour.swift */; };
+		B10000000000000000000009 /* TourStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000009 /* TourStore.swift */; };
+		B1000000000000000000000A /* Chrome.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000000A /* Chrome.swift */; };
+		B1000000000000000000000B /* MapAndScan.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000000B /* MapAndScan.swift */; };
+		B1000000000000000000000C /* OnboardingScreens.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000000C /* OnboardingScreens.swift */; };
+		B1000000000000000000000D /* ExploreScreens.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000000D /* ExploreScreens.swift */; };
+		B1000000000000000000000E /* GuideScreens.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000000E /* GuideScreens.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -45,6 +63,15 @@
 			children = (
 				A10000000000000000000001 /* KeirosHelloApp.swift */,
 				A10000000000000000000002 /* ContentView.swift */,
+				A10000000000000000000006 /* FirebaseConfig.swift */,
+				A10000000000000000000007 /* Models.swift */,
+				A10000000000000000000008 /* FirebaseTour.swift */,
+				A10000000000000000000009 /* TourStore.swift */,
+				A1000000000000000000000A /* Chrome.swift */,
+				A1000000000000000000000B /* MapAndScan.swift */,
+				A1000000000000000000000C /* OnboardingScreens.swift */,
+				A1000000000000000000000D /* ExploreScreens.swift */,
+				A1000000000000000000000E /* GuideScreens.swift */,
 				A10000000000000000000003 /* Assets.xcassets */,
 				A10000000000000000000004 /* PrivacyInfo.xcprivacy */,
 			);
@@ -130,6 +157,15 @@
 			files = (
 				B10000000000000000000001 /* KeirosHelloApp.swift in Sources */,
 				B10000000000000000000002 /* ContentView.swift in Sources */,
+				B10000000000000000000006 /* FirebaseConfig.swift in Sources */,
+				B10000000000000000000007 /* Models.swift in Sources */,
+				B10000000000000000000008 /* FirebaseTour.swift in Sources */,
+				B10000000000000000000009 /* TourStore.swift in Sources */,
+				B1000000000000000000000A /* Chrome.swift in Sources */,
+				B1000000000000000000000B /* MapAndScan.swift in Sources */,
+				B1000000000000000000000C /* OnboardingScreens.swift in Sources */,
+				B1000000000000000000000D /* ExploreScreens.swift in Sources */,
+				B1000000000000000000000E /* GuideScreens.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -146,7 +182,9 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = FFAHH2T8PN;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = "Keiros Hello";
+				INFOPLIST_KEY_CFBundleDisplayName = KeirosTour;
+				INFOPLIST_KEY_NSCameraUsageDescription = "KeirosTour uses the camera to scan the property QR code.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "KeirosTour uses your location to show where you are on the property.";
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -177,7 +215,9 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = FFAHH2T8PN;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = "Keiros Hello";
+				INFOPLIST_KEY_CFBundleDisplayName = KeirosTour;
+				INFOPLIST_KEY_NSCameraUsageDescription = "KeirosTour uses the camera to scan the property QR code.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "KeirosTour uses your location to show where you are on the property.";
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
