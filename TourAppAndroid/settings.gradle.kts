@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "TourAppUI"
+rootProject.name = "TourAppAndroid"
 include(":app")
