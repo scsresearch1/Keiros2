@@ -66,18 +66,35 @@ struct PermissionsScreen: View {
                 info("Location", "Show where you are on the property")
                 info("Directions", "Guide you from stop to stop")
                 info("Visit timing", "Optional — you can turn this on later")
-                PrimaryButton(label: "Continue", action: requestAndContinue).padding(.top, 8)
-                Button("Continue without location", action: store.goNext)
-                    .font(.system(size: 14)).foregroundStyle(Color.white.opacity(0.72)).frame(maxWidth: .infinity).padding(.top, 8)
+                if let error = store.state.locationError {
+                    Text(error)
+                        .font(.system(size: 13))
+                        .foregroundStyle(Color(red: 0.996, green: 0.792, blue: 0.792))
+                        .fixedSize(horizontal: false, vertical: true)
+                    Button("Open Settings") {
+                        if let url = URL(string: UIApplication.openSettingsURLString) {
+                            UIApplication.shared.open(url)
+                        }
+                    }
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(KeirosColor.teal)
+                }
+                PrimaryButton(
+                    label: store.state.locationBusy ? "Waiting for location…" : "Continue",
+                    action: store.continueWithLocation,
+                    enabled: !store.state.locationBusy
+                )
+                .padding(.top, 8)
+                Button("Continue without location", action: store.continueWithoutLocation)
+                    .font(.system(size: 14))
+                    .foregroundStyle(Color.white.opacity(0.72))
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 8)
+                    .disabled(store.state.locationBusy)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .clipped()
-    }
-
-    private func requestAndContinue() {
-        LocationAuth.request()
-        store.goNext()
     }
 
     private func info(_ title: String, _ body: String) -> some View {

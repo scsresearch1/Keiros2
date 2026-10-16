@@ -1,4 +1,5 @@
 import Foundation
+import CoreLocation
 
 struct OutdoorRoute: Equatable {
     var originLat: Double
@@ -12,6 +13,44 @@ struct OutdoorRoute: Equatable {
 
     static func == (lhs: OutdoorRoute, rhs: OutdoorRoute) -> Bool {
         lhs.originLat == rhs.originLat && lhs.parkingLat == rhs.parkingLat && lhs.entranceLat == rhs.entranceLat
+    }
+
+    static func startingMilesAway(_ miles: Double, from base: OutdoorRoute) -> OutdoorRoute {
+        let originLat = base.entranceLat - (miles / 69.0)
+        let originLng = base.entranceLng
+        func mix(_ a: Double, _ b: Double, _ t: Double) -> Double { a + (b - a) * t }
+        let drive = [0.0, 0.25, 0.5, 0.75, 1.0].map { t in
+            (mix(originLat, base.parkingLat, t), mix(originLng, base.parkingLng, t))
+        }
+        var copy = base
+        copy.originLat = originLat
+        copy.originLng = originLng
+        copy.drivePath = drive
+        return copy
+    }
+}
+
+enum Geo {
+    static func meters(_ lat1: Double, _ lng1: Double, _ lat2: Double, _ lng2: Double) -> Double {
+        CLLocation(latitude: lat1, longitude: lng1).distance(from: CLLocation(latitude: lat2, longitude: lng2))
+    }
+
+    static func formatDistance(_ meters: Double) -> String {
+        let miles = meters / 1609.344
+        if miles >= 0.2 {
+            return String(format: miles >= 10 ? "%.0f mi" : "%.1f mi", miles)
+        }
+        return "\(Int((meters * 3.28084).rounded())) ft"
+    }
+
+    static func formatEta(_ seconds: Double) -> String {
+        let minutes = max(1, Int((seconds / 60).rounded()))
+        if minutes >= 60 {
+            let hours = minutes / 60
+            let remain = minutes % 60
+            return remain == 0 ? "\(hours) hr" : "\(hours) hr \(remain) min"
+        }
+        return "\(minutes) min"
     }
 }
 

@@ -44,6 +44,21 @@ struct TourUiState {
     var rating: Int = 5
     var feedbackDone: Bool = false
     var navigateLoading: Bool = false
+    var locationFollowsPhone: Bool = false
+    var startMilesAway: Double = 0
+    var locationBusy: Bool = false
+    var locationError: String?
+    var userLatitude: Double?
+    var userLongitude: Double?
+    var userHeading: Double = -1
+    var userAccuracy: Double = 12
+    var userFloorLevel: Int?
+    var navDistanceMeters: Double?
+    var navEtaSeconds: Double?
+    var navInstruction: String = ""
+    var pristineOutdoor: OutdoorRoute?
+    var pristineDriveInstruction: String?
+    var gpsIndoor: Bool = false
 }
 
 @MainActor
@@ -148,7 +163,7 @@ final class TourStore: ObservableObject {
             state.busy = false
             state.property = property
             if let loaded {
-                state.tour = loaded
+                assignTour(loaded)
                 state.selectedFloorId = loaded.floors.first?.id ?? state.selectedFloorId
             }
             state.scannedPropertyId = propertyId
@@ -255,6 +270,178 @@ final class TourStore: ObservableObject {
     func enableTracking() { state.trackingEnabled = true; state.showTrack = false; state.liveSec = 0 }
     func dismissTrack() { state.showTrack = false }
 
+    func continueWithLocation() {
+        state.locationBusy = true
+        state.locationError = nil
+        LocationAuth.shared.requestDecision { status in
+            Task { @MainActor in
+                self.finishLocationChoice(status)
+            }
+        }
+    }
+
+    func continueWithoutLocation() {
+        state.locationBusy = false
+        state.locationError = nil
+        state.locationFollowsPhone = false
+        state.startMilesAway = 5
+        state.userLatitude = nil
+        state.userLongitude = nil
+        state.navInstruction = ""
+        state.navDistanceMeters = nil
+        state.navEtaSeconds = nil
+        LocationAuth.shared.stop()
+        applyStartOffset()
+        goNext()
+    }
+
+    func updateNavCue(meters: Double, seconds: Double, instruction: String) {
+        guard state.locationFollowsPhone, !state.insideBuilding else { return }
+        let sameInstruction = state.navInstruction == instruction
+        let closeMeters = abs((state.navDistanceMeters ?? -999) - meters) < 12
+        let closeEta = abs((state.navEtaSeconds ?? -999) - seconds) < 15
+        if sameInstruction && closeMeters && closeEta { return }
+        state.navDistanceMeters = meters
+        state.navEtaSeconds = seconds
+        state.navInstruction = instruction
+    }
+
+    private func finishLocationChoice(_ status: CLAuthorizationStatus) {
+        state.locationBusy = false
+        switch status {
+        case .authorizedAlways, .authorizedWhenInUse:
+            state.locationError = nil
+            state.locationFollowsPhone = true
+            state.startMilesAway = 0
+            applyStartOffset()
+            beginPhoneNavigation()
+            goNext()
+        case .denied, .restricted:
+            state.locationFollowsPhone = false
+            state.locationError = "Location is required to continue. Turn it on for KeirosTour in Settings, or continue without location."
+        default:
+            state.locationError = "Location is required to continue."
+        }
+    }
+
+    private func beginPhoneNavigation() {
+        LocationAuth.shared.startNavigation(
+            onLocation: { location in
+                Task { @MainActor in self.ingest(location) }
+            },
+            onHeading: { heading in
+                Task { @MainActor in
+                    if self.state.userHeading < 0 || abs(self.state.userHeading - heading) > 4 {
+                        self.state.userHeading = heading
+                    }
+                }
+            }
+        )
+    }
+
+    private func ingest(_ location: CLLocation) {
+        guard state.locationFollowsPhone else { return }
+        let nextLat = location.coordinate.latitude
+        let nextLng = location.coordinate.longitude
+        if let prevLat = state.userLatitude, let prevLng = state.userLongitude,
+           Geo.meters(prevLat, prevLng, nextLat, nextLng) < 30 {
+            state.userLatitude = prevLat * 0.35 + nextLat * 0.65
+            state.userLongitude = prevLng * 0.35 + nextLng * 0.65
+        } else {
+            state.userLatitude = nextLat
+            state.userLongitude = nextLng
+        }
+        if location.horizontalAccuracy > 0 {
+            state.userAccuracy = location.horizontalAccuracy
+        }
+        if let level = location.floor?.level, level != state.userFloorLevel {
+            state.userFloorLevel = level
+            if let floor = floorMatching(level) {
+                state.selectedFloorId = floor.id
+            }
+        }
+        guard state.step == .routePreview || state.step == .navigation else { return }
+        let entrance = CLLocation(latitude: state.tour.outdoor.entranceLat, longitude: state.tour.outdoor.entranceLng)
+        let parking = CLLocation(latitude: state.tour.outdoor.parkingLat, longitude: state.tour.outdoor.parkingLng)
+        let toEntrance = location.distance(from: entrance)
+        let toParking = location.distance(from: parking)
+        if state.step == .navigation {
+            if toEntrance < 55 {
+                if !state.insideBuilding {
+                    state.insideBuilding = true
+                    state.gpsIndoor = true
+                    state.forceView = "3d"
+                    state.navInstruction = "You're inside. Your position follows this phone."
+                    if state.tour.journey[safe: state.activeStepIndex]?.phase != "indoor",
+                       let idx = state.tour.journey.firstIndex(where: { $0.phase == "indoor" }) {
+                        state.activeStepIndex = idx
+                    }
+                }
+                state.navDistanceMeters = toEntrance
+            } else if toEntrance > 120, state.gpsIndoor {
+                state.gpsIndoor = false
+                state.insideBuilding = false
+                state.forceView = "map"
+                state.navInstruction = ""
+                let phase = toParking < 160 ? "walk" : "drive"
+                if let idx = state.tour.journey.firstIndex(where: { $0.phase == phase }) {
+                    state.activeStepIndex = idx
+                }
+            } else if !state.insideBuilding {
+                let phase = toParking < 160 ? "walk" : "drive"
+                let current = state.tour.journey[safe: state.activeStepIndex]?.phase
+                if current == "drive" || current == "walk", current != phase,
+                   let idx = state.tour.journey.firstIndex(where: { $0.phase == phase }) {
+                    state.activeStepIndex = idx
+                }
+            } else {
+                state.navDistanceMeters = toEntrance
+            }
+        }
+        if !state.insideBuilding && state.navInstruction.isEmpty {
+            let target = toParking < 160 ? entrance : parking
+            state.navDistanceMeters = location.distance(from: target)
+        }
+    }
+
+    private func floorMatching(_ level: Int) -> FloorInfo? {
+        if let exact = state.tour.floors.first(where: { $0.level == level }) { return exact }
+        if let shifted = state.tour.floors.first(where: { $0.level == level + 1 }) { return shifted }
+        if level <= 0 { return state.tour.floors.min { $0.level < $1.level } }
+        return nil
+    }
+
+    private func assignTour(_ tour: PropertyTour) {
+        state.pristineOutdoor = tour.outdoor
+        state.pristineDriveInstruction = tour.journey.first { $0.phase == "drive" }?.instruction
+        state.tour = tour
+        applyStartOffset()
+    }
+
+    private func applyStartOffset() {
+        let base = state.pristineOutdoor ?? state.tour.outdoor
+        state.pristineOutdoor = base
+        if state.pristineDriveInstruction == nil {
+            state.pristineDriveInstruction = state.tour.journey.first { $0.phase == "drive" }?.instruction
+        }
+        guard let idx = state.tour.journey.firstIndex(where: { $0.phase == "drive" }) else {
+            state.tour.outdoor = base
+            return
+        }
+        if state.startMilesAway > 0 && !state.locationFollowsPhone {
+            let shifted = OutdoorRoute.startingMilesAway(state.startMilesAway, from: base)
+            state.tour.outdoor = shifted
+            state.tour.journey[idx].instruction = "Start about 5 miles from the property and drive toward parking."
+            state.tour.journey[idx].latitude = shifted.originLat
+            state.tour.journey[idx].longitude = shifted.originLng
+        } else {
+            state.tour.outdoor = base
+            state.tour.journey[idx].instruction = state.pristineDriveInstruction ?? "Drive to parking."
+            state.tour.journey[idx].latitude = (base.originLat + base.parkingLat) / 2
+            state.tour.journey[idx].longitude = (base.originLng + base.parkingLng) / 2
+        }
+    }
+
     func refreshConditions() {
         let options = [("Clear · 68°F", "Light"), ("Partly cloudy · 66°F", "Moderate"), ("Breezy · 64°F", "Light")]
         let index = options.firstIndex { $0.0 == state.weatherSummary } ?? -1
@@ -347,7 +534,10 @@ final class TourStore: ObservableObject {
         }
     }
 
-    func resetTour() { state = TourUiState() }
+    func resetTour() {
+        LocationAuth.shared.stop()
+        state = TourUiState()
+    }
 
     func filteredUnits() -> [TourUnit] {
         let query = state.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -369,7 +559,67 @@ final class TourStore: ObservableObject {
 final class LocationAuth: NSObject, CLLocationManagerDelegate {
     static let shared = LocationAuth()
     private let manager = CLLocationManager()
-    static func request() { shared.manager.requestWhenInUseAuthorization() }
+    private var decision: ((CLAuthorizationStatus) -> Void)?
+    private var onLocation: ((CLLocation) -> Void)?
+    private var onHeading: ((Double) -> Void)?
+
+    override init() {
+        super.init()
+        manager.delegate = self
+        manager.desiredAccuracy = kCLLocationAccuracyBestForNavigation
+        manager.distanceFilter = 2
+        manager.headingFilter = 5
+        manager.activityType = .otherNavigation
+        manager.pausesLocationUpdatesAutomatically = false
+    }
+
+    func requestDecision(_ handler: @escaping (CLAuthorizationStatus) -> Void) {
+        let status = manager.authorizationStatus
+        if status == .notDetermined {
+            decision = handler
+            manager.requestWhenInUseAuthorization()
+        } else {
+            handler(status)
+        }
+    }
+
+    func startNavigation(onLocation: @escaping (CLLocation) -> Void, onHeading: @escaping (Double) -> Void) {
+        self.onLocation = onLocation
+        self.onHeading = onHeading
+        let status = manager.authorizationStatus
+        guard status == .authorizedAlways || status == .authorizedWhenInUse else { return }
+        manager.startUpdatingLocation()
+        if CLLocationManager.headingAvailable() {
+            manager.startUpdatingHeading()
+        }
+    }
+
+    func stop() {
+        manager.stopUpdatingLocation()
+        manager.stopUpdatingHeading()
+        onLocation = nil
+        onHeading = nil
+    }
+
+    func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        let status = manager.authorizationStatus
+        guard status != .notDetermined, let decision else { return }
+        self.decision = nil
+        decision(status)
+    }
+
+    func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+        guard let location = locations.last else { return }
+        onLocation?(location)
+    }
+
+    func locationManager(_ manager: CLLocationManager, didUpdateHeading newHeading: CLHeading) {
+        let heading = newHeading.trueHeading >= 0 ? newHeading.trueHeading : newHeading.magneticHeading
+        guard heading >= 0 else { return }
+        onHeading?(heading)
+    }
+
+    func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {}
 }
 
 extension Array {

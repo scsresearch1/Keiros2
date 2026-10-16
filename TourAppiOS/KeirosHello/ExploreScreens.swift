@@ -198,7 +198,19 @@ struct RoutePreviewScreen: View {
         let title = stop?.title ?? store.state.destination?.name ?? "Next stop"
         VStack(spacing: 0) {
             ZStack(alignment: .topLeading) {
-                OutdoorMapView(route: tour.outdoor, active: tour.journey.first, weather: store.state.weatherSummary, traffic: store.state.trafficLevel)
+                OutdoorMapView(
+                    route: tour.outdoor,
+                    active: tour.journey.first,
+                    weather: store.state.weatherSummary,
+                    traffic: store.state.trafficLevel,
+                    followPhone: store.state.locationFollowsPhone,
+                    userLatitude: store.state.userLatitude,
+                    userLongitude: store.state.userLongitude,
+                    userHeading: store.state.userHeading,
+                    onRouteUpdate: { meters, seconds, text in
+                        store.updateNavCue(meters: meters, seconds: seconds, instruction: text)
+                    }
+                )
                 BackChip(action: store.goBack).padding(14)
                 Text("\(store.state.weatherSummary) · Traffic \(store.state.trafficLevel)")
                     .font(.system(size: 12)).foregroundStyle(Color(red: 0.49, green: 0.83, blue: 0.99))
@@ -211,10 +223,19 @@ struct RoutePreviewScreen: View {
                     .font(.system(size: 12, weight: .bold)).foregroundStyle(KeirosColor.teal)
                 Text(title).font(.system(size: 22, weight: .semibold)).foregroundStyle(KeirosColor.text)
                 if let stop { Text(stop.blurb).foregroundStyle(KeirosColor.secondary) }
+                if store.state.locationFollowsPhone {
+                    Text(store.state.navInstruction.isEmpty ? "Navigation follows this phone." : store.state.navInstruction)
+                        .font(.system(size: 13))
+                        .foregroundStyle(KeirosColor.secondary)
+                } else if store.state.startMilesAway > 0 {
+                    Text("Starting about 5 miles from the property.")
+                        .font(.system(size: 13))
+                        .foregroundStyle(KeirosColor.secondary)
+                }
                 HStack {
-                    stat("6m", "To parking")
-                    stat("3m", "To entrance")
-                    stat("\(tour.journey.filter { $0.phase == "indoor" }.count)m", "Inside")
+                    stat(parkingStat, store.state.locationFollowsPhone ? "From you" : "To parking")
+                    stat(entranceStat, "To entrance")
+                    stat("\(tour.journey.filter { $0.phase == "indoor" }.count)", "Inside stops")
                 }
                 PrimaryButton(label: "Continue to this stop", action: store.openNavigation)
             }
@@ -223,6 +244,22 @@ struct RoutePreviewScreen: View {
             .background(KeirosColor.navy)
         }
         .background(KeirosColor.navy)
+    }
+
+    private var parkingStat: String {
+        if store.state.locationFollowsPhone, let meters = store.state.navDistanceMeters {
+            return Geo.formatDistance(meters)
+        }
+        if store.state.startMilesAway > 0 { return "5.0 mi" }
+        return "6 min"
+    }
+
+    private var entranceStat: String {
+        if store.state.locationFollowsPhone, let seconds = store.state.navEtaSeconds {
+            return Geo.formatEta(seconds)
+        }
+        if store.state.startMilesAway > 0 { return "12 min" }
+        return "3 min"
     }
 
     private func stat(_ value: String, _ label: String) -> some View {
