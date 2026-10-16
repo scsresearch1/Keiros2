@@ -10,6 +10,7 @@ import {
 } from './api'
 import { OutdoorMap } from './components/OutdoorMap'
 import { Indoor3D } from './components/Indoor3D'
+import { withLiveDrive } from './liveDrive'
 
 const DEMO_KEY = 'keiros_live_ot_demo_map_nav_2026'
 const KEY_STORAGE = 'keiros_api_demo_key'
@@ -119,18 +120,8 @@ export default function App() {
           ? { originLatitude: origin.latitude, originLongitude: origin.longitude }
           : {}),
       })
-      if (mode === 'live' && origin) {
-        const dLat = nav.origin.latitude - origin.latitude
-        const dLng = nav.origin.longitude - origin.longitude
-        if (dLat * dLat + dLng * dLng > 0.0025 || nav.origin.startMode === 'demo') {
-          setResult(null)
-          setError(
-            'The navigation server did not use the current location. Restart the API server, then press Navigate.',
-          )
-          return
-        }
-      }
-      setResult(nav)
+      const routed = mode === 'live' && origin ? await withLiveDrive(nav, origin) : nav
+      setResult(routed)
       setJourneyIndex(0)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Navigate failed')
