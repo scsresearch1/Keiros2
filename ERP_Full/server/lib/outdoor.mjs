@@ -4,6 +4,17 @@ const MILES_START = 20
 /** Typical curb / garage distance from building entrance (cannot drive to the door). */
 const PARKING_OFFSET_METERS = 160
 
+export function milesBetween(a, b) {
+  const R = 3958.7613
+  const lat1 = (a.latitude * Math.PI) / 180
+  const lat2 = (b.latitude * Math.PI) / 180
+  const dLat = lat2 - lat1
+  const dLng = ((b.longitude - a.longitude) * Math.PI) / 180
+  const h =
+    Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)))
+}
+
 export function offsetMiles(lat, lng, miles = MILES_START, bearingDeg = 315) {
   const R = 3958.7613
   const brng = (bearingDeg * Math.PI) / 180

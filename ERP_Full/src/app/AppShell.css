@@ -357,6 +357,60 @@ html[data-theme='dark'] .app-shell__theme-btn--active {
   flex-shrink: 0;
 }
 
+.app-shell__location {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-width: 0;
+  padding: 0.28rem 0.55rem 0.28rem 0.65rem;
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-sm);
+  color: var(--text-muted);
+}
+
+.app-shell__location label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.05rem;
+  min-width: 0;
+}
+
+.app-shell__location label span {
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  line-height: 1;
+}
+
+.app-shell__location select {
+  max-width: 15rem;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 700;
+  padding: 0;
+  cursor: pointer;
+}
+
+.app-shell__location select:focus {
+  outline: none;
+}
+
+.app-shell__clock-readout {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--text);
+  white-space: nowrap;
+  padding-left: 0.45rem;
+  border-left: 1px solid var(--border);
+}
+
 .app-shell__search {
   display: flex;
   align-items: center;
@@ -419,7 +473,8 @@ html[data-theme='dark'] .app-shell__theme-btn--active {
 }
 
 @media (max-width: 900px) {
-  .app-shell__search {
+  .app-shell__search,
+  .app-shell__clock-readout {
     display: none;
   }
 }

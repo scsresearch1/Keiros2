@@ -1,8 +1,11 @@
-import { LogOut, Menu, Moon, Search, Sun } from 'lucide-react'
-import { useCallback, useState, type ReactNode } from 'react'
+import { LogOut, MapPin, Menu, Moon, Search, Sun } from 'lucide-react'
+import { useCallback, useEffect, useState, type ReactNode } from 'react'
 import keirosLogo from '../assets/keiros-logo.png'
 import { navGroups, pageTitles, readStoredPage, storePage, type PageId } from './nav'
 import { Icon, groupIcons, pageIcons } from '../ui/icons'
+import { useErpData } from '../data/ErpDataProvider'
+import { timeZoneForCity } from '../time/clock'
+import { useLocationClock } from '../time/LocationClockProvider'
 import { useTheme } from '../theme/ThemeProvider'
 import {
   AccessIntegrationPage,
@@ -76,10 +79,25 @@ function avatarInitials(email: string): string {
 
 export function AppShell({ email, onSignOut, onSessionExpired }: AppShellProps) {
   const { theme, setTheme } = useTheme()
+  const { data } = useErpData()
+  const { locations, locationId, setLocationId, setLocations, formatDate, formatTime, now } = useLocationClock()
   const [page, setPage] = useState<PageId>(() => readStoredPage())
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({})
   const [confirmOut, setConfirmOut] = useState(false)
+
+  useEffect(() => {
+    setLocations(
+      data.siteProperties
+        .map((property) => ({
+          id: property.id,
+          name: property.name,
+          city: property.city,
+          timeZone: timeZoneForCity(property.city),
+        }))
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    )
+  }, [data.siteProperties, setLocations])
 
   const navigate = useCallback((next: PageId) => {
     setPage(next)
@@ -291,6 +309,27 @@ export function AppShell({ email, onSignOut, onSessionExpired }: AppShellProps) 
             </div>
           </div>
           <div className="app-shell__topbar-right">
+            <div className="app-shell__location">
+              <Icon icon={MapPin} size={14} />
+              <label>
+                <span>Location</span>
+                <select
+                  aria-label="Location"
+                  value={locations.some((item) => item.id === locationId) ? locationId : ''}
+                  disabled={!locations.length}
+                  onChange={(event) => setLocationId(event.target.value)}
+                >
+                  {locations.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {item.name} — {item.city}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <time className="app-shell__clock-readout" dateTime={now.toISOString()}>
+                {formatDate(now)} · {formatTime(now)}
+              </time>
+            </div>
             <div className="app-shell__search" aria-hidden>
               <Icon icon={Search} size={14} />
               <span>Search portfolio…</span>

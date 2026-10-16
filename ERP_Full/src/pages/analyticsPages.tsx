@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from 're
 import type { PageId } from '../app/nav'
 import type { DwellMetric, Tour } from '../data/erpData'
 import { useEntityMap, useErpData } from '../data/ErpDataProvider'
+import { useLocationClock } from '../time/LocationClockProvider'
 import {
   ActionBar,
   Badge,
@@ -423,13 +424,14 @@ export function DwellTimePage({ onNavigate }: PageProps) {
   const [notice, setNotice] = useState('')
   const [liveOnly, setLiveOnly] = useState(false)
   const [lastRefresh, setLastRefresh] = useState('')
+  const { formatTime, formatDateTime } = useLocationClock()
 
   useEffect(() => {
     const tick = window.setInterval(() => {
-      void refresh().then(() => setLastRefresh(new Date().toLocaleTimeString()))
+      void refresh().then(() => setLastRefresh(formatTime()))
     }, 5000)
     return () => window.clearInterval(tick)
-  }, [refresh])
+  }, [refresh, formatTime])
 
   const propertyOptions = useMemo(
     () => ['All', ...Array.from(new Set(rows.map((r) => r.propertyName))).sort()],
@@ -708,9 +710,9 @@ export function DwellTimePage({ onNavigate }: PageProps) {
                   <div>
                     <span>Last update</span>
                     <strong>
-                      {current.liveUpdatedAt
-                        ? new Date(current.liveUpdatedAt).toLocaleString()
-                        : '—'}
+                      {current.liveUpdatedAt && !Number.isNaN(Date.parse(current.liveUpdatedAt))
+                        ? formatDateTime(new Date(current.liveUpdatedAt))
+                        : current.liveUpdatedAt || '—'}
                     </strong>
                   </div>
                   <div>

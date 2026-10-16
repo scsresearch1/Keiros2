@@ -3,6 +3,7 @@ import { LoginPage } from './components/auth/LoginPage'
 import { HomePage } from './components/home/HomePage'
 import { AppShell } from './app/AppShell'
 import { AppDataRoot } from './app/AppDataRoot'
+import { LocationClockProvider } from './time/LocationClockProvider'
 import { ThemeProvider } from './theme/ThemeProvider'
 import './styles/tokens.css'
 import './App.css'
@@ -80,8 +81,10 @@ function App() {
 
 export default function AppRoot() {
   return (
-    <ThemeProvider>
-      <App />
-    </ThemeProvider>
+    <LocationClockProvider>
+      <ThemeProvider>
+        <App />
+      </ThemeProvider>
+    </LocationClockProvider>
   )
 }

@@ -7,19 +7,53 @@
     <title>Keiros ERP</title>
     <script>
       (function () {
-        try {
-          var stored = localStorage.getItem('keiros-erp-theme');
-          var theme =
-            stored === 'light' || stored === 'dark'
-              ? stored
-              : window.matchMedia('(prefers-color-scheme: dark)').matches
-                ? 'dark'
-                : 'light';
-          document.documentElement.setAttribute('data-theme', theme);
-          document.documentElement.style.colorScheme = theme;
-        } catch (e) {
-          document.documentElement.setAttribute('data-theme', 'light');
+        // Keep in sync with ThemeProvider: light 06:00–18:00, dark overnight.
+        var DAY_START = 6;
+        var NIGHT_START = 18;
+        function hourNow(timeZone) {
+          try {
+            var options = { hour: '2-digit', hourCycle: 'h23' };
+            if (timeZone) options.timeZone = timeZone;
+            var parts = new Intl.DateTimeFormat('en-US', options).formatToParts(new Date());
+            for (var i = 0; i < parts.length; i++) {
+              if (parts[i].type === 'hour') {
+                var hour = Number(parts[i].value);
+                return hour === 24 ? 0 : hour;
+              }
+            }
+          } catch (e) {}
+          return new Date().getHours();
         }
+        function storedTimeZone() {
+          try {
+            var raw = localStorage.getItem('keiros-erp-clock-location');
+            if (!raw) return '';
+            var parsed = JSON.parse(raw);
+            return parsed && typeof parsed.timeZone === 'string' ? parsed.timeZone : '';
+          } catch (e) {
+            return '';
+          }
+        }
+        function themeForNow() {
+          var hour = hourNow(storedTimeZone());
+          return hour >= DAY_START && hour < NIGHT_START ? 'light' : 'dark';
+        }
+        function readOverride() {
+          try {
+            var raw = localStorage.getItem('keiros-erp-theme-override');
+            if (!raw) return null;
+            var parsed = JSON.parse(raw);
+            if (parsed.theme !== 'light' && parsed.theme !== 'dark') return null;
+            if (typeof parsed.until !== 'number' || parsed.until <= Date.now()) return null;
+            if (parsed.theme === themeForNow()) return null;
+            return parsed.theme;
+          } catch (e) {
+            return null;
+          }
+        }
+        var theme = readOverride() || themeForNow();
+        document.documentElement.setAttribute('data-theme', theme);
+        document.documentElement.style.colorScheme = theme;
       })();
     </script>
   </head>

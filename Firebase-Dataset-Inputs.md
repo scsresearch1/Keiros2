@@ -459,7 +459,8 @@ UI filters: client, method, status class (2xx/4xx/5xx), search path. Auto-refres
 | buildingId / buildingName | Building | ref/string | yes | |
 | floorId / floorLabel | Floor | ref/string | yes | |
 | unitId / unitName / unitCode | Unit | ref/string | yes | |
-| originMiles | Start offset | number | yes | currently 20 |
+| originMiles | Start offset | number | yes | Demo: 20 mi simulated start. Live: miles from the device to parking |
+| startMode | Start mode | enum | yes | demo \| live. Demo uses the simulated point; live uses originLatitude/originLongitude from the device |
 | outdoorDistanceMiles | Outdoor mi | number | yes | |
 | outdoorDurationMin | Outdoor min | number | yes | |
 | indoorWalkMin | Indoor min | number | yes | |
@@ -572,6 +573,8 @@ FAQ / troubleshooting search is UI-only.
 ## UI-only filters (usually not Firebase collections)
 
 Search boxes, status dropdowns “All”, severity filters, platform filters, auto-refresh toggles, map layer checkboxes (unless saved as user prefs).
+
+Location clock (top bar): dropdown of site properties. Display-only. Stored in the browser as `keiros-erp-clock-location` (`id`, `timeZone`). Live dates and times, including the dashboard snapshot, follow that property’s city timezone. Not written to Firebase.
 
 ---
 

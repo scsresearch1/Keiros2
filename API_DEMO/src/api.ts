@@ -77,7 +77,13 @@ export type NavigateResult = {
       elevation: number
     }
   }
-  origin: { latitude: number; longitude: number; label: string; offsetMiles: number }
+  origin: {
+    latitude: number
+    longitude: number
+    label: string
+    offsetMiles: number
+    startMode?: 'demo' | 'live'
+  }
   parking?: { latitude: number; longitude: number; label: string; offsetMeters: number }
   entrance?: { latitude: number; longitude: number; label: string; type?: string }
   destination: { latitude: number; longitude: number; label: string; address?: string }
@@ -202,7 +208,15 @@ export async function fetchHierarchy(apiKey: string) {
 
 export async function navigate(
   apiKey: string,
-  body: { complexId: string | null; buildingId: string; floorId: string; unitId: string },
+  body: {
+    complexId: string | null
+    buildingId: string
+    floorId: string
+    unitId: string
+    startMode?: 'demo' | 'live'
+    originLatitude?: number
+    originLongitude?: number
+  },
 ) {
   const res = await fetch(`${API_BASE}/api/v1/navigate`, {
     method: 'POST',
@@ -245,12 +259,17 @@ export async function refreshConditions(
   lat: number,
   lng: number,
   originMiles = 20,
+  origin?: { latitude: number; longitude: number },
 ) {
   const qs = new URLSearchParams({
     lat: String(lat),
     lng: String(lng),
     originMiles: String(originMiles),
   })
+  if (origin) {
+    qs.set('originLat', String(origin.latitude))
+    qs.set('originLng', String(origin.longitude))
+  }
   const res = await fetch(`${API_BASE}/api/v1/conditions?${qs}`, { headers: headers(apiKey) })
   return parse<{
     weather: NavigateResult['weather']

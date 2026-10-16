@@ -14,6 +14,22 @@ import { Indoor3D } from './components/Indoor3D'
 const DEMO_KEY = 'keiros_live_ot_demo_map_nav_2026'
 const KEY_STORAGE = 'keiros_api_demo_key'
 
+type StartMode = 'demo' | 'live'
+
+function readCurrentLocation(): Promise<{ latitude: number; longitude: number }> {
+  return new Promise((resolve, reject) => {
+    if (!navigator.geolocation) {
+      reject(new Error('This browser cannot read the current location.'))
+      return
+    }
+    navigator.geolocation.getCurrentPosition(
+      (pos) => resolve({ latitude: pos.coords.latitude, longitude: pos.coords.longitude }),
+      () => reject(new Error('Allow location access to use Live.')),
+      { enableHighAccuracy: true, timeout: 12000, maximumAge: 15000 },
+    )
+  })
+}
+
 export default function App() {
   const [apiKey, setApiKey] = useState(() => localStorage.getItem(KEY_STORAGE) || '')
   const [keyInput, setKeyInput] = useState(apiKey || DEMO_KEY)
@@ -28,6 +44,8 @@ export default function App() {
   const [result, setResult] = useState<NavigateResult | null>(null)
   const [journeyIndex, setJourneyIndex] = useState(0)
   const [refreshing, setRefreshing] = useState(false)
+  const [startMode, setStartMode] = useState<StartMode>('demo')
+  const [locating, setLocating] = useState(false)
 
   useEffect(() => {
     void fetchHealth()
@@ -78,6 +96,25 @@ export default function App() {
     return hierarchy.units.filter((u) => u.floorId === floorId)
   }, [hierarchy, floorId])
 
+  async function chooseStartMode(next: StartMode) {
+    if (next === 'demo') {
+      setStartMode('demo')
+      setError('')
+      return
+    }
+    setLocating(true)
+    setError('')
+    try {
+      await readCurrentLocation()
+      setStartMode('live')
+    } catch (err) {
+      setStartMode('demo')
+      setError(err instanceof Error ? err.message : 'Could not read the current location.')
+    } finally {
+      setLocating(false)
+    }
+  }
+
   async function runNavigate(e: FormEvent) {
     e.preventDefault()
     if (!apiKey || !complexId || !buildingId || !floorId || !unitId) {
@@ -87,11 +124,19 @@ export default function App() {
     setLoading(true)
     setError('')
     try {
+      let origin: { latitude: number; longitude: number } | undefined
+      if (startMode === 'live') {
+        origin = await readCurrentLocation()
+      }
       const nav = await navigate(apiKey, {
         complexId,
         buildingId,
         floorId,
         unitId,
+        startMode,
+        ...(origin
+          ? { originLatitude: origin.latitude, originLongitude: origin.longitude }
+          : {}),
       })
       setResult(nav)
       setJourneyIndex(0)
@@ -112,6 +157,9 @@ export default function App() {
         result.destination.latitude,
         result.destination.longitude,
         result.origin.offsetMiles,
+        result.origin.startMode === 'live'
+          ? { latitude: result.origin.latitude, longitude: result.origin.longitude }
+          : undefined,
       )
       setResult((prev) =>
         prev
@@ -282,9 +330,26 @@ export default function App() {
             ))}
           </select>
         </label>
-        <button type="submit" disabled={loading || !canNavigate}>
-          {loading ? 'Calling API…' : 'Navigate'}
-        </button>
+        <div className="demo-controls__go">
+          <div className="demo-mode" role="group" aria-label="Starting point">
+            <span className={startMode === 'demo' ? 'is-active' : ''}>Demo Mode</span>
+            <button
+              type="button"
+              role="switch"
+              className={`demo-mode__switch${startMode === 'live' ? ' is-live' : ''}`}
+              aria-checked={startMode === 'live'}
+              aria-label={startMode === 'live' ? 'Live, current location' : 'Demo Mode, simulated start'}
+              disabled={locating || loading}
+              onClick={() => void chooseStartMode(startMode === 'live' ? 'demo' : 'live')}
+            >
+              <span className="demo-mode__knob" />
+            </button>
+            <span className={startMode === 'live' ? 'is-active' : ''}>Live</span>
+          </div>
+          <button type="submit" disabled={loading || locating || !canNavigate}>
+            {loading ? 'Calling API…' : 'Navigate'}
+          </button>
+        </div>
       </form>
       {error ? <p className="demo-error">{error}</p> : null}
 
@@ -336,6 +401,9 @@ export default function App() {
                 {result.walk?.distanceM != null
                   ? ` · walk ${result.walk.distanceM} m (${result.walk.durationMinutes ?? '—'} min)`
                   : ''}
+              </p>
+              <p>
+                Start: {result.origin.label}
               </p>
               <p>
                 Indoor {result.indoor?.walkMinutes ?? '—'} min · session{' '}

@@ -10,6 +10,8 @@ import type {
   SessionStatus,
 } from '../data/erpData'
 import { useEntityMap, useErpData } from '../data/ErpDataProvider'
+import { calendarYear } from '../time/clock'
+import { useLocationClock } from '../time/LocationClockProvider'
 import { PropertyCodeQr } from '../ui/PropertyCodeQr'
 import { PropertyCodeQrThumb } from '../ui/PropertyCodeQrThumb'
 import {
@@ -109,14 +111,13 @@ function nextId(prefix: string, items: { id: string }[]) {
   return `${prefix}-${String((nums.length ? Math.max(...nums) : 0) + 1).padStart(3, '0')}`
 }
 
-function makeCode(propertyName: string) {
+function makeCode(propertyName: string, year: number) {
   const slug = propertyName
     .split(/\s+/)
     .map((w) => w[0])
     .join('')
     .toUpperCase()
     .slice(0, 4)
-  const year = new Date().getFullYear()
   const suffix = Math.random().toString(36).slice(2, 6).toUpperCase()
   return `${slug}-${year}-${suffix}`
 }
@@ -142,10 +143,11 @@ export function PropertyCodesPage({ onNavigate }: PageProps) {
   })
 
   const formPropertyName = form.propertyName || propertyNames[0] || ''
+  const { timeZone } = useLocationClock()
 
   useEffect(() => {
-    if (creating) setDraftCode(makeCode(formPropertyName || 'KEIROS'))
-  }, [creating, formPropertyName])
+    if (creating) setDraftCode(makeCode(formPropertyName || 'KEIROS', calendarYear(new Date(), timeZone)))
+  }, [creating, formPropertyName, timeZone])
 
   const shown = codes.filter(
     (code) =>

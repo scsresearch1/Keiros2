@@ -14,6 +14,8 @@ import {
 import type { PageId } from '../app/nav'
 import type { Organization, Role, User } from '../data/erpData'
 import { useErpData } from '../data/ErpDataProvider'
+import { formatZonedISODate } from '../time/clock'
+import { useLocationClock } from '../time/LocationClockProvider'
 import { ChartBars, DonutChart, ProgressMeter, Sparkline, TrendColumns } from '../ui/charts'
 import {
   ActionBar,
@@ -133,12 +135,10 @@ export function DashboardPage() {
       <Status key="cr" value={priorityCorrection.status} />,
     ])
   }
+  const { now, location, formatDate, formatTime } = useLocationClock()
   const publishedPct = Math.round((dashboardKpis.published / Math.max(dashboardKpis.properties, 1)) * 100)
-  const snapshotDate = new Intl.DateTimeFormat('en-US', {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-  }).format(new Date())
+  const snapshotWhen = `${formatDate(now)} · ${formatTime(now)}`
+  const snapshotPlace = location ? `${location.city} · ` : ''
 
   const mappingStatusMix = useMemo(() => {
     const counts = { Complete: 0, 'In Progress': 0, Queued: 0, Blocked: 0 }
@@ -180,7 +180,7 @@ export function DashboardPage() {
     <>
       <PageHeader
         title="Home Dashboard"
-        subtitle={`Operations snapshot · ${snapshotDate}`}
+        subtitle={`Operations snapshot · ${snapshotPlace}${snapshotWhen}`}
         icon={LayoutDashboard}
         actions={<button className="k-btn k-btn--ghost">Export</button>}
       />
@@ -831,6 +831,7 @@ function toUserRecord(user: User, index: number): UserRecord {
 
 export function UsersPage() {
   const { data, upsert, logAudit } = useErpData()
+  const { timeZone } = useLocationClock()
   const organizations = data.organizations
   const roles = data.roles
   const [list, setList] = useState<UserRecord[]>(() => data.users.map(toUserRecord))
@@ -1019,7 +1020,7 @@ export function UsersPage() {
     const url = URL.createObjectURL(blob)
     const link = document.createElement('a')
     link.href = url
-    link.download = `keiros-users-${new Date().toISOString().slice(0, 10)}.csv`
+    link.download = `keiros-users-${formatZonedISODate(new Date(), timeZone)}.csv`
     link.click()
     URL.revokeObjectURL(url)
     flash('CSV exported.')
