@@ -204,12 +204,14 @@ struct RoutePreviewScreen: View {
                     weather: store.state.weatherSummary,
                     traffic: store.state.trafficLevel,
                     followPhone: store.state.locationFollowsPhone,
+                    chaseCamera: false,
                     userLatitude: store.state.userLatitude,
                     userLongitude: store.state.userLongitude,
                     userHeading: store.state.userHeading,
                     onRouteUpdate: { meters, seconds, text in
                         store.updateNavCue(meters: meters, seconds: seconds, instruction: text)
-                    }
+                    },
+                    onUserFix: { store.noteDeviceLocation($0) }
                 )
                 BackChip(action: store.goBack).padding(14)
                 Text("\(store.state.weatherSummary) · Traffic \(store.state.trafficLevel)")
@@ -224,7 +226,7 @@ struct RoutePreviewScreen: View {
                 Text(title).font(.system(size: 22, weight: .semibold)).foregroundStyle(KeirosColor.text)
                 if let stop { Text(stop.blurb).foregroundStyle(KeirosColor.secondary) }
                 if store.state.locationFollowsPhone {
-                    Text(store.state.navInstruction.isEmpty ? "Navigation follows this phone." : store.state.navInstruction)
+                    Text(store.state.userLatitude == nil ? "Finding your location…" : (store.state.navInstruction.isEmpty ? "Route starts at this phone." : store.state.navInstruction))
                         .font(.system(size: 13))
                         .foregroundStyle(KeirosColor.secondary)
                 } else if store.state.startMilesAway > 0 {
@@ -244,6 +246,7 @@ struct RoutePreviewScreen: View {
             .background(KeirosColor.navy)
         }
         .background(KeirosColor.navy)
+        .onAppear { store.ensurePhoneUpdates() }
     }
 
     private var parkingStat: String {

@@ -297,6 +297,45 @@ final class TourStore: ObservableObject {
         goNext()
     }
 
+    func ensurePhoneUpdates() {
+        guard state.locationFollowsPhone else { return }
+        beginPhoneNavigation()
+        anchorOriginToPhone()
+    }
+
+    func noteDeviceLocation(_ location: CLLocation) {
+        guard state.locationFollowsPhone else { return }
+        guard location.horizontalAccuracy >= 0, location.horizontalAccuracy <= 500 else { return }
+        let lat = location.coordinate.latitude
+        let lng = location.coordinate.longitude
+        let moved = state.userLatitude.map { Geo.meters($0, state.userLongitude ?? lng, lat, lng) } ?? 999
+        if moved > 4 {
+            state.userLatitude = lat
+            state.userLongitude = lng
+            state.userAccuracy = location.horizontalAccuracy
+            state.userFixTime = location.timestamp
+            if location.speed > 0.5, location.course >= 0 {
+                state.userHeading = location.course
+            }
+        }
+        anchorOriginToPhone()
+    }
+
+    private func anchorOriginToPhone() {
+        guard state.locationFollowsPhone, let lat = state.userLatitude, let lng = state.userLongitude else { return }
+        guard Geo.meters(state.tour.outdoor.originLat, state.tour.outdoor.originLng, lat, lng) > 25 else { return }
+        var outdoor = state.tour.outdoor
+        outdoor.originLat = lat
+        outdoor.originLng = lng
+        outdoor.drivePath = [(lat, lng), (outdoor.parkingLat, outdoor.parkingLng)]
+        state.tour.outdoor = outdoor
+        if let idx = state.tour.journey.firstIndex(where: { $0.phase == "drive" }) {
+            state.tour.journey[idx].latitude = lat
+            state.tour.journey[idx].longitude = lng
+            state.tour.journey[idx].instruction = "Starting from your current location."
+        }
+    }
+
     func updateNavCue(meters: Double, seconds: Double, instruction: String) {
         guard state.locationFollowsPhone || state.startMilesAway > 0 else { return }
         guard !state.insideBuilding else { return }
@@ -344,7 +383,7 @@ final class TourStore: ObservableObject {
 
     private func ingest(_ location: CLLocation) {
         guard state.locationFollowsPhone else { return }
-        guard location.horizontalAccuracy >= 0, location.horizontalAccuracy <= 80 else { return }
+        guard location.horizontalAccuracy >= 0, location.horizontalAccuracy <= 200 else { return }
         if let previous = state.userFixTime, let prevLat = state.userLatitude, let prevLng = state.userLongitude {
             let elapsed = location.timestamp.timeIntervalSince(previous)
             let jumped = Geo.meters(prevLat, prevLng, location.coordinate.latitude, location.coordinate.longitude)
@@ -357,6 +396,7 @@ final class TourStore: ObservableObject {
         if location.speed > 0.5, location.course >= 0 {
             state.userHeading = location.course
         }
+        anchorOriginToPhone()
         if location.horizontalAccuracy <= 40, let level = location.floor?.level, level != state.userFloorLevel {
             state.userFloorLevel = level
             if let floor = floorMatching(level) {

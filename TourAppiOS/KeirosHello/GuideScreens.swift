@@ -31,7 +31,8 @@ struct NavigationScreen: View {
                         userHeading: store.state.userHeading,
                         onRouteUpdate: { meters, seconds, text in
                             store.updateNavCue(meters: meters, seconds: seconds, instruction: text)
-                        }
+                        },
+                        onUserFix: { store.noteDeviceLocation($0) }
                     )
                 }
                 HStack {
@@ -184,6 +185,7 @@ struct NavigationScreen: View {
                 .background(KeirosColor.navy)
         }
         .background(KeirosColor.navy)
+        .onAppear { store.ensurePhoneUpdates() }
     }
 
     private func navigationDetail(live: Bool, tour: PropertyTour) -> String {

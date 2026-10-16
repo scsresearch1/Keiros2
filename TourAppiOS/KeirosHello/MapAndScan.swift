@@ -7,10 +7,12 @@ struct OutdoorMapView: UIViewRepresentable {
     var weather: String
     var traffic: String
     var followPhone: Bool = false
+    var chaseCamera: Bool = true
     var userLatitude: Double?
     var userLongitude: Double?
     var userHeading: Double = -1
     var onRouteUpdate: ((Double, Double, String) -> Void)?
+    var onUserFix: ((CLLocation) -> Void)?
 
     func makeUIView(context: Context) -> MKMapView {
         let map = MKMapView()
@@ -27,18 +29,25 @@ struct OutdoorMapView: UIViewRepresentable {
     func updateUIView(_ map: MKMapView, context: Context) {
         let coordinator = context.coordinator
         coordinator.onRouteUpdate = onRouteUpdate
+        coordinator.onUserFix = onUserFix
+        coordinator.chaseCamera = chaseCamera
+        coordinator.liveMode = followPhone
+        coordinator.parking = CLLocationCoordinate2D(latitude: route.parkingLat, longitude: route.parkingLng)
+        coordinator.entrance = CLLocationCoordinate2D(latitude: route.entranceLat, longitude: route.entranceLng)
         map.showsUserLocation = followPhone
         map.showsTraffic = followPhone
         replacePins(on: map, coordinator: coordinator)
-        if followPhone, let userLatitude, let userLongitude {
+        if followPhone {
             coordinator.clearPlanned(map)
-            coordinator.follow(
-                map: map,
-                user: CLLocationCoordinate2D(latitude: userLatitude, longitude: userLongitude),
-                heading: userHeading,
-                parking: CLLocationCoordinate2D(latitude: route.parkingLat, longitude: route.parkingLng),
-                entrance: CLLocationCoordinate2D(latitude: route.entranceLat, longitude: route.entranceLng)
-            )
+            if let userLatitude, let userLongitude {
+                coordinator.follow(
+                    map: map,
+                    user: CLLocationCoordinate2D(latitude: userLatitude, longitude: userLongitude),
+                    heading: userHeading,
+                    parking: coordinator.parking,
+                    entrance: coordinator.entrance
+                )
+            }
         } else {
             coordinator.stopFollowing(map)
             replacePlannedRoute(on: map, coordinator: coordinator)
@@ -52,12 +61,16 @@ struct OutdoorMapView: UIViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     private func replacePins(on map: MKMapView, coordinator: Coordinator) {
-        let key = "\(followPhone)-\(route.originLat)-\(route.originLng)-\(route.parkingLat)-\(route.entranceLat)-\(active?.id ?? "")"
+        let youLat = userLatitude.map { String(format: "%.4f", $0) } ?? ""
+        let youLng = userLongitude.map { String(format: "%.4f", $0) } ?? ""
+        let key = "\(followPhone)-\(youLat)-\(youLng)-\(route.originLat)-\(route.originLng)-\(route.parkingLat)-\(route.entranceLat)-\(active?.id ?? "")"
         guard coordinator.pinKey != key else { return }
         coordinator.pinKey = key
         map.annotations.filter { $0 is Pin }.forEach { map.removeAnnotation($0) }
         let away = Geo.meters(route.originLat, route.originLng, route.entranceLat, route.entranceLng) / 1609.344
-        if !followPhone {
+        if followPhone, let userLatitude, let userLongitude {
+            map.addAnnotation(Pin(title: "You", coordinate: CLLocationCoordinate2D(latitude: userLatitude, longitude: userLongitude)))
+        } else if !followPhone {
             let start = away >= 4 ? "Start · 5 mi" : "Start"
             map.addAnnotation(Pin(title: start, coordinate: CLLocationCoordinate2D(latitude: route.originLat, longitude: route.originLng)))
         }
@@ -101,6 +114,11 @@ struct OutdoorMapView: UIViewRepresentable {
         var pinKey: String?
         var routeKey: String?
         var hasRealApproach = false
+        var onUserFix: ((CLLocation) -> Void)?
+        var liveMode = false
+        var chaseCamera = true
+        var parking = CLLocationCoordinate2D()
+        var entrance = CLLocationCoordinate2D()
         private var approachKey: String?
         private var following = false
         private var routeInFlight = false
@@ -163,12 +181,20 @@ struct OutdoorMapView: UIViewRepresentable {
             map.overlays.filter { $0 is RouteOverlay }.forEach { map.removeOverlay($0) }
         }
 
+        func mapView(_ mapView: MKMapView, didUpdate userLocation: MKUserLocation) {
+            guard liveMode, let location = userLocation.location, location.horizontalAccuracy >= 0, location.horizontalAccuracy <= 500 else { return }
+            onUserFix?(location)
+            let heading = userLocation.heading?.trueHeading ?? -1
+            follow(map: mapView, user: location.coordinate, heading: heading, parking: parking, entrance: entrance)
+        }
+
         func follow(map: MKMapView, user: CLLocationCoordinate2D, heading: CLLocationDirection, parking: CLLocationCoordinate2D, entrance: CLLocationCoordinate2D) {
             following = true
+            guard abs(parking.latitude) > 0.01 || abs(parking.longitude) > 0.01 else { return }
             let travelHeading = heading >= 0 ? heading : map.camera.heading
             let moved = lastCamera.map { Geo.meters($0.latitude, $0.longitude, user.latitude, user.longitude) } ?? 999
             let turned = abs(travelHeading - lastCameraHeading)
-            if moved > 3 || turned > 8 || lastCamera == nil {
+            if chaseCamera && (moved > 3 || turned > 8 || lastCamera == nil) {
                 lastCamera = user
                 lastCameraHeading = travelHeading
                 let ahead = 80.0
@@ -219,8 +245,14 @@ struct OutdoorMapView: UIViewRepresentable {
                         let instruction = route.steps.first { !$0.instructions.isEmpty }?.instructions
                             ?? (walking ? "Walk toward the entrance" : "Continue toward parking")
                         self.onRouteUpdate?(route.distance, route.expectedTravelTime, instruction)
+                        if !self.chaseCamera {
+                            map.setVisibleMapRect(route.polyline.boundingMapRect, edgePadding: UIEdgeInsets(top: 72, left: 40, bottom: 72, right: 40), animated: true)
+                        }
                     } else {
                         self.showFallback(from: from, to: to, on: map)
+                        if !self.chaseCamera, let line = map.overlays.last as? MKPolyline {
+                            map.setVisibleMapRect(line.boundingMapRect, edgePadding: UIEdgeInsets(top: 72, left: 40, bottom: 72, right: 40), animated: true)
+                        }
                         let meters = Geo.meters(from.latitude, from.longitude, to.latitude, to.longitude)
                         let speed = walking ? 1.35 : 11.0
                         self.onRouteUpdate?(meters, meters / speed, walking ? "Walk toward the entrance" : "Head toward parking")
