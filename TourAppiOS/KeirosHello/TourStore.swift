@@ -723,7 +723,7 @@ final class LocationAuth: NSObject, CLLocationManagerDelegate {
         let status = manager.authorizationStatus
         guard status == .authorizedAlways || status == .authorizedWhenInUse else { return }
         if let latest {
-            onLocation?(latest)
+            onLocation(latest)
         }
         manager.requestLocation()
         manager.startUpdatingLocation()
