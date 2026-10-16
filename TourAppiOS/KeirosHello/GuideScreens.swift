@@ -201,19 +201,21 @@ struct NavigationScreen: View {
     }
 
     private func remainingMeters(from index: Int, tour: PropertyTour) -> Double? {
-        let points = tour.journey.dropFirst(index).compactMap { step -> CLLocation? in
+        let points: [(Double, Double)] = tour.journey.dropFirst(index).compactMap { step in
             if let id = step.stopId, let unit = tour.units.first(where: { $0.id == id }), Geo.isPlaced(unit.latitude, unit.longitude) {
-                return CLLocation(latitude: unit.latitude, longitude: unit.longitude)
+                return (unit.latitude, unit.longitude)
             }
             if Geo.isPlaced(step.latitude, step.longitude) {
-                return CLLocation(latitude: step.latitude, longitude: step.longitude)
+                return (step.latitude, step.longitude)
             }
             return nil
         }
-        guard points.count >= 2 else { return points.first.map { _ in 0 } }
+        guard points.count >= 2 else { return points.isEmpty ? nil : 0 }
         var total = 0.0
         for offset in 1..<points.count {
-            total += points[offset].distance(from: points[offset - 1])
+            let previous = points[offset - 1]
+            let next = points[offset]
+            total += Geo.meters(previous.0, previous.1, next.0, next.1)
         }
         return total
     }
