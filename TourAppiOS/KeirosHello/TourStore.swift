@@ -52,6 +52,8 @@ struct TourUiState {
     var userLongitude: Double?
     var userHeading: Double = -1
     var userAccuracy: Double = 12
+    var userFixTime: Date?
+    var atStop: Bool = false
     var userFloorLevel: Int?
     var navDistanceMeters: Double?
     var navEtaSeconds: Double?
@@ -71,7 +73,7 @@ final class TourStore: ObservableObject {
         ticker = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
-                if self.state.trackingEnabled && self.state.step == .navigation {
+                if self.state.trackingEnabled && self.state.step == .navigation && self.state.atStop {
                     self.state.liveSec += 1
                 }
             }
@@ -296,7 +298,8 @@ final class TourStore: ObservableObject {
     }
 
     func updateNavCue(meters: Double, seconds: Double, instruction: String) {
-        guard state.locationFollowsPhone, !state.insideBuilding else { return }
+        guard state.locationFollowsPhone || state.startMilesAway > 0 else { return }
+        guard !state.insideBuilding else { return }
         let sameInstruction = state.navInstruction == instruction
         let closeMeters = abs((state.navDistanceMeters ?? -999) - meters) < 12
         let closeEta = abs((state.navEtaSeconds ?? -999) - seconds) < 15
@@ -341,20 +344,20 @@ final class TourStore: ObservableObject {
 
     private func ingest(_ location: CLLocation) {
         guard state.locationFollowsPhone else { return }
-        let nextLat = location.coordinate.latitude
-        let nextLng = location.coordinate.longitude
-        if let prevLat = state.userLatitude, let prevLng = state.userLongitude,
-           Geo.meters(prevLat, prevLng, nextLat, nextLng) < 30 {
-            state.userLatitude = prevLat * 0.35 + nextLat * 0.65
-            state.userLongitude = prevLng * 0.35 + nextLng * 0.65
-        } else {
-            state.userLatitude = nextLat
-            state.userLongitude = nextLng
+        guard location.horizontalAccuracy >= 0, location.horizontalAccuracy <= 80 else { return }
+        if let previous = state.userFixTime, let prevLat = state.userLatitude, let prevLng = state.userLongitude {
+            let elapsed = location.timestamp.timeIntervalSince(previous)
+            let jumped = Geo.meters(prevLat, prevLng, location.coordinate.latitude, location.coordinate.longitude)
+            if elapsed > 0, elapsed < 30, jumped / elapsed > 50, location.horizontalAccuracy > 25 { return }
         }
-        if location.horizontalAccuracy > 0 {
-            state.userAccuracy = location.horizontalAccuracy
+        state.userLatitude = location.coordinate.latitude
+        state.userLongitude = location.coordinate.longitude
+        state.userAccuracy = location.horizontalAccuracy
+        state.userFixTime = location.timestamp
+        if location.speed > 0.5, location.course >= 0 {
+            state.userHeading = location.course
         }
-        if let level = location.floor?.level, level != state.userFloorLevel {
+        if location.horizontalAccuracy <= 40, let level = location.floor?.level, level != state.userFloorLevel {
             state.userFloorLevel = level
             if let floor = floorMatching(level) {
                 state.selectedFloorId = floor.id
@@ -365,43 +368,104 @@ final class TourStore: ObservableObject {
         let parking = CLLocation(latitude: state.tour.outdoor.parkingLat, longitude: state.tour.outdoor.parkingLng)
         let toEntrance = location.distance(from: entrance)
         let toParking = location.distance(from: parking)
-        if state.step == .navigation {
-            if toEntrance < 55 {
-                if !state.insideBuilding {
-                    state.insideBuilding = true
-                    state.gpsIndoor = true
-                    state.forceView = "3d"
-                    state.navInstruction = "You're inside. Your position follows this phone."
-                    if state.tour.journey[safe: state.activeStepIndex]?.phase != "indoor",
-                       let idx = state.tour.journey.firstIndex(where: { $0.phase == "indoor" }) {
-                        state.activeStepIndex = idx
-                    }
+        let entranceRadius = min(30, max(16, location.horizontalAccuracy))
+        if state.step == .navigation, toEntrance <= entranceRadius {
+            if !state.insideBuilding {
+                state.insideBuilding = true
+                state.gpsIndoor = true
+                state.forceView = "3d"
+                if state.tour.journey[safe: state.activeStepIndex]?.phase != "indoor",
+                   let idx = state.tour.journey.firstIndex(where: { $0.phase == "indoor" }) {
+                    state.activeStepIndex = idx
                 }
-                state.navDistanceMeters = toEntrance
-            } else if toEntrance > 120, state.gpsIndoor {
-                state.gpsIndoor = false
-                state.insideBuilding = false
-                state.forceView = "map"
+            }
+            trackIndoor(location)
+        } else if state.step == .navigation, state.gpsIndoor, toEntrance > 80 {
+            state.gpsIndoor = false
+            state.insideBuilding = false
+            state.atStop = false
+            state.forceView = "map"
+            state.navInstruction = ""
+            let phase = toParking <= 70 ? "walk" : "drive"
+            if let idx = state.tour.journey.firstIndex(where: { $0.phase == phase }) {
+                state.activeStepIndex = idx
+            }
+        } else if state.step == .navigation, !state.insideBuilding {
+            let phase = toParking <= 70 ? "walk" : "drive"
+            let current = state.tour.journey[safe: state.activeStepIndex]?.phase
+            if current == "drive" || current == "walk", current != phase {
                 state.navInstruction = ""
-                let phase = toParking < 160 ? "walk" : "drive"
                 if let idx = state.tour.journey.firstIndex(where: { $0.phase == phase }) {
                     state.activeStepIndex = idx
                 }
-            } else if !state.insideBuilding {
-                let phase = toParking < 160 ? "walk" : "drive"
-                let current = state.tour.journey[safe: state.activeStepIndex]?.phase
-                if current == "drive" || current == "walk", current != phase,
-                   let idx = state.tour.journey.firstIndex(where: { $0.phase == phase }) {
-                    state.activeStepIndex = idx
-                }
-            } else {
-                state.navDistanceMeters = toEntrance
             }
+            state.atStop = false
+            if state.navInstruction.isEmpty {
+                state.navDistanceMeters = phase == "walk" ? toEntrance : toParking
+                let speed = phase == "walk" ? 1.3 : max(location.speed, 8)
+                state.navEtaSeconds = (state.navDistanceMeters ?? 0) / speed
+            }
+        } else if state.step == .navigation {
+            trackIndoor(location)
+        } else if state.navInstruction.isEmpty {
+            state.navDistanceMeters = toParking > 70 ? toParking : toEntrance
         }
-        if !state.insideBuilding && state.navInstruction.isEmpty {
-            let target = toParking < 160 ? entrance : parking
-            state.navDistanceMeters = location.distance(from: target)
+    }
+
+    private func trackIndoor(_ location: CLLocation) {
+        let radius = min(22, max(12, location.horizontalAccuracy))
+        let measured: [(index: Int, step: JourneyStep, distance: CLLocationDistance, name: String)] = state.tour.journey.enumerated().compactMap { index, step in
+            guard step.phase == "indoor", let place = coordinate(for: step) else { return nil }
+            let name = state.tour.units.first { $0.id == step.stopId }?.name ?? "this stop"
+            return (index, step, location.distance(from: place), name)
         }
+        guard !measured.isEmpty else { return }
+        if let current = measured.first(where: { $0.index == state.activeStepIndex }), current.distance <= radius * 1.4 {
+            publishIndoor(current, radius: radius)
+            return
+        }
+        if let nearest = measured.min(by: { $0.distance < $1.distance }), nearest.distance <= radius {
+            state.activeStepIndex = nearest.index
+            publishIndoor(nearest, radius: radius)
+            return
+        }
+        let upcoming = measured.first { step in
+            guard let id = step.step.stopId else { return true }
+            return !state.visitedStopIds.contains(id)
+        } ?? measured[0]
+        state.activeStepIndex = upcoming.index
+        publishIndoor(upcoming, radius: radius)
+    }
+
+    private func publishIndoor(_ hit: (index: Int, step: JourneyStep, distance: CLLocationDistance, name: String), radius: CLLocationDistance) {
+        let arrived = hit.distance <= radius
+        state.atStop = arrived
+        state.navDistanceMeters = hit.distance
+        state.navEtaSeconds = hit.distance / 1.25
+        state.navInstruction = arrived ? "You're at \(hit.name)" : "Walk to \(hit.name)"
+        if arrived, let id = hit.step.stopId {
+            state.visitedStopIds.insert(id)
+        }
+        guard let id = hit.step.stopId, let unit = state.tour.units.first(where: { $0.id == id }) else { return }
+        state.destination = unit
+        if arrived {
+            state.selectedFloorId = unit.floorId
+        }
+        if let stopIndex = state.tour.stops.firstIndex(where: { $0.id == id }) {
+            state.currentStopIndex = stopIndex
+        }
+        state.insideBuilding = true
+        state.forceView = "3d"
+    }
+
+    private func coordinate(for step: JourneyStep) -> CLLocation? {
+        if let id = step.stopId, let unit = state.tour.units.first(where: { $0.id == id }), Geo.isPlaced(unit.latitude, unit.longitude) {
+            return CLLocation(latitude: unit.latitude, longitude: unit.longitude)
+        }
+        if Geo.isPlaced(step.latitude, step.longitude) {
+            return CLLocation(latitude: step.latitude, longitude: step.longitude)
+        }
+        return nil
     }
 
     private func floorMatching(_ level: Int) -> FloorInfo? {
@@ -567,8 +631,8 @@ final class LocationAuth: NSObject, CLLocationManagerDelegate {
         super.init()
         manager.delegate = self
         manager.desiredAccuracy = kCLLocationAccuracyBestForNavigation
-        manager.distanceFilter = 2
-        manager.headingFilter = 5
+        manager.distanceFilter = 1
+        manager.headingFilter = 2
         manager.activityType = .otherNavigation
         manager.pausesLocationUpdatesAutomatically = false
     }

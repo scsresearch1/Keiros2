@@ -13,8 +13,8 @@ struct NavigationScreen: View {
         let nextStop = tour.stops[safe: store.state.currentStopIndex + 1]
         let arrive = atEnd && nextStop != nil ? "Next: \(nextStop!.title)" : (atEnd ? "Finish building tour" : "Next")
         let live = store.state.locationFollowsPhone
-        let instruction = live && !store.state.navInstruction.isEmpty ? store.state.navInstruction : (step?.instruction ?? "")
-        let detail = navigationDetail(live: live, indoors: indoors, phase: phase, tour: tour)
+        let instruction = !store.state.navInstruction.isEmpty && (live || store.state.startMilesAway > 0) ? store.state.navInstruction : (step?.instruction ?? "")
+        let detail = navigationDetail(live: live, tour: tour)
         VStack(spacing: 0) {
             ZStack(alignment: .top) {
                 if indoors {
@@ -186,19 +186,36 @@ struct NavigationScreen: View {
         .background(KeirosColor.navy)
     }
 
-    private func navigationDetail(live: Bool, indoors: Bool, phase: String, tour: PropertyTour) -> String {
-        if live, let meters = store.state.navDistanceMeters {
+    private func navigationDetail(live: Bool, tour: PropertyTour) -> String {
+        if let meters = store.state.navDistanceMeters, live || store.state.startMilesAway > 0 {
             let distance = Geo.formatDistance(meters)
-            if indoors { return "Live location · \(distance) from the entrance" }
             if let seconds = store.state.navEtaSeconds {
                 return "\(distance) · \(Geo.formatEta(seconds))"
             }
             return distance
         }
-        if store.state.startMilesAway > 0, phase == "drive", !indoors {
-            return "About 5 miles to the property · tip \(store.state.activeStepIndex + 1)/\(max(tour.journey.count, 1))"
+        if let meters = remainingMeters(from: store.state.activeStepIndex, tour: tour) {
+            return "\(Geo.formatDistance(meters)) · tip \(store.state.activeStepIndex + 1)/\(max(tour.journey.count, 1))"
         }
-        return "\((tour.journey.count - store.state.activeStepIndex) * 90) ft · tip \(store.state.activeStepIndex + 1)/\(max(tour.journey.count, 1))"
+        return "Tip \(store.state.activeStepIndex + 1)/\(max(tour.journey.count, 1))"
+    }
+
+    private func remainingMeters(from index: Int, tour: PropertyTour) -> Double? {
+        let points = tour.journey.dropFirst(index).compactMap { step -> CLLocation? in
+            if let id = step.stopId, let unit = tour.units.first(where: { $0.id == id }), Geo.isPlaced(unit.latitude, unit.longitude) {
+                return CLLocation(latitude: unit.latitude, longitude: unit.longitude)
+            }
+            if Geo.isPlaced(step.latitude, step.longitude) {
+                return CLLocation(latitude: step.latitude, longitude: step.longitude)
+            }
+            return nil
+        }
+        guard points.count >= 2 else { return points.first.map { _ in 0 } }
+        var total = 0.0
+        for offset in 1..<points.count {
+            total += points[offset].distance(from: points[offset - 1])
+        }
+        return total
     }
 
     private func stopLabel(_ stop: TourStop?) -> String {
@@ -484,18 +501,16 @@ struct IndoorSketch: View {
         guard store.state.locationFollowsPhone, let latitude = store.state.userLatitude, let longitude = store.state.userLongitude else { return }
         let entranceLat = tour.outdoor.entranceLat
         let entranceLng = tour.outdoor.entranceLng
-        let placed = tour.units.filter { abs($0.latitude) > 0.01 || abs($0.longitude) > 0.01 }
-        let span = placed.isEmpty ? 0 : Geo.meters(placed.map(\.latitude).min() ?? entranceLat, placed.map(\.longitude).min() ?? entranceLng, placed.map(\.latitude).max() ?? entranceLat, placed.map(\.longitude).max() ?? entranceLng)
-        guard Geo.meters(latitude, longitude, entranceLat, entranceLng) < max(200.0, span + 80) else { return }
+        guard Geo.meters(latitude, longitude, entranceLat, entranceLng) < 70 else { return }
         let floorIndex = tour.floors.firstIndex { $0.id == store.state.selectedFloorId } ?? 0
         let z = CGFloat(floorIndex + 1) * metrics.storyH + 0.08
-        let spot = floorSpot(latitude: latitude, longitude: longitude, tour: tour, metrics: metrics, placed: placed)
+        let spot = Geo.slabPoint(latitude: latitude, longitude: longitude, anchorLat: entranceLat, anchorLng: entranceLng, width: metrics.width, depth: metrics.depth)
         let at = metrics.project(spot.x, spot.y, z)
         if store.state.userHeading >= 0 {
             let rad = store.state.userHeading * .pi / 180
             let aheadLat = latitude + cos(rad) * (8 / 111_320)
             let aheadLng = longitude + sin(rad) * (8 / (111_320 * max(cos(entranceLat * .pi / 180), 0.2)))
-            let ahead = floorSpot(latitude: aheadLat, longitude: aheadLng, tour: tour, metrics: metrics, placed: placed)
+            let ahead = Geo.slabPoint(latitude: aheadLat, longitude: aheadLng, anchorLat: entranceLat, anchorLng: entranceLng, width: metrics.width, depth: metrics.depth)
             let tip = metrics.project(ahead.x, ahead.y, z)
             var beam = Path()
             beam.move(to: at)
@@ -512,26 +527,6 @@ struct IndoorSketch: View {
             at: at,
             anchor: .center
         )
-    }
-
-    private func floorSpot(latitude: Double, longitude: Double, tour: PropertyTour, metrics: BuildingMetrics, placed: [TourUnit]) -> CGPoint {
-        let lngs = placed.map(\.longitude)
-        let lats = placed.map(\.latitude)
-        if let minLng = lngs.min(), let maxLng = lngs.max(), let minLat = lats.min(), let maxLat = lats.max(),
-           maxLng - minLng > 0.00002, maxLat - minLat > 0.00002 {
-            let u = (longitude - minLng) / (maxLng - minLng)
-            let v = (latitude - minLat) / (maxLat - minLat)
-            let x = 0.45 + CGFloat(min(1.08, max(-0.08, u))) * (metrics.width - 0.9)
-            let y = 0.4 + CGFloat(min(1.08, max(-0.08, v))) * (metrics.depth - 0.8)
-            return CGPoint(x: min(metrics.width - 0.25, max(0.25, x)), y: min(metrics.depth - 0.25, max(0.2, y)))
-        }
-        let entranceLat = tour.outdoor.entranceLat
-        let entranceLng = tour.outdoor.entranceLng
-        let east = (longitude - entranceLng) * 111_320 * cos(entranceLat * .pi / 180)
-        let north = (latitude - entranceLat) * 111_320
-        let x = metrics.width / 2 + CGFloat(east / 10)
-        let y = 0.25 + CGFloat(north / 10)
-        return CGPoint(x: min(metrics.width - 0.25, max(0.25, x)), y: min(metrics.depth - 0.25, max(0.2, y)))
     }
 
     private func collectHits(size: CGSize, tour: PropertyTour) -> [MapHit] {
@@ -610,27 +605,15 @@ private struct BuildingMetrics {
     func unitPoint(_ unitId: String, tour: PropertyTour) -> CGPoint? {
         guard let unit = tour.units.first(where: { $0.id == unitId }) else { return nil }
         guard let floorIndex = tour.floors.firstIndex(where: { $0.id == unit.floorId }) else { return nil }
-        let peers = tour.units.filter { $0.floorId == unit.floorId && $0.type != "parking" }
-        let lngs = peers.map(\.longitude)
-        let lats = peers.map(\.latitude)
-        let minLng = lngs.min() ?? 0
-        let maxLng = lngs.max() ?? 0
-        let minLat = lats.min() ?? 0
-        let maxLat = lats.max() ?? 0
-        let local = peers.firstIndex(where: { $0.id == unit.id }) ?? 0
-        let u: CGFloat
-        let v: CGFloat
-        if maxLng == minLng {
-            u = CGFloat(local % 4) / 4
-        } else {
-            u = CGFloat((unit.longitude - minLng) / (maxLng - minLng))
-        }
-        if maxLat == minLat {
-            v = CGFloat(local / 4) / 4
-        } else {
-            v = CGFloat((unit.latitude - minLat) / (maxLat - minLat))
-        }
         let z = CGFloat(floorIndex + 1) * storyH + 0.04
+        if Geo.isPlaced(unit.latitude, unit.longitude) {
+            let spot = Geo.slabPoint(latitude: unit.latitude, longitude: unit.longitude, anchorLat: tour.outdoor.entranceLat, anchorLng: tour.outdoor.entranceLng, width: width, depth: depth)
+            return project(spot.x, spot.y, z)
+        }
+        let peers = tour.units.filter { $0.floorId == unit.floorId && $0.type != "parking" }
+        let local = peers.firstIndex(where: { $0.id == unit.id }) ?? 0
+        let u = CGFloat(local % 4) / 4
+        let v = CGFloat(local / 4) / 4
         return project(0.45 + u * (width - 0.9), 0.4 + v * (depth - 0.8), z)
     }
 }

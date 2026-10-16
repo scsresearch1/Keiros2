@@ -42,7 +42,10 @@ struct OutdoorMapView: UIViewRepresentable {
         } else {
             coordinator.stopFollowing(map)
             replacePlannedRoute(on: map, coordinator: coordinator)
-            fitPlannedRoute(on: map, coordinator: coordinator)
+            coordinator.ensureRealApproach(map: map, route: route)
+            if !coordinator.hasRealApproach {
+                fitPlannedRoute(on: map, coordinator: coordinator)
+            }
         }
     }
 
@@ -97,6 +100,8 @@ struct OutdoorMapView: UIViewRepresentable {
         var fittedKey: String?
         var pinKey: String?
         var routeKey: String?
+        var hasRealApproach = false
+        private var approachKey: String?
         private var following = false
         private var routeInFlight = false
         private var routeToken = 0
@@ -118,7 +123,40 @@ struct OutdoorMapView: UIViewRepresentable {
             lastCamera = nil
             fittedKey = nil
             routeKey = nil
+            hasRealApproach = false
+            approachKey = nil
             map.overlays.filter { $0 is MKPolyline }.forEach { map.removeOverlay($0) }
+        }
+
+        func ensureRealApproach(map: MKMapView, route: OutdoorRoute) {
+            let key = "\(route.originLat),\(route.originLng)->\(route.parkingLat),\(route.parkingLng)"
+            guard approachKey != key else { return }
+            approachKey = key
+            hasRealApproach = false
+            let origin = CLLocationCoordinate2D(latitude: route.originLat, longitude: route.originLng)
+            let parking = CLLocationCoordinate2D(latitude: route.parkingLat, longitude: route.parkingLng)
+            let request = MKDirections.Request()
+            request.source = mapItem(origin)
+            request.destination = mapItem(parking)
+            request.transportType = .automobile
+            let query = MKDirections(request: request)
+            directions = query
+            query.calculate { [weak self, weak map] response, _ in
+                DispatchQueue.main.async {
+                    guard let self, let map, !self.following, self.approachKey == key else { return }
+                    guard let path = response?.routes.first else {
+                        self.approachKey = nil
+                        return
+                    }
+                    map.overlays.compactMap { $0 as? RouteOverlay }.filter { !$0.dashed }.forEach { map.removeOverlay($0) }
+                    map.overlays.filter { $0 is MKPolyline }.forEach { map.removeOverlay($0) }
+                    map.addOverlay(path.polyline, level: .aboveRoads)
+                    self.hasRealApproach = true
+                    map.setVisibleMapRect(path.polyline.boundingMapRect, edgePadding: UIEdgeInsets(top: 72, left: 36, bottom: 72, right: 36), animated: false)
+                    let instruction = path.steps.first { !$0.instructions.isEmpty }?.instructions ?? "Drive to parking"
+                    self.onRouteUpdate?(path.distance, path.expectedTravelTime, instruction)
+                }
+            }
         }
 
         func clearPlanned(_ map: MKMapView) {
@@ -145,8 +183,8 @@ struct OutdoorMapView: UIViewRepresentable {
                 map.setCamera(camera, animated: true)
             }
             let toParking = Geo.meters(user.latitude, user.longitude, parking.latitude, parking.longitude)
-            let destination = toParking > 220 ? parking : entrance
-            let walking = toParking <= 220
+            let destination = toParking > 70 ? parking : entrance
+            let walking = toParking <= 70
             let drifted = lastRouted.map { Geo.meters($0.latitude, $0.longitude, user.latitude, user.longitude) } ?? 999
             let destMoved = lastDestination.map { Geo.meters($0.latitude, $0.longitude, destination.latitude, destination.longitude) } ?? 999
             let retryDue = Date().timeIntervalSince(lastRouteAttempt) > 8

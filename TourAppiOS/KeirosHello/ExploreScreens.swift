@@ -247,7 +247,7 @@ struct RoutePreviewScreen: View {
     }
 
     private var parkingStat: String {
-        if store.state.locationFollowsPhone, let meters = store.state.navDistanceMeters {
+        if let meters = store.state.navDistanceMeters, store.state.locationFollowsPhone || store.state.startMilesAway > 0 {
             return Geo.formatDistance(meters)
         }
         if store.state.startMilesAway > 0 { return "5.0 mi" }

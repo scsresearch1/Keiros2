@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 import CoreLocation
 
 struct OutdoorRoute: Equatable {
@@ -51,6 +52,27 @@ enum Geo {
             return remain == 0 ? "\(hours) hr" : "\(hours) hr \(remain) min"
         }
         return "\(minutes) min"
+    }
+
+    static func isPlaced(_ latitude: Double, _ longitude: Double) -> Bool {
+        abs(latitude) > 0.01 || abs(longitude) > 0.01
+    }
+
+    /// East/north meters from an anchor. This is the same frame for stops and the phone, so distances on the floor match the ground.
+    static func eastNorth(latitude: Double, longitude: Double, anchorLat: Double, anchorLng: Double) -> (east: Double, north: Double) {
+        let east = (longitude - anchorLng) * 111_320 * cos(anchorLat * .pi / 180)
+        let north = (latitude - anchorLat) * 111_320
+        return (east, north)
+    }
+
+    static func slabPoint(latitude: Double, longitude: Double, anchorLat: Double, anchorLng: Double, width: CGFloat, depth: CGFloat, metersPerUnit: CGFloat = 10) -> CGPoint {
+        let offset = eastNorth(latitude: latitude, longitude: longitude, anchorLat: anchorLat, anchorLng: anchorLng)
+        let x = width / 2 + CGFloat(offset.east) / metersPerUnit
+        let y = 0.35 + CGFloat(offset.north) / metersPerUnit
+        return CGPoint(
+            x: min(width - 0.2, max(0.2, x)),
+            y: min(depth - 0.2, max(0.15, y))
+        )
     }
 }
 
@@ -171,16 +193,36 @@ enum DemoTour {
         FloorInfo(id: "f3", label: "Level 3", level: 3),
     ]
 
-    static let units: [TourUnit] = [
-        TourUnit(id: "u1", name: "Main Lobby", type: "lobby", buildingName: "Tower A", floorId: "f1", floorLabel: "Ground", floorLevel: 1),
-        TourUnit(id: "u2", name: "Leasing Office", type: "leasing", buildingName: "Tower A", floorId: "f1", floorLabel: "Ground", floorLevel: 1),
-        TourUnit(id: "u3", name: "Fitness Center", type: "gym", buildingName: "Tower A", floorId: "f2", floorLabel: "Level 2", floorLevel: 2),
-        TourUnit(id: "u4", name: "Pool Deck", type: "pool", buildingName: "Tower A", floorId: "f2", floorLabel: "Level 2", floorLevel: 2),
-        TourUnit(id: "u5", name: "Clubhouse", type: "club", buildingName: "Tower A", floorId: "f2", floorLabel: "Level 2", floorLevel: 2),
-        TourUnit(id: "u6", name: "Model Home 301", type: "unit", buildingName: "Tower A", floorId: "f3", floorLabel: "Level 3", floorLevel: 3),
-        TourUnit(id: "u7", name: "Model Home 302", type: "unit", buildingName: "Tower A", floorId: "f3", floorLabel: "Level 3", floorLevel: 3),
-        TourUnit(id: "u8", name: "Resident Parking", type: "parking", buildingName: "Garage", floorId: "f1", floorLabel: "Ground", floorLevel: 1),
-    ]
+    static let entranceLat = 41.8876
+    static let entranceLng = -87.6239
+    static let parkingLat = 41.8884
+    static let parkingLng = -87.6248
+
+    private static func placed(north: Double, east: Double) -> (Double, Double) {
+        let latitude = entranceLat + north / 111_320
+        let longitude = entranceLng + east / (111_320 * cos(entranceLat * .pi / 180))
+        return (latitude, longitude)
+    }
+
+    static let units: [TourUnit] = {
+        let lobby = placed(north: 8, east: 0)
+        let leasing = placed(north: 10, east: 14)
+        let fitness = placed(north: 18, east: -12)
+        let pool = placed(north: 24, east: 8)
+        let club = placed(north: 16, east: 18)
+        let home301 = placed(north: 20, east: -16)
+        let home302 = placed(north: 20, east: -6)
+        return [
+            TourUnit(id: "u1", name: "Main Lobby", type: "lobby", buildingName: "Tower A", floorId: "f1", floorLabel: "Ground", floorLevel: 1, latitude: lobby.0, longitude: lobby.1),
+            TourUnit(id: "u2", name: "Leasing Office", type: "leasing", buildingName: "Tower A", floorId: "f1", floorLabel: "Ground", floorLevel: 1, latitude: leasing.0, longitude: leasing.1),
+            TourUnit(id: "u3", name: "Fitness Center", type: "gym", buildingName: "Tower A", floorId: "f2", floorLabel: "Level 2", floorLevel: 2, latitude: fitness.0, longitude: fitness.1),
+            TourUnit(id: "u4", name: "Pool Deck", type: "pool", buildingName: "Tower A", floorId: "f2", floorLabel: "Level 2", floorLevel: 2, latitude: pool.0, longitude: pool.1),
+            TourUnit(id: "u5", name: "Clubhouse", type: "club", buildingName: "Tower A", floorId: "f2", floorLabel: "Level 2", floorLevel: 2, latitude: club.0, longitude: club.1),
+            TourUnit(id: "u6", name: "Model Home 301", type: "unit", buildingName: "Tower A", floorId: "f3", floorLabel: "Level 3", floorLevel: 3, latitude: home301.0, longitude: home301.1),
+            TourUnit(id: "u7", name: "Model Home 302", type: "unit", buildingName: "Tower A", floorId: "f3", floorLabel: "Level 3", floorLevel: 3, latitude: home302.0, longitude: home302.1),
+            TourUnit(id: "u8", name: "Resident Parking", type: "parking", buildingName: "Garage", floorId: "f1", floorLabel: "Ground", floorLevel: 1, latitude: parkingLat, longitude: parkingLng),
+        ]
+    }()
 
     static let stops: [TourStop] = units.filter { $0.type != "parking" }.enumerated().map { index, unit in
         let onFloor = units.filter { $0.floorId == unit.floorId && $0.type != "parking" }.count
@@ -197,10 +239,6 @@ enum DemoTour {
 
     static let originLat = 41.8920
     static let originLng = -87.6290
-    static let parkingLat = 41.8884
-    static let parkingLng = -87.6248
-    static let entranceLat = 41.8876
-    static let entranceLng = -87.6239
 
     static let drivePath: [(Double, Double)] = [
         (originLat, originLng), (41.8912, -87.6274), (41.8901, -87.6262), (41.8892, -87.6254), (parkingLat, parkingLng),
@@ -212,13 +250,13 @@ enum DemoTour {
     static let journey: [JourneyStep] = [
         JourneyStep(id: "s1", phase: "drive", instruction: "Head north toward resident parking on the side of Tower A.", latitude: 41.8901, longitude: -87.6262),
         JourneyStep(id: "s2", phase: "walk", instruction: "Walk from the garage to the main lobby entrance.", latitude: entranceLat, longitude: entranceLng),
-        JourneyStep(id: "s3", phase: "indoor", instruction: "Enter through the lobby doors and check in.", stopId: "u1"),
-        JourneyStep(id: "s4", phase: "indoor", instruction: "Continue to the leasing office on this floor.", stopId: "u2"),
-        JourneyStep(id: "s5", phase: "indoor", instruction: "Take the elevator to Level 2 and enter the fitness center.", stopId: "u3"),
-        JourneyStep(id: "s6", phase: "indoor", instruction: "Walk across Level 2 to the pool deck.", stopId: "u4"),
-        JourneyStep(id: "s7", phase: "indoor", instruction: "Step into the clubhouse beside the pool.", stopId: "u5"),
-        JourneyStep(id: "s8", phase: "indoor", instruction: "Go up to Level 3 and enter Model Home 301.", stopId: "u6"),
-        JourneyStep(id: "s9", phase: "indoor", instruction: "Finish at Model Home 302 next door.", stopId: "u7"),
+        JourneyStep(id: "s3", phase: "indoor", instruction: "Enter through the lobby doors and check in.", latitude: units[0].latitude, longitude: units[0].longitude, stopId: "u1"),
+        JourneyStep(id: "s4", phase: "indoor", instruction: "Continue to the leasing office on this floor.", latitude: units[1].latitude, longitude: units[1].longitude, stopId: "u2"),
+        JourneyStep(id: "s5", phase: "indoor", instruction: "Take the elevator to Level 2 and enter the fitness center.", latitude: units[2].latitude, longitude: units[2].longitude, stopId: "u3"),
+        JourneyStep(id: "s6", phase: "indoor", instruction: "Walk across Level 2 to the pool deck.", latitude: units[3].latitude, longitude: units[3].longitude, stopId: "u4"),
+        JourneyStep(id: "s7", phase: "indoor", instruction: "Step into the clubhouse beside the pool.", latitude: units[4].latitude, longitude: units[4].longitude, stopId: "u5"),
+        JourneyStep(id: "s8", phase: "indoor", instruction: "Go up to Level 3 and enter Model Home 301.", latitude: units[5].latitude, longitude: units[5].longitude, stopId: "u6"),
+        JourneyStep(id: "s9", phase: "indoor", instruction: "Finish at Model Home 302 next door.", latitude: units[6].latitude, longitude: units[6].longitude, stopId: "u7"),
     ]
 
     static let facilities: [Facility] = [
@@ -370,7 +408,7 @@ enum TourBuilder {
             JourneyStep(id: "drive", phase: "drive", instruction: "Drive to parking at \(buildingName).", latitude: (originLat + parking.lat) / 2, longitude: (originLng + parking.lng) / 2),
             JourneyStep(id: "walk", phase: "walk", instruction: "Walk from parking to \(entrance.name).", latitude: entrance.lat, longitude: entrance.lng),
         ]
-        journey.append(contentsOf: stops.map { JourneyStep(id: $0.id, phase: "indoor", instruction: "Continue to \($0.title) on \($0.floorLabel).", stopId: $0.id) })
+        journey.append(contentsOf: stops.map { JourneyStep(id: $0.id, phase: "indoor", instruction: "Continue to \($0.title) on \($0.floorLabel).", latitude: $0.unit.latitude, longitude: $0.unit.longitude, stopId: $0.id) })
         let doors = places.filter { ["door", "lobby", "entry", "gym", "pool", "parking", "amenity"].contains($0.type) }
         var doorSeen = Set<String>()
         let uniqueDoors = doors.filter { doorSeen.insert($0.name).inserted }.prefix(6)
