@@ -190,17 +190,7 @@ async function fetchOsrm(profile, origin, destination, stepOpts) {
     }
   } catch (err) {
     const coords = straightLineCoords(origin, destination)
-    const approxM =
-      profile === 'foot'
-        ? Math.round(
-            Math.hypot(
-              (destination.latitude - origin.latitude) * 111320,
-              (destination.longitude - origin.longitude) *
-                111320 *
-                Math.cos((origin.latitude * Math.PI) / 180),
-            ),
-          )
-        : Math.round(MILES_START * 1609.344)
+    const approxM = Math.round(milesBetween(origin, destination) * 1609.344)
     const durationS = profile === 'foot' ? approxM / 1.35 : approxM / 13.4
     const phase = stepOpts.phase
     const steps = [

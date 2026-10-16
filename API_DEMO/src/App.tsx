@@ -45,6 +45,7 @@ export default function App() {
   const [journeyIndex, setJourneyIndex] = useState(0)
   const [refreshing, setRefreshing] = useState(false)
   const [startMode, setStartMode] = useState<StartMode>('demo')
+  const [liveOrigin, setLiveOrigin] = useState<{ latitude: number; longitude: number } | null>(null)
   const [locating, setLocating] = useState(false)
 
   useEffect(() => {
@@ -96,19 +97,66 @@ export default function App() {
     return hierarchy.units.filter((u) => u.floorId === floorId)
   }, [hierarchy, floorId])
 
+  function selectionReady() {
+    return Boolean(apiKey && complexId && buildingId && floorId && unitId)
+  }
+
+  async function planRoute(mode: StartMode, origin?: { latitude: number; longitude: number }) {
+    if (!selectionReady()) {
+      setError('Select complex, building, floor, and unit first.')
+      return
+    }
+    setLoading(true)
+    setError('')
+    try {
+      const nav = await navigate(apiKey, {
+        complexId,
+        buildingId,
+        floorId,
+        unitId,
+        startMode: mode,
+        ...(mode === 'live' && origin
+          ? { originLatitude: origin.latitude, originLongitude: origin.longitude }
+          : {}),
+      })
+      if (mode === 'live' && origin) {
+        const dLat = nav.origin.latitude - origin.latitude
+        const dLng = nav.origin.longitude - origin.longitude
+        if (dLat * dLat + dLng * dLng > 0.0025 || nav.origin.startMode === 'demo') {
+          setResult(null)
+          setError(
+            'The navigation server did not use the current location. Restart the API server, then press Navigate.',
+          )
+          return
+        }
+      }
+      setResult(nav)
+      setJourneyIndex(0)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Navigate failed')
+    } finally {
+      setLoading(false)
+    }
+  }
+
   async function chooseStartMode(next: StartMode) {
     if (next === 'demo') {
       setStartMode('demo')
+      setLiveOrigin(null)
       setError('')
+      if (selectionReady()) await planRoute('demo')
       return
     }
     setLocating(true)
     setError('')
     try {
-      await readCurrentLocation()
+      const coords = await readCurrentLocation()
+      setLiveOrigin(coords)
       setStartMode('live')
+      if (selectionReady()) await planRoute('live', coords)
     } catch (err) {
       setStartMode('demo')
+      setLiveOrigin(null)
       setError(err instanceof Error ? err.message : 'Could not read the current location.')
     } finally {
       setLocating(false)
@@ -117,34 +165,24 @@ export default function App() {
 
   async function runNavigate(e: FormEvent) {
     e.preventDefault()
-    if (!apiKey || !complexId || !buildingId || !floorId || !unitId) {
+    if (!selectionReady()) {
       setError('Select complex, building, floor, and unit first.')
       return
     }
-    setLoading(true)
-    setError('')
-    try {
-      let origin: { latitude: number; longitude: number } | undefined
-      if (startMode === 'live') {
-        origin = await readCurrentLocation()
+    if (startMode === 'live') {
+      setLocating(true)
+      try {
+        const coords = await readCurrentLocation()
+        setLiveOrigin(coords)
+        await planRoute('live', coords)
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Could not read the current location.')
+      } finally {
+        setLocating(false)
       }
-      const nav = await navigate(apiKey, {
-        complexId,
-        buildingId,
-        floorId,
-        unitId,
-        startMode,
-        ...(origin
-          ? { originLatitude: origin.latitude, originLongitude: origin.longitude }
-          : {}),
-      })
-      setResult(nav)
-      setJourneyIndex(0)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Navigate failed')
-    } finally {
-      setLoading(false)
+      return
     }
+    await planRoute('demo')
   }
 
   async function onRefreshConditions() {
@@ -404,6 +442,9 @@ export default function App() {
               </p>
               <p>
                 Start: {result.origin.label}
+                {liveOrigin && startMode === 'live'
+                  ? ` · device ${liveOrigin.latitude.toFixed(5)}, ${liveOrigin.longitude.toFixed(5)}`
+                  : ''}
               </p>
               <p>
                 Indoor {result.indoor?.walkMinutes ?? '—'} min · session{' '}

@@ -510,7 +510,9 @@ app.post('/api/v1/navigate', (req, res) =>
         },
         origin: {
           ...origin,
-          label: liveStart ? 'Current location' : `Start (~${MILES_START} mi NW of parking)`,
+          label: liveStart
+            ? `Current location (${bodyLat.toFixed(5)}, ${bodyLng.toFixed(5)})`
+            : `Start (~${MILES_START} mi NW of parking)`,
           offsetMiles: originMiles,
           startMode: liveStart ? 'live' : 'demo',
         },
