@@ -298,7 +298,10 @@ final class TourStore: ObservableObject {
     }
 
     func ensurePhoneUpdates() {
-        guard state.locationFollowsPhone else { return }
+        if state.startMilesAway > 0 { return }
+        let status = LocationAuth.shared.currentStatus
+        guard status == .authorizedAlways || status == .authorizedWhenInUse else { return }
+        state.locationFollowsPhone = true
         beginPhoneNavigation()
         anchorOriginToPhone()
     }
@@ -309,7 +312,7 @@ final class TourStore: ObservableObject {
         let lat = location.coordinate.latitude
         let lng = location.coordinate.longitude
         let moved = state.userLatitude.map { Geo.meters($0, state.userLongitude ?? lng, lat, lng) } ?? 999
-        if moved > 4 {
+        if moved > 1 {
             state.userLatitude = lat
             state.userLongitude = lng
             state.userAccuracy = location.horizontalAccuracy
@@ -676,6 +679,8 @@ final class LocationAuth: NSObject, CLLocationManagerDelegate {
         manager.activityType = .otherNavigation
         manager.pausesLocationUpdatesAutomatically = false
     }
+
+    var currentStatus: CLAuthorizationStatus { manager.authorizationStatus }
 
     func requestDecision(_ handler: @escaping (CLAuthorizationStatus) -> Void) {
         let status = manager.authorizationStatus

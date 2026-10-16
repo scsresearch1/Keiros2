@@ -324,6 +324,13 @@ struct IndoorSketch: View {
                     .padding(.leading, 12)
                     .padding(.bottom, 108)
             }
+            .overlay {
+                if let at = liveMarkerPoint(size: geo.size, tour: tour) {
+                    walker
+                        .position(at)
+                        .allowsHitTesting(false)
+                }
+            }
         }
         .background(
             LinearGradient(
@@ -492,45 +499,39 @@ struct IndoorSketch: View {
             context.stroke(dot, with: .color(hot ? Color(red: 0.988, green: 0.906, blue: 0.953) : Color(red: 0.925, green: 0.992, blue: 0.961)), lineWidth: 2)
             context.draw(Text(unit.name).font(.system(size: 10)).foregroundColor(Color(red: 0.925, green: 0.992, blue: 0.961)), at: CGPoint(x: at.x + 14, y: at.y - 8), anchor: .topLeading)
         }
-        drawLiveUser(context: &context, metrics: metrics, tour: tour)
+    }
+
+    private var walker: some View {
+        ZStack {
+            Circle()
+                .fill(Color(red: 0.26, green: 0.52, blue: 0.96).opacity(0.35))
+                .frame(width: 48, height: 48)
+            Circle()
+                .fill(Color(red: 0.26, green: 0.52, blue: 0.96))
+                .frame(width: 34, height: 34)
+                .overlay(Circle().stroke(Color.white, lineWidth: 2.5))
+            Image(systemName: "figure.walk")
+                .font(.system(size: 18, weight: .bold))
+                .foregroundStyle(.white)
+        }
     }
 
     private func caption(tour: PropertyTour, floorName: String, activeStopIndex: Int) -> String {
         let place = "\(tour.buildingName) · \(tour.floors.count) floors · \(floorName) · stop \(activeStopIndex + 1)/\(max(tour.stops.count, 1))"
-        if store.state.locationFollowsPhone { return "Live location · \(place)" }
+        if store.state.locationFollowsPhone {
+            return store.state.userLatitude == nil ? "Finding you · \(place)" : "You · \(place)"
+        }
         return place
     }
 
-    private func drawLiveUser(context: inout GraphicsContext, metrics: BuildingMetrics, tour: PropertyTour) {
-        guard store.state.locationFollowsPhone, let latitude = store.state.userLatitude, let longitude = store.state.userLongitude else { return }
-        let entranceLat = tour.outdoor.entranceLat
-        let entranceLng = tour.outdoor.entranceLng
-        guard Geo.meters(latitude, longitude, entranceLat, entranceLng) < 70 else { return }
+    private func liveMarkerPoint(size: CGSize, tour: PropertyTour) -> CGPoint? {
+        guard store.state.locationFollowsPhone, let latitude = store.state.userLatitude, let longitude = store.state.userLongitude else { return nil }
+        guard Geo.isPlaced(tour.outdoor.entranceLat, tour.outdoor.entranceLng) else { return nil }
+        let metrics = BuildingMetrics(size: size, floorCount: tour.floors.count, camera: camera())
         let floorIndex = tour.floors.firstIndex { $0.id == store.state.selectedFloorId } ?? 0
-        let z = CGFloat(floorIndex + 1) * metrics.storyH + 0.08
-        let spot = Geo.slabPoint(latitude: latitude, longitude: longitude, anchorLat: entranceLat, anchorLng: entranceLng, width: metrics.width, depth: metrics.depth)
-        let at = metrics.project(spot.x, spot.y, z)
-        if store.state.userHeading >= 0 {
-            let rad = store.state.userHeading * .pi / 180
-            let aheadLat = latitude + cos(rad) * (8 / 111_320)
-            let aheadLng = longitude + sin(rad) * (8 / (111_320 * max(cos(entranceLat * .pi / 180), 0.2)))
-            let ahead = Geo.slabPoint(latitude: aheadLat, longitude: aheadLng, anchorLat: entranceLat, anchorLng: entranceLng, width: metrics.width, depth: metrics.depth)
-            let tip = metrics.project(ahead.x, ahead.y, z)
-            var beam = Path()
-            beam.move(to: at)
-            beam.addLine(to: tip)
-            context.stroke(beam, with: .color(Color(red: 0.26, green: 0.52, blue: 0.96).opacity(0.9)), style: StrokeStyle(lineWidth: 5, lineCap: .round))
-        }
-        let halo = Path(ellipseIn: CGRect(x: at.x - 16, y: at.y - 16, width: 32, height: 32))
-        context.fill(halo, with: .color(Color(red: 0.26, green: 0.52, blue: 0.96).opacity(0.28)))
-        let disc = Path(ellipseIn: CGRect(x: at.x - 12, y: at.y - 12, width: 24, height: 24))
-        context.fill(disc, with: .color(Color(red: 0.26, green: 0.52, blue: 0.96)))
-        context.stroke(disc, with: .color(.white), lineWidth: 2.5)
-        context.draw(
-            Text(Image(systemName: "figure.walk")).font(.system(size: 12, weight: .bold)).foregroundColor(.white),
-            at: at,
-            anchor: .center
-        )
+        let z = CGFloat(floorIndex + 1) * metrics.storyH + 0.2
+        let spot = Geo.slabPoint(latitude: latitude, longitude: longitude, anchorLat: tour.outdoor.entranceLat, anchorLng: tour.outdoor.entranceLng, width: metrics.width, depth: metrics.depth)
+        return metrics.project(spot.x, spot.y, z)
     }
 
     private func collectHits(size: CGSize, tour: PropertyTour) -> [MapHit] {
