@@ -39,7 +39,15 @@ struct OutdoorMapView: UIViewRepresentable {
         replacePins(on: map, coordinator: coordinator)
         if followPhone {
             coordinator.clearPlanned(map)
-            if let userLatitude, let userLongitude {
+            if let location = map.userLocation.location, location.horizontalAccuracy >= 0, location.horizontalAccuracy <= 1500 {
+                coordinator.follow(
+                    map: map,
+                    user: location.coordinate,
+                    heading: map.userLocation.heading?.trueHeading ?? userHeading,
+                    parking: coordinator.parking,
+                    entrance: coordinator.entrance
+                )
+            } else if let userLatitude, let userLongitude {
                 coordinator.follow(
                     map: map,
                     user: CLLocationCoordinate2D(latitude: userLatitude, longitude: userLongitude),
@@ -178,11 +186,14 @@ struct OutdoorMapView: UIViewRepresentable {
         }
 
         func clearPlanned(_ map: MKMapView) {
-            map.overlays.filter { $0 is RouteOverlay }.forEach { map.removeOverlay($0) }
+            map.overlays.forEach { map.removeOverlay($0) }
+            approachKey = nil
+            hasRealApproach = false
+            routeKey = nil
         }
 
         func mapView(_ mapView: MKMapView, didUpdate userLocation: MKUserLocation) {
-            guard liveMode, let location = userLocation.location, location.horizontalAccuracy >= 0, location.horizontalAccuracy <= 500 else { return }
+            guard liveMode, let location = userLocation.location, location.horizontalAccuracy >= 0, location.horizontalAccuracy <= 1500 else { return }
             onUserFix?(location)
             let heading = userLocation.heading?.trueHeading ?? -1
             follow(map: mapView, user: location.coordinate, heading: heading, parking: parking, entrance: entrance)

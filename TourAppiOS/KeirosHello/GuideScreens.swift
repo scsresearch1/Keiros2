@@ -12,8 +12,8 @@ struct NavigationScreen: View {
         let atEnd = !tour.journey.isEmpty && store.state.activeStepIndex >= tour.journey.count - 1
         let nextStop = tour.stops[safe: store.state.currentStopIndex + 1]
         let arrive = atEnd && nextStop != nil ? "Next: \(nextStop!.title)" : (atEnd ? "Finish building tour" : "Next")
-        let live = store.state.locationFollowsPhone
-        let instruction = !store.state.navInstruction.isEmpty && (live || store.state.startMilesAway > 0) ? store.state.navInstruction : (step?.instruction ?? "")
+        let live = store.state.startMilesAway == 0 && (store.state.locationFollowsPhone || LocationAuth.shared.isAuthorized)
+        let instruction = navigationInstruction(live: live, step: step)
         let detail = navigationDetail(live: live, tour: tour)
         VStack(spacing: 0) {
             ZStack(alignment: .top) {
@@ -106,6 +106,19 @@ struct NavigationScreen: View {
                             }
                             phaseButton(store.state.insideBuilding ? "Places inside" : "Explore", phase == "indoor" || indoors) { store.jumpPhase("indoor") }
                         }
+                        if let error = store.state.locationError, store.state.startMilesAway == 0, !live {
+                            Text(error)
+                                .font(.system(size: 13))
+                                .foregroundStyle(Color(red: 0.996, green: 0.792, blue: 0.792))
+                                .fixedSize(horizontal: false, vertical: true)
+                            Button("Open Settings") {
+                                if let url = URL(string: UIApplication.openSettingsURLString) {
+                                    UIApplication.shared.open(url)
+                                }
+                            }
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundStyle(KeirosColor.teal)
+                        }
                         if !indoors {
                             HStack {
                                 meta("WEATHER", store.state.weatherSummary)
@@ -185,10 +198,21 @@ struct NavigationScreen: View {
                 .background(KeirosColor.navy)
         }
         .background(KeirosColor.navy)
-        .onAppear { store.ensurePhoneUpdates() }
+        .onAppear { store.armPhoneLocation() }
+    }
+
+    private func navigationInstruction(live: Bool, step: JourneyStep?) -> String {
+        if live {
+            if store.state.userLatitude == nil { return "Finding this phone's location…" }
+            if !store.state.navInstruction.isEmpty { return store.state.navInstruction }
+            return "Starting from this phone."
+        }
+        if store.state.startMilesAway > 0, !store.state.navInstruction.isEmpty { return store.state.navInstruction }
+        return step?.instruction ?? ""
     }
 
     private func navigationDetail(live: Bool, tour: PropertyTour) -> String {
+        if live, store.state.userLatitude == nil { return "Waiting for this phone's GPS" }
         if let meters = store.state.navDistanceMeters, live || store.state.startMilesAway > 0 {
             let distance = Geo.formatDistance(meters)
             if let seconds = store.state.navEtaSeconds {

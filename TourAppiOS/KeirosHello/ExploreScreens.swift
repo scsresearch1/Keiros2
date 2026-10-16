@@ -203,7 +203,7 @@ struct RoutePreviewScreen: View {
                     active: tour.journey.first,
                     weather: store.state.weatherSummary,
                     traffic: store.state.trafficLevel,
-                    followPhone: store.state.locationFollowsPhone,
+                    followPhone: store.state.startMilesAway == 0 && (store.state.locationFollowsPhone || LocationAuth.shared.isAuthorized),
                     chaseCamera: false,
                     userLatitude: store.state.userLatitude,
                     userLongitude: store.state.userLongitude,
@@ -225,8 +225,8 @@ struct RoutePreviewScreen: View {
                     .font(.system(size: 12, weight: .bold)).foregroundStyle(KeirosColor.teal)
                 Text(title).font(.system(size: 22, weight: .semibold)).foregroundStyle(KeirosColor.text)
                 if let stop { Text(stop.blurb).foregroundStyle(KeirosColor.secondary) }
-                if store.state.locationFollowsPhone {
-                    Text(store.state.userLatitude == nil ? "Finding your location…" : (store.state.navInstruction.isEmpty ? "Route starts at this phone." : store.state.navInstruction))
+                if store.state.startMilesAway == 0 && (store.state.locationFollowsPhone || LocationAuth.shared.isAuthorized) {
+                    Text(store.state.userLatitude == nil ? "Finding this phone's location…" : (store.state.navInstruction.isEmpty ? "Route starts at this phone." : store.state.navInstruction))
                         .font(.system(size: 13))
                         .foregroundStyle(KeirosColor.secondary)
                 } else if store.state.startMilesAway > 0 {
@@ -246,7 +246,7 @@ struct RoutePreviewScreen: View {
             .background(KeirosColor.navy)
         }
         .background(KeirosColor.navy)
-        .onAppear { store.ensurePhoneUpdates() }
+        .onAppear { store.armPhoneLocation() }
     }
 
     private var parkingStat: String {

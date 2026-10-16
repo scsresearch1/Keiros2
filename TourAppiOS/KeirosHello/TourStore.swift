@@ -298,17 +298,35 @@ final class TourStore: ObservableObject {
     }
 
     func ensurePhoneUpdates() {
+        armPhoneLocation()
+    }
+
+    func armPhoneLocation() {
         if state.startMilesAway > 0 { return }
-        let status = LocationAuth.shared.currentStatus
-        guard status == .authorizedAlways || status == .authorizedWhenInUse else { return }
-        state.locationFollowsPhone = true
-        beginPhoneNavigation()
-        anchorOriginToPhone()
+        LocationAuth.shared.requestDecision { status in
+            Task { @MainActor in
+                switch status {
+                case .authorizedAlways, .authorizedWhenInUse:
+                    self.state.locationFollowsPhone = true
+                    self.state.locationError = nil
+                    self.beginPhoneNavigation()
+                    if let location = LocationAuth.shared.latest {
+                        self.ingest(location)
+                    }
+                case .denied, .restricted:
+                    self.state.locationFollowsPhone = false
+                    self.state.locationError = "KeirosTour is not allowed to use this phone. Open Settings, tap KeirosTour, and set Location to While Using the App."
+                default:
+                    self.state.locationError = "Allow location for KeirosTour so the route can start at this phone."
+                }
+            }
+        }
     }
 
     func noteDeviceLocation(_ location: CLLocation) {
-        guard state.locationFollowsPhone else { return }
-        guard location.horizontalAccuracy >= 0, location.horizontalAccuracy <= 500 else { return }
+        if state.startMilesAway > 0 { return }
+        state.locationFollowsPhone = true
+        guard location.horizontalAccuracy >= 0, location.horizontalAccuracy <= 1500 else { return }
         let lat = location.coordinate.latitude
         let lng = location.coordinate.longitude
         let moved = state.userLatitude.map { Geo.meters($0, state.userLongitude ?? lng, lat, lng) } ?? 999
@@ -385,8 +403,9 @@ final class TourStore: ObservableObject {
     }
 
     private func ingest(_ location: CLLocation) {
-        guard state.locationFollowsPhone else { return }
-        guard location.horizontalAccuracy >= 0, location.horizontalAccuracy <= 200 else { return }
+        if state.startMilesAway > 0 { return }
+        state.locationFollowsPhone = true
+        guard location.horizontalAccuracy >= 0, location.horizontalAccuracy <= 1500 else { return }
         if let previous = state.userFixTime, let prevLat = state.userLatitude, let prevLng = state.userLongitude {
             let elapsed = location.timestamp.timeIntervalSince(previous)
             let jumped = Geo.meters(prevLat, prevLng, location.coordinate.latitude, location.coordinate.longitude)
@@ -669,6 +688,7 @@ final class LocationAuth: NSObject, CLLocationManagerDelegate {
     private var decision: ((CLAuthorizationStatus) -> Void)?
     private var onLocation: ((CLLocation) -> Void)?
     private var onHeading: ((Double) -> Void)?
+    private(set) var latest: CLLocation?
 
     override init() {
         super.init()
@@ -681,6 +701,11 @@ final class LocationAuth: NSObject, CLLocationManagerDelegate {
     }
 
     var currentStatus: CLAuthorizationStatus { manager.authorizationStatus }
+
+    var isAuthorized: Bool {
+        let status = manager.authorizationStatus
+        return status == .authorizedAlways || status == .authorizedWhenInUse
+    }
 
     func requestDecision(_ handler: @escaping (CLAuthorizationStatus) -> Void) {
         let status = manager.authorizationStatus
@@ -697,6 +722,10 @@ final class LocationAuth: NSObject, CLLocationManagerDelegate {
         self.onHeading = onHeading
         let status = manager.authorizationStatus
         guard status == .authorizedAlways || status == .authorizedWhenInUse else { return }
+        if let latest {
+            onLocation?(latest)
+        }
+        manager.requestLocation()
         manager.startUpdatingLocation()
         if CLLocationManager.headingAvailable() {
             manager.startUpdatingHeading()
@@ -719,6 +748,7 @@ final class LocationAuth: NSObject, CLLocationManagerDelegate {
 
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard let location = locations.last else { return }
+        latest = location
         onLocation?(location)
     }
 
