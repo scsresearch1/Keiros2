@@ -7,7 +7,7 @@ import dotenv from 'dotenv'
 import { loadCollection, upsert, isUsingLocalFallback } from './lib/firebase.mjs'
 import { authenticateApiKey, extractApiKey, requireScope } from './lib/auth.mjs'
 import { buildIndoorJourney, serializeStop } from './lib/indoor.mjs'
-import { fetchDriveRoute, fetchWalkRoute, fetchWeather, offsetMiles, offsetMeters, milesBetween, MILES_START, PARKING_OFFSET_METERS, buildJourneySteps } from './lib/outdoor.mjs'
+import { fetchDriveRoute, fetchWeather, offsetMiles, milesBetween, MILES_START, chooseArrival, buildJourneySteps } from './lib/outdoor.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 dotenv.config({ path: resolve(__dirname, '.env') })
@@ -162,6 +162,16 @@ app.get('/api/health', (_req, res) => {
     dataMode: isUsingLocalFallback() ? 'local-seed' : 'firestore',
   })
 })
+
+function cleanOriginLabel(value) {
+  if (typeof value !== 'string') return ''
+  return value
+    .replace(/[\u0000-\u001F\u007F]/g, ' ')
+    .replace(/[<>]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 180)
+}
 
 function normalizeAccessCode(raw) {
   return String(raw || '')
@@ -394,40 +404,46 @@ app.post('/api/v1/navigate', (req, res) =>
       longitude: unit.longitude,
       name: 'Building entrance',
     }
-    const parking = {
-      ...offsetMeters(entry.latitude, entry.longitude, PARKING_OFFSET_METERS, 135),
-      label: 'Visitor / garage parking',
-      offsetMeters: PARKING_OFFSET_METERS,
-    }
     const destination = {
       latitude: unit.latitude,
       longitude: unit.longitude,
     }
     const bodyLat = Number(req.body?.originLatitude)
     const bodyLng = Number(req.body?.originLongitude)
-    const liveStart =
-      req.body?.startMode === 'live' &&
+    const coordsOk =
       Number.isFinite(bodyLat) &&
       Number.isFinite(bodyLng) &&
       Math.abs(bodyLat) <= 90 &&
       Math.abs(bodyLng) <= 180
-    if (req.body?.startMode === 'live' && !liveStart) {
-      const err = new Error('Current location is required for Live')
+    const requestedStart =
+      req.body?.startMode === 'custom' ? 'custom' : req.body?.startMode === 'live' ? 'live' : 'demo'
+    if (requestedStart !== 'demo' && !coordsOk) {
+      const err = new Error(
+        requestedStart === 'custom'
+          ? 'A starting location is required'
+          : 'Current location is required for Live',
+      )
       err.status = 400
       throw err
     }
-    const origin = liveStart
+    const explicitStart = requestedStart !== 'demo'
+    const origin = explicitStart
       ? { latitude: bodyLat, longitude: bodyLng }
-      : offsetMiles(parking.latitude, parking.longitude, MILES_START, 315)
-    const originMiles = liveStart
-      ? Math.round(milesBetween(origin, parking) * 10) / 10
-      : MILES_START
+      : offsetMiles(entry.latitude, entry.longitude, MILES_START, 315)
+    const chosenLabel = cleanOriginLabel(req.body?.originLabel)
+    const startMode = explicitStart ? requestedStart : 'demo'
+    const entrancePoint = {
+      latitude: entry.latitude,
+      longitude: entry.longitude,
+      name: entry.name || 'Building entrance',
+    }
 
-    const [drive, walk, weather] = await Promise.all([
-      fetchDriveRoute(origin, parking),
-      fetchWalkRoute(parking, { latitude: entry.latitude, longitude: entry.longitude }),
+    const [arrival, weather] = await Promise.all([
+      chooseArrival(entrancePoint, origin),
       fetchWeather(destination.latitude, destination.longitude),
     ])
+    const { parking, drive, walk } = arrival
+    const originMiles = Math.round(milesBetween(origin, parking) * 10) / 10
 
     const outdoor = {
       ...drive,
@@ -464,7 +480,7 @@ app.post('/api/v1/navigate', (req, res) =>
       unitName: unit.name,
       unitCode: unit.code,
       originMiles,
-      startMode: liveStart ? 'live' : 'demo',
+      startMode,
       outdoorDistanceMiles: outdoor.distanceMiles,
       outdoorDurationMin: outdoor.durationMinutes,
       walkDistanceM: walk.distanceM,
@@ -510,11 +526,14 @@ app.post('/api/v1/navigate', (req, res) =>
         },
         origin: {
           ...origin,
-          label: liveStart
-            ? `Current location (${bodyLat.toFixed(5)}, ${bodyLng.toFixed(5)})`
-            : `Start (~${MILES_START} mi NW of parking)`,
+          label:
+            startMode === 'custom'
+              ? chosenLabel || `Chosen start (${bodyLat.toFixed(5)}, ${bodyLng.toFixed(5)})`
+              : startMode === 'live'
+                ? `Current location (${bodyLat.toFixed(5)}, ${bodyLng.toFixed(5)})`
+                : `Start (~${MILES_START} mi NW of parking)`,
           offsetMiles: originMiles,
-          startMode: liveStart ? 'live' : 'demo',
+          startMode,
         },
         parking,
         entrance: outdoor.entrance,
@@ -584,9 +603,18 @@ app.get('/api/v1/conditions', (req, res) =>
       Math.abs(originLng) <= 180
         ? { latitude: originLat, longitude: originLng }
         : offsetMiles(lat, lng, originMiles, 315)
+    const parkLat = Number(req.query.parkLat)
+    const parkLng = Number(req.query.parkLng)
     const destination = { latitude: lat, longitude: lng }
+    const driveTarget =
+      Number.isFinite(parkLat) &&
+      Number.isFinite(parkLng) &&
+      Math.abs(parkLat) <= 90 &&
+      Math.abs(parkLng) <= 180
+        ? { latitude: parkLat, longitude: parkLng }
+        : destination
     const [outdoor, weather] = await Promise.all([
-      fetchDriveRoute(origin, destination),
+      fetchDriveRoute(origin, driveTarget),
       fetchWeather(lat, lng),
     ])
     return {
@@ -594,8 +622,10 @@ app.get('/api/v1/conditions', (req, res) =>
         origin,
         destination,
         outdoor: {
+          distanceM: outdoor.distanceM,
           distanceMiles: outdoor.distanceMiles,
           durationMinutes: outdoor.durationMinutes,
+          geometry: outdoor.geometry,
           traffic: outdoor.traffic,
           steps: outdoor.steps,
           provider: outdoor.provider,

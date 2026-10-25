@@ -131,6 +131,18 @@ Every unit/location has a **physical address** and a **coordinate address**.
 | elevation | Elevation (m) | number | yes | meters (MSL or project vertical datum) |
 | mapped | Mapped | boolean | no | ready for routing |
 
+### Field locks from Keriosa · collection hint: `keriosa_imports`
+Shown on Units / Locations. Pending rows are reviewed before they become `locations`.
+
+| key | label | type | req | notes |
+|-----|-------|------|-----|-------|
+| source.confidence | Confidence | string | no | Keriosa score. Shown as a percent when numeric (0–1 or 0–100) |
+| source.property / building / floor / house / pointType | Keriosa source | string | yes | |
+| deviceId | Device | string | no | |
+| status | Status | enum | yes | Pending \| Confirmed \| Rejected |
+
+UI-only: a pending row is highlighted when another pending lock shares the same complex, building, floor, and unit, or the same coordinates (5 decimal places). Not stored.
+
 ---
 
 ## Organizations & access
@@ -459,8 +471,8 @@ UI filters: client, method, status class (2xx/4xx/5xx), search path. Auto-refres
 | buildingId / buildingName | Building | ref/string | yes | |
 | floorId / floorLabel | Floor | ref/string | yes | |
 | unitId / unitName / unitCode | Unit | ref/string | yes | |
-| originMiles | Start offset | number | yes | Demo: 20 mi simulated start. Live: miles from the device to parking |
-| startMode | Start mode | enum | yes | demo \| live. Demo uses the simulated point; live uses originLatitude/originLongitude from the device |
+| originMiles | Start offset | number | yes | Demo: 20 mi simulated start. Live and custom: miles from the chosen point to parking |
+| startMode | Start mode | enum | yes | demo \| live \| custom. Demo uses the simulated point. Live uses originLatitude/originLongitude from the device. Custom uses a start chosen in API_DEMO by address search, pasted coordinates, or a map pin (body originLatitude, originLongitude, optional originLabel). originLabel is not stored on the session |
 | outdoorDistanceMiles | Outdoor mi | number | yes | |
 | outdoorDurationMin | Outdoor min | number | yes | |
 | indoorWalkMin | Indoor min | number | yes | |

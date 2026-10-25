@@ -14,10 +14,70 @@ function MappingArrow() {
   return <span className="k-map-arrow" aria-hidden>→</span>
 }
 
+function normalizeKey(value: string) {
+  return value.trim().toLowerCase().replace(/\s+/g, ' ')
+}
+
+function placeKey(row: KeriosaImport) {
+  const parts = [
+    normalizeKey(row.proposed.complexName || row.source.property),
+    normalizeKey(row.proposed.buildingName || row.source.building),
+    normalizeKey(row.proposed.floorLabel || row.source.floor),
+    normalizeKey(row.proposed.unitName || row.source.house),
+    normalizeKey(row.proposed.locationType || row.source.pointType),
+  ]
+  if (parts.every((part) => !part)) return ''
+  return parts.join('|')
+}
+
+function coordKey(row: KeriosaImport) {
+  const { latitude, longitude } = row.proposed
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return ''
+  if (latitude === 0 && longitude === 0) return ''
+  return `${latitude.toFixed(5)},${longitude.toFixed(5)}`
+}
+
+function parseConfidence(raw: string | undefined): { pct: number; label: string } | null {
+  const text = (raw ?? '').trim()
+  if (!text) return null
+  const numeric = Number(text.replace(/%$/, ''))
+  if (!Number.isFinite(numeric)) return null
+  const pct = numeric <= 1 ? numeric * 100 : numeric
+  const rounded = Math.round(pct * 10) / 10
+  const shown = Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1)
+  return { pct: rounded, label: `${shown}%` }
+}
+
+function ConfidenceScore({ value }: { value: string | undefined }) {
+  const parsed = parseConfidence(value)
+  if (!parsed) {
+    const text = (value ?? '').trim()
+    return text ? <Badge tone="neutral">{text}</Badge> : <span>—</span>
+  }
+  const tone = parsed.pct >= 80 ? 'ok' : parsed.pct >= 50 ? 'warn' : 'danger'
+  return <Badge tone={tone}>{parsed.label}</Badge>
+}
+
 export function KeriosaImportPanel() {
   const { data, upsert, logAudit } = useErpData()
   const imports = data.keriosaImports
   const pending = useMemo(() => imports.filter((i) => i.status === 'Pending'), [imports])
+  const duplicates = useMemo(() => {
+    const byPlace = new Map<string, string[]>()
+    const byCoord = new Map<string, string[]>()
+    for (const row of pending) {
+      const place = placeKey(row)
+      if (place) byPlace.set(place, [...(byPlace.get(place) ?? []), row.id])
+      const coord = coordKey(row)
+      if (coord) byCoord.set(coord, [...(byCoord.get(coord) ?? []), row.id])
+    }
+    const count = new Map<string, number>()
+    for (const group of [...byPlace.values(), ...byCoord.values()]) {
+      if (group.length < 2) continue
+      for (const id of group) count.set(id, Math.max(count.get(id) ?? 0, group.length))
+    }
+    return count
+  }, [pending])
 
   const [syncing, setSyncing] = useState(false)
   const [syncError, setSyncError] = useState<string | null>(null)
@@ -167,7 +227,7 @@ export function KeriosaImportPanel() {
           Locked GPS points in Keriosa appear here for review before they become ERP locations.
           Mapping: <strong>property → complex</strong>, <strong>building → building</strong>,{' '}
           <strong>floor → floor</strong>, <strong>house → unit</strong> (type from{' '}
-          <code>point_type</code>).
+          <code>point_type</code>). Duplicate locks are highlighted.
         </p>
         {syncError ? <p className="k-inline-notice k-inline-notice--danger">{syncError}</p> : null}
         {notice ? <p className="k-inline-notice">{notice}</p> : null}
@@ -181,7 +241,8 @@ export function KeriosaImportPanel() {
         </div>
         {pending.length ? (
           <DataTable
-            columns={['Locked at', 'Keriosa → ERP', 'Device', 'Match', '']}
+            columns={['Locked at', 'Keriosa → ERP', 'Device', 'Confidence', 'Match', '']}
+            rowClassNames={pending.map((row) => (duplicates.has(row.id) ? 'k-row-duplicate' : ''))}
             rows={pending.map((row) => [
               row.lockedAt,
               <span key={`map-${row.id}`} className="k-keriosa-map-cell">
@@ -205,19 +266,19 @@ export function KeriosaImportPanel() {
                 </strong>
               </span>,
               <code key={`dev-${row.id}`}>{row.deviceId || '—'}</code>,
-              row.matchComplexId && row.matchBuildingId && row.matchFloorId ? (
-                <Badge key={`m-${row.id}`} tone="ok">
-                  Full match
-                </Badge>
-              ) : row.matchComplexId || row.matchBuildingId ? (
-                <Badge key={`p-${row.id}`} tone="warn">
-                  Partial match
-                </Badge>
-              ) : (
-                <Badge key={`n-${row.id}`} tone="neutral">
-                  New hierarchy
-                </Badge>
-              ),
+              <ConfidenceScore key={`conf-${row.id}`} value={row.source.confidence} />,
+              <span key={`m-${row.id}`} className="k-inline-actions">
+                {row.matchComplexId && row.matchBuildingId && row.matchFloorId ? (
+                  <Badge tone="ok">Full match</Badge>
+                ) : row.matchComplexId || row.matchBuildingId ? (
+                  <Badge tone="warn">Partial match</Badge>
+                ) : (
+                  <Badge tone="neutral">New hierarchy</Badge>
+                )}
+                {duplicates.has(row.id) ? (
+                  <Badge tone="warn">Duplicate · {duplicates.get(row.id)}</Badge>
+                ) : null}
+              </span>,
               <span key={`act-${row.id}`} className="k-inline-actions">
                 <button type="button" className="k-btn k-btn--primary k-btn--sm" onClick={() => openReview(row)}>
                   Review & confirm
@@ -248,6 +309,11 @@ export function KeriosaImportPanel() {
               </button>
             </div>
             <div className="k-modal__body">
+              {duplicates.has(review.id) ? (
+                <p className="k-inline-notice">
+                  Duplicate · {duplicates.get(review.id)} pending locks share this place or these coordinates.
+                </p>
+              ) : null}
               <div className="k-keriosa-review-grid">
                 <div>
                   <h3>Keriosa (source)</h3>
@@ -262,6 +328,10 @@ export function KeriosaImportPanel() {
                     <dd>{review.source.house || '—'}</dd>
                     <dt>Point type</dt>
                     <dd>{review.source.pointType || '—'}</dd>
+                    <dt>Confidence</dt>
+                    <dd>
+                      <ConfidenceScore value={review.source.confidence} />
+                    </dd>
                     <dt>Coordinates</dt>
                     <dd>
                       {review.proposed.latitude}, {review.proposed.longitude} · {review.proposed.elevation} m

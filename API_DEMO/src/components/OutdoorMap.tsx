@@ -9,6 +9,14 @@ type Props = {
   traffic: NavigateResult['outdoor']['traffic']
 }
 
+function escapeHtml(value: string) {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+}
+
 function trafficColor(level?: string | null) {
   if (level === 'Severe') return '#ef4444'
   if (level === 'Heavy') return '#f97316'
@@ -71,7 +79,7 @@ export function OutdoorMap({ result, activeStep, weather, traffic }: Props) {
       fillColor: '#0ea5e9',
       fillOpacity: 0.9,
     })
-      .bindPopup(`<strong>Drive start</strong><br/>${result.origin.label}`)
+      .bindPopup(`<strong>Drive start</strong><br/>${escapeHtml(result.origin.label)}`)
       .addTo(map)
     bounds.push([result.origin.latitude, result.origin.longitude])
 
@@ -83,7 +91,7 @@ export function OutdoorMap({ result, activeStep, weather, traffic }: Props) {
       weight: 2,
     })
       .bindPopup(
-        `<strong>Parking</strong><br/>${parking.label}<br/>~${parking.offsetMeters} m from entrance — leave the car here`,
+        `<strong>Nearest parking</strong><br/>${escapeHtml(parking.label)}<br/>${parking.offsetMeters} m walk to the entrance — leave the car here`,
       )
       .addTo(map)
     bounds.push([parking.latitude, parking.longitude])

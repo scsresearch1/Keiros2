@@ -252,7 +252,7 @@ export async function navigate(
   const entrance =
     raw.entrance ?? (raw.outdoor as { entrance?: NavigateResult['entrance'] } | undefined)?.entrance
   const steps = raw.journey?.steps ?? []
-  return {
+  const result = {
     ...raw,
     walk,
     parking,
@@ -272,25 +272,152 @@ export async function navigate(
       steps,
     },
   } as NavigateResult
+  result.weather = await ensureWeather(
+    result.weather,
+    result.destination.latitude,
+    result.destination.longitude,
+  )
+  return result
+}
+
+const WMO: Record<number, string> = {
+  0: 'Clear',
+  1: 'Mainly clear',
+  2: 'Partly cloudy',
+  3: 'Overcast',
+  45: 'Fog',
+  61: 'Light rain',
+  63: 'Rain',
+  65: 'Heavy rain',
+  71: 'Snow',
+  80: 'Rain showers',
+  95: 'Thunderstorm',
+}
+
+export async function ensureWeather(
+  weather: NavigateResult['weather'],
+  latitude: number,
+  longitude: number,
+): Promise<NavigateResult['weather']> {
+  if (weather?.temperatureF != null && weather.summary && weather.summary !== 'Weather unavailable') {
+    return weather
+  }
+  try {
+    const url = new URL('https://api.open-meteo.com/v1/forecast')
+    url.searchParams.set('latitude', String(latitude))
+    url.searchParams.set('longitude', String(longitude))
+    url.searchParams.set(
+      'current',
+      'temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m,wind_direction_10m,precipitation',
+    )
+    url.searchParams.set('temperature_unit', 'fahrenheit')
+    url.searchParams.set('wind_speed_unit', 'mph')
+    url.searchParams.set('precipitation_unit', 'inch')
+    const res = await fetch(url)
+    if (!res.ok) return weather
+    const json = (await res.json()) as { current?: Record<string, number | string> }
+    const current = json.current
+    if (!current) return weather
+    const code = Number(current.weather_code)
+    return {
+      provider: 'Open-Meteo (live)',
+      temperatureF: Number(current.temperature_2m),
+      feelsLikeF: Number(current.apparent_temperature),
+      humidityPct: Number(current.relative_humidity_2m),
+      windMph: Number(current.wind_speed_10m),
+      windDirectionDeg: Number(current.wind_direction_10m),
+      precipitationIn: Number(current.precipitation),
+      summary: WMO[code] ?? `Code ${code}`,
+      fetchedAt: String(current.time || new Date().toISOString()),
+    }
+  } catch {
+    return weather
+  }
+}
+
+export type RefreshedConditions = {
+  weather: NavigateResult['weather']
+  outdoor: {
+    traffic: NavigateResult['outdoor']['traffic']
+    steps?: JourneyStep[]
+    provider: string
+    distanceM?: number
+    distanceMiles?: number
+    durationMinutes?: number
+    geometry?: NavigateResult['outdoor']['geometry']
+  }
+  refreshedAt: string
 }
 
 export async function refreshConditions(
   apiKey: string,
-  lat: number,
-  lng: number,
-  originMiles = 20,
+  input: {
+    latitude: number
+    longitude: number
+    originMiles?: number
+    origin?: { latitude: number; longitude: number }
+    parking?: { latitude: number; longitude: number }
+  },
 ) {
   const qs = new URLSearchParams({
-    lat: String(lat),
-    lng: String(lng),
-    originMiles: String(originMiles),
+    lat: String(input.latitude),
+    lng: String(input.longitude),
+    originMiles: String(input.originMiles ?? 20),
   })
+  if (input.origin) {
+    qs.set('originLat', String(input.origin.latitude))
+    qs.set('originLng', String(input.origin.longitude))
+  }
+  if (input.parking) {
+    qs.set('parkLat', String(input.parking.latitude))
+    qs.set('parkLng', String(input.parking.longitude))
+  }
   const res = await fetch(`${API_BASE}/api/v1/conditions?${qs}`, { headers: headers(apiKey) })
-  return parse<{
-    weather: NavigateResult['weather']
-    outdoor: { traffic: NavigateResult['outdoor']['traffic']; steps?: JourneyStep[]; provider: string }
-    refreshedAt: string
-  }>(res)
+  const live = await parse<RefreshedConditions>(res)
+  live.weather = await ensureWeather(live.weather, input.latitude, input.longitude)
+  return live
+}
+
+export function applyDriveRefresh(prev: NavigateResult, live: RefreshedConditions): NavigateResult {
+  const drive = (live.outdoor.steps ?? []).map((step, index) => ({
+    ...step,
+    phase: 'drive' as const,
+    index,
+    title: step.title || `Drive · Step ${index + 1}`,
+  }))
+  const useDrive = drive.length > 0
+  const walk = prev.journey.steps.filter((step) => step.phase === 'walk')
+  const indoor = prev.journey.steps.filter((step) => step.phase === 'indoor')
+  const steps = useDrive
+    ? [
+        ...drive,
+        ...walk.map((step, index) => ({ ...step, index: drive.length + index })),
+        ...indoor.map((step, index) => ({ ...step, index: drive.length + walk.length + index })),
+      ]
+    : prev.journey.steps
+  return {
+    ...prev,
+    weather: live.weather,
+    outdoor: {
+      ...prev.outdoor,
+      provider: live.outdoor.provider || prev.outdoor.provider,
+      distanceM: live.outdoor.distanceM ?? prev.outdoor.distanceM,
+      distanceMiles: live.outdoor.distanceMiles ?? prev.outdoor.distanceMiles,
+      durationMinutes: live.outdoor.durationMinutes ?? prev.outdoor.durationMinutes,
+      geometry: live.outdoor.geometry ?? prev.outdoor.geometry,
+      steps: useDrive ? drive : prev.outdoor.steps,
+      traffic: live.outdoor.traffic,
+    },
+    journey: useDrive
+      ? {
+          ...prev.journey,
+          totalSteps: steps.length,
+          driveSteps: drive.length,
+          outdoorSteps: drive.length,
+          steps,
+        }
+      : prev.journey,
+  }
 }
 
 export type DwellTrackPayload = {

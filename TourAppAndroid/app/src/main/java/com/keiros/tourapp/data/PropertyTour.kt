@@ -11,7 +11,17 @@ data class OutdoorRoute(
     val entranceLng: Double,
     val drivePath: List<Pair<Double, Double>>,
     val walkPath: List<Pair<Double, Double>>,
-)
+) {
+    fun startingMilesAway(miles: Double): OutdoorRoute {
+        val shiftedLat = entranceLat - (miles / 69.0)
+        val shiftedLng = entranceLng
+        fun mix(start: Double, end: Double, t: Double) = start + (end - start) * t
+        val drive = listOf(0.0, 0.25, 0.5, 0.75, 1.0).map { t ->
+            mix(shiftedLat, parkingLat, t) to mix(shiftedLng, parkingLng, t)
+        }
+        return copy(originLat = shiftedLat, originLng = shiftedLng, drivePath = drive)
+    }
+}
 
 data class PropertyTour(
     val propertyId: String,

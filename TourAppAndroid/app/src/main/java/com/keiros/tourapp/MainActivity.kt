@@ -19,6 +19,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.keiros.tourapp.flow.TourStep
 import com.keiros.tourapp.flow.TourViewModel
 import com.keiros.tourapp.screens.CompleteScreen
+import com.keiros.tourapp.screens.LiveLocationBinding
 import com.keiros.tourapp.screens.DoorAccessScreen
 import com.keiros.tourapp.screens.DownloadScreen
 import com.keiros.tourapp.screens.NavigationScreen
@@ -40,6 +41,7 @@ class MainActivity : ComponentActivity() {
             KeirosTheme {
                 val vm: TourViewModel = viewModel()
                 val state by vm.state.collectAsState()
+                LiveLocationBinding(state.locationFollowsPhone, vm)
                 Box(
                     Modifier
                         .fillMaxSize()
@@ -55,7 +57,7 @@ class MainActivity : ComponentActivity() {
                     ) {
                         when (state.step) {
                             TourStep.Splash -> SplashScreen(vm::goNext)
-                            TourStep.Permissions -> PermissionsScreen(vm::goBack, vm::goNext)
+                            TourStep.Permissions -> PermissionsScreen(state, vm)
                             TourStep.PropertyCode -> PropertyCodeScreen(state, vm)
                             TourStep.Validating -> ValidatingScreen(state) { vm.goTo(TourStep.Download) }
                             TourStep.Download -> DownloadScreen(state, vm)

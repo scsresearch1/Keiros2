@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { BackChip, PrimaryButton } from '../ui/chrome'
 import { useTour } from '../flow/TourContext'
 import {
+  applyDriveRefresh,
   getApiKey,
   normalizePhase,
   phaseLabel,
@@ -164,21 +165,16 @@ export function NavigationScreen() {
     if (!current) return
     setRefreshing(true)
     try {
-      const live = await refreshConditions(
-        getApiKey(),
-        current.destination.latitude,
-        current.destination.longitude,
-        current.origin.offsetMiles,
-      )
-      patchNavigateResult({
-        weather: live.weather,
-        outdoor: {
-          ...current.outdoor,
-          traffic: live.outdoor.traffic,
-          provider: live.outdoor.provider || current.outdoor.provider,
-          steps: live.outdoor.steps ?? current.outdoor.steps,
-        },
+      const live = await refreshConditions(getApiKey(), {
+        latitude: current.destination.latitude,
+        longitude: current.destination.longitude,
+        originMiles: current.origin.offsetMiles,
+        origin: { latitude: current.origin.latitude, longitude: current.origin.longitude },
+        parking: current.parking
+          ? { latitude: current.parking.latitude, longitude: current.parking.longitude }
+          : undefined,
       })
+      patchNavigateResult(applyDriveRefresh(current, live))
     } catch {
       /* soft */
     } finally {

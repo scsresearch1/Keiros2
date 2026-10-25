@@ -94,9 +94,10 @@ export function Panel({ title, children, actions, className, icon }: PanelProps)
 type DataTableProps = {
   columns: string[]
   rows: ReactNode[][]
+  rowClassNames?: string[]
 }
 
-export function DataTable({ columns, rows }: DataTableProps) {
+export function DataTable({ columns, rows, rowClassNames }: DataTableProps) {
   return (
     <div className="k-table-wrap">
       <table className="k-table">
@@ -109,7 +110,7 @@ export function DataTable({ columns, rows }: DataTableProps) {
         </thead>
         <tbody>
           {rows.map((row, i) => (
-            <tr key={i}>
+            <tr key={i} className={rowClassNames?.[i]}>
               {row.map((cell, j) => (
                 <td key={j}>{cell}</td>
               ))}

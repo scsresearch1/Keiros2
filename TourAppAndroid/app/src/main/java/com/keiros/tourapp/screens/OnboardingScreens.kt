@@ -1,5 +1,13 @@
 package com.keiros.tourapp.screens
 
+import android.Manifest
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.location.LocationManager
+import android.net.Uri
+import android.os.Build
+import android.provider.Settings
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -19,6 +27,7 @@ import androidx.compose.material3.Text
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -30,10 +39,16 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.keiros.tourapp.data.Photos
 import com.keiros.tourapp.flow.TourUiState
 import com.keiros.tourapp.flow.TourViewModel
@@ -85,10 +100,64 @@ fun SplashScreen(onBegin: () -> Unit) {
 }
 
 @Composable
-fun PermissionsScreen(onBack: () -> Unit, onContinue: () -> Unit) {
+fun PermissionsScreen(state: TourUiState, vm: TourViewModel) {
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var awaitingEnablement by remember { mutableStateOf(false) }
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
+    ) { result ->
+        val granted = result[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
+            result[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+        when {
+            !granted -> {
+                awaitingEnablement = false
+                vm.onLocationDenied()
+            }
+            !context.isDeviceLocationEnabled() -> {
+                awaitingEnablement = true
+                vm.onLocationServicesDisabled()
+                context.startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS))
+            }
+            else -> {
+                awaitingEnablement = false
+                vm.continueWithLocation()
+            }
+        }
+    }
+    DisposableEffect(lifecycleOwner, awaitingEnablement) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME && awaitingEnablement && context.hasLocationPermission() && context.isDeviceLocationEnabled()) {
+                awaitingEnablement = false
+                vm.continueWithLocation()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    fun requestContinue() {
+        if (state.locationBusy) return
+        vm.beginLocationRequest()
+        if (!context.hasLocationPermission()) {
+            permissionLauncher.launch(
+                arrayOf(
+                    Manifest.permission.ACCESS_FINE_LOCATION,
+                    Manifest.permission.ACCESS_COARSE_LOCATION,
+                ),
+            )
+            return
+        }
+        if (!context.isDeviceLocationEnabled()) {
+            awaitingEnablement = true
+            vm.onLocationServicesDisabled()
+            context.startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS))
+            return
+        }
+        vm.continueWithLocation()
+    }
     Box(Modifier.fillMaxSize()) {
         HeroBackdrop(Photos.night)
-        Box(Modifier.padding(14.dp)) { BackChip(onBack) }
+        Box(Modifier.padding(14.dp)) { BackChip(vm::goBack) }
         Column(Modifier.align(Alignment.BottomCenter)) {
             BottomSheet("Help us guide you", "Only used while you’re on this self-guided tour.") {
                 listOf(
@@ -109,19 +178,72 @@ fun PermissionsScreen(onBack: () -> Unit, onContinue: () -> Unit) {
                         Text(body, color = TextMuted, fontSize = 13.sp, fontFamily = Manrope)
                     }
                 }
-                PrimaryButton("Continue", onContinue)
+                if (state.locationError != null) {
+                    Text(
+                        state.locationError,
+                        color = Color(0xFFFECACA),
+                        fontSize = 13.sp,
+                        fontFamily = Manrope,
+                        modifier = Modifier.padding(bottom = 8.dp),
+                    )
+                    Text(
+                        "Open Settings",
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                val intent = if (context.hasLocationPermission()) {
+                                    Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)
+                                } else {
+                                    Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                                        data = Uri.fromParts("package", context.packageName, null)
+                                    }
+                                }
+                                awaitingEnablement = true
+                                context.startActivity(intent)
+                            }
+                            .padding(bottom = 8.dp),
+                        color = Teal,
+                        fontFamily = Manrope,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.sp,
+                        textAlign = TextAlign.Center,
+                    )
+                }
+                PrimaryButton(
+                    if (state.locationBusy) "Waiting for location…" else "Continue",
+                    { requestContinue() },
+                    enabled = !state.locationBusy,
+                )
                 Text(
                     "Continue without location",
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clickable(onClick = onContinue)
+                        .clickable(enabled = !state.locationBusy, onClick = vm::continueWithoutLocation)
                         .padding(top = 12.dp),
                     color = TextSecondary,
                     fontFamily = Manrope,
                     fontSize = 14.sp,
+                    textAlign = TextAlign.Center,
                 )
             }
         }
+    }
+}
+
+private fun Context.hasLocationPermission(): Boolean {
+    val fine = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+    val coarse = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+    return fine || coarse
+}
+
+private fun Context.isDeviceLocationEnabled(): Boolean {
+    val manager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
+    return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+        manager.isLocationEnabled
+    } else {
+        @Suppress("DEPRECATION")
+        manager.isProviderEnabled(LocationManager.GPS_PROVIDER) ||
+            manager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
     }
 }
 

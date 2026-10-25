@@ -358,6 +358,12 @@ fun RoutePreviewScreen(state: TourUiState, vm: TourViewModel) {
                 weather = state.weatherSummary,
                 traffic = state.trafficLevel,
                 modifier = Modifier.fillMaxSize(),
+                followPhone = state.locationFollowsPhone,
+                chaseCamera = false,
+                userLatitude = state.userLatitude,
+                userLongitude = state.userLongitude,
+                userHeading = state.userHeading,
+                liveRoute = state.liveRoute,
             )
             Box(Modifier.padding(14.dp)) { BackChip(vm::goBack) }
         }
@@ -378,6 +384,27 @@ fun RoutePreviewScreen(state: TourUiState, vm: TourViewModel) {
             )
             Text(title, fontFamily = Sora, fontSize = 22.sp, color = TextPrimary, modifier = Modifier.padding(vertical = 6.dp))
             if (stop != null) Text(stop.blurb, color = TextSecondary, fontFamily = Manrope)
+            if (state.locationFollowsPhone) {
+                Text(
+                    when {
+                        state.userLatitude == null -> "Finding your location…"
+                        state.navInstruction.isNotBlank() -> state.navInstruction
+                        else -> "Route starts at this phone."
+                    },
+                    color = TextSecondary,
+                    fontFamily = Manrope,
+                    fontSize = 13.sp,
+                    modifier = Modifier.padding(top = 6.dp),
+                )
+            } else if (state.startMilesAway > 0 && state.currentStopIndex == 0) {
+                Text(
+                    "Starting about 5 miles from the property.",
+                    color = TextSecondary,
+                    fontFamily = Manrope,
+                    fontSize = 13.sp,
+                    modifier = Modifier.padding(top = 6.dp),
+                )
+            }
             Row(Modifier.padding(vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 if (state.currentStopIndex == 0) {
                     MiniPhase("Arrive", false, Color(0xFFF97316), Modifier.weight(1f))
@@ -390,9 +417,28 @@ fun RoutePreviewScreen(state: TourUiState, vm: TourViewModel) {
                 }
             }
             val indoorStops = state.tour.journey.count { it.phase == "indoor" }
+            val distantStart = state.startMilesAway > 0 && state.currentStopIndex == 0
+            val liveDistance = if (state.locationFollowsPhone) state.navDistanceMeters else null
+            val liveEta = if (state.locationFollowsPhone) state.navEtaSeconds else null
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Stat("6m", "To parking", Modifier.weight(1f))
-                Stat("3m", "To entrance", Modifier.weight(1f))
+                Stat(
+                    when {
+                        liveDistance != null -> com.keiros.tourapp.data.Geo.formatDistance(liveDistance)
+                        distantStart -> "5.0 mi"
+                        else -> "6m"
+                    },
+                    if (state.locationFollowsPhone) "From you" else "To parking",
+                    Modifier.weight(1f),
+                )
+                Stat(
+                    when {
+                        liveEta != null -> com.keiros.tourapp.data.Geo.formatEta(liveEta)
+                        distantStart -> "12m"
+                        else -> "3m"
+                    },
+                    "To entrance",
+                    Modifier.weight(1f),
+                )
                 Stat("${indoorStops}m", "Inside", Modifier.weight(1f))
             }
             Text("${state.weatherSummary} · $indoorStops indoor checkpoints", color = TextMuted, fontSize = 12.sp, fontFamily = Manrope, modifier = Modifier.padding(vertical = 10.dp))

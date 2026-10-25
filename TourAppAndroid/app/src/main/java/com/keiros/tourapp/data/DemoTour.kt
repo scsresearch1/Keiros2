@@ -45,8 +45,8 @@ data class JourneyStep(
     val id: String,
     val phase: String,
     val instruction: String,
-    val latitude: Double = 41.8874,
-    val longitude: Double = -87.6236,
+    val latitude: Double = 0.0,
+    val longitude: Double = 0.0,
     val stopId: String? = null,
 )
 
@@ -107,14 +107,14 @@ object DemoTour {
     )
 
     val units = listOf(
-        TourUnit("u1", "Main Lobby", "lobby", "Tower A", "f1", "Ground", 1),
-        TourUnit("u2", "Leasing Office", "leasing", "Tower A", "f1", "Ground", 1),
-        TourUnit("u3", "Fitness Center", "gym", "Tower A", "f2", "Level 2", 2),
-        TourUnit("u4", "Pool Deck", "pool", "Tower A", "f2", "Level 2", 2),
-        TourUnit("u5", "Clubhouse", "club", "Tower A", "f2", "Level 2", 2),
-        TourUnit("u6", "Model Home 301", "unit", "Tower A", "f3", "Level 3", 3),
-        TourUnit("u7", "Model Home 302", "unit", "Tower A", "f3", "Level 3", 3),
-        TourUnit("u8", "Resident Parking", "parking", "Garage", "f1", "Ground", 1),
+        TourUnit("u1", "Main Lobby", "lobby", "Tower A", "f1", "Ground", 1, 41.88760, -87.62390),
+        TourUnit("u2", "Leasing Office", "leasing", "Tower A", "f1", "Ground", 1, 41.88773, -87.62382),
+        TourUnit("u3", "Fitness Center", "gym", "Tower A", "f2", "Level 2", 2, 41.88778, -87.62406),
+        TourUnit("u4", "Pool Deck", "pool", "Tower A", "f2", "Level 2", 2, 41.88769, -87.62420),
+        TourUnit("u5", "Clubhouse", "club", "Tower A", "f2", "Level 2", 2, 41.88786, -87.62396),
+        TourUnit("u6", "Model Home 301", "unit", "Tower A", "f3", "Level 3", 3, 41.88791, -87.62370),
+        TourUnit("u7", "Model Home 302", "unit", "Tower A", "f3", "Level 3", 3, 41.88792, -87.62354),
+        TourUnit("u8", "Resident Parking", "parking", "Garage", "f1", "Ground", 1, 41.88840, -87.62480),
     )
 
     val stops: List<TourStop> = units.filter { it.type != "parking" }.mapIndexed { index, unit ->

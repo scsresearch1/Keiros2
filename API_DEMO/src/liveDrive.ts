@@ -19,6 +19,9 @@ type OsrmRoute = {
 
 function serverUsedOrigin(result: NavigateResult, origin: LatLng) {
   if (result.origin.startMode === 'demo') return false
+  // The API sometimes keeps the chosen point but falls back to a straight line.
+  // Let the browser try a road route before accepting that.
+  if (/fallback/i.test(result.outdoor.provider || '')) return false
   const dLat = result.origin.latitude - origin.latitude
   const dLng = result.origin.longitude - origin.longitude
   return dLat * dLat + dLng * dLng <= 0.0025
@@ -65,7 +68,9 @@ function stepsFromRoute(route: OsrmRoute): JourneyStep[] {
   return raw.map((step, index) => {
     const [lng, lat] = step.maneuver.location
     const mph = step.duration > 0 ? (step.distance / 1609.344) / (step.duration / 3600) : 0
-    const level = mph >= 45 ? 'Light' : mph >= 25 ? 'Moderate' : mph >= 12 ? 'Heavy' : 'Severe'
+    const expected = step.distance >= 1500 ? 62 : step.distance >= 400 ? 38 : 26
+    const congestion = Math.max(0, Math.min(1, 1 - mph / expected))
+    const level = congestion < 0.15 ? 'Light' : congestion < 0.35 ? 'Moderate' : congestion < 0.6 ? 'Heavy' : 'Severe'
     return {
       id: `drv-${index}`,
       phase: 'drive' as const,
@@ -77,6 +82,7 @@ function stepsFromRoute(route: OsrmRoute): JourneyStep[] {
       durationSec: Math.round(step.duration),
       speedMph: Math.round(mph * 10) / 10,
       trafficLevel: level,
+      congestionIndex: Math.round(congestion * 100) / 100,
       latitude: lat,
       longitude: lng,
       geometry: step.geometry?.coordinates ?? [],
@@ -88,20 +94,28 @@ async function fetchDrive(origin: LatLng, parking: LatLng) {
   const url =
     `https://router.project-osrm.org/route/v1/driving/` +
     `${origin.longitude},${origin.latitude};${parking.longitude},${parking.latitude}` +
-    `?overview=full&geometries=geojson&steps=true`
+    `?overview=full&geometries=geojson&steps=true&alternatives=3`
   const res = await fetch(url)
-  if (!res.ok) throw new Error(`Could not route from the current location (OSRM ${res.status})`)
+  if (!res.ok) throw new Error(`Could not route from the starting location (OSRM ${res.status})`)
   const json = (await res.json()) as { routes?: OsrmRoute[] }
-  const route = json.routes?.[0]
-  if (!route) throw new Error('No driving route from the current location')
+  const route = [...(json.routes ?? [])].sort(
+    (a, b) => a.duration - b.duration || a.distance - b.distance,
+  )[0]
+  if (!route) throw new Error('No driving route from the starting location')
   const steps = stepsFromRoute(route)
   const distanceM = Math.round(route.distance)
   const durationS = route.duration
   const avgMph = durationS > 0 ? (distanceM / 1609.344) / (durationS / 3600) : 0
-  const freeFlowS = distanceM / 13.4
-  const congestion = Math.max(0, Math.min(1, (durationS - freeFlowS) / Math.max(freeFlowS, 1)))
+  const weighted = steps.reduce(
+    (sum, step) => ({
+      dist: sum.dist + (step.distanceM ?? 0),
+      delay: sum.delay + (step.distanceM ?? 0) * (step.congestionIndex ?? 0),
+    }),
+    { dist: 0, delay: 0 },
+  )
+  const congestion = weighted.dist > 0 ? weighted.delay / weighted.dist : 0
   const level =
-    congestion < 0.15 ? 'Light' : congestion < 0.4 ? 'Moderate' : congestion < 0.7 ? 'Heavy' : 'Severe'
+    congestion < 0.15 ? 'Light' : congestion < 0.35 ? 'Moderate' : congestion < 0.6 ? 'Heavy' : 'Severe'
   return {
     steps,
     distanceM,
@@ -113,7 +127,7 @@ async function fetchDrive(origin: LatLng, parking: LatLng) {
       congestionIndex: Math.round(congestion * 100) / 100,
       averageSpeedMph: Math.round(avgMph * 10) / 10,
       updatedAt: new Date().toISOString(),
-      note: 'Drive from the current location to visitor parking.',
+      note: 'Each segment is compared with a typical speed for its length. Lower speeds raise the index.',
       segments: steps.map((step) => ({
         id: step.id,
         trafficLevel: step.trafficLevel ?? 'Unknown',
@@ -125,15 +139,27 @@ async function fetchDrive(origin: LatLng, parking: LatLng) {
 }
 
 /** Keep walk and indoor legs. Replace the drive when the API still used the simulated start. */
-export async function withLiveDrive(result: NavigateResult, origin: LatLng): Promise<NavigateResult> {
+export async function withLiveDrive(
+  result: NavigateResult,
+  origin: LatLng,
+  options?: { label?: string; startMode?: 'live' | 'custom' },
+): Promise<NavigateResult> {
   if (serverUsedOrigin(result, origin)) return result
+  const keepServerOnFailure = result.origin.startMode !== 'demo'
+  const startMode = options?.startMode ?? 'live'
   const parking = result.parking ?? {
     latitude: result.destination.latitude,
     longitude: result.destination.longitude,
     label: 'Parking',
     offsetMeters: 0,
   }
-  const drive = await fetchDrive(origin, parking)
+  let drive: Awaited<ReturnType<typeof fetchDrive>>
+  try {
+    drive = await fetchDrive(origin, parking)
+  } catch (err) {
+    if (keepServerOnFailure) return result
+    throw err
+  }
   const walkSteps = result.journey.steps.filter((step) => step.phase === 'walk')
   const indoorSteps = result.journey.steps.filter((step) => step.phase === 'indoor')
   const steps = [
@@ -145,14 +171,18 @@ export async function withLiveDrive(result: NavigateResult, origin: LatLng): Pro
     })),
   ]
   const miles = Math.round(milesBetween(origin, parking) * 10) / 10
+  const coordLabel = `${origin.latitude.toFixed(5)}, ${origin.longitude.toFixed(5)}`
+  const label =
+    options?.label?.trim() ||
+    (startMode === 'custom' ? `Chosen start (${coordLabel})` : `Current location (${coordLabel})`)
   return {
     ...result,
     origin: {
       latitude: origin.latitude,
       longitude: origin.longitude,
-      label: `Current location (${origin.latitude.toFixed(5)}, ${origin.longitude.toFixed(5)})`,
+      label,
       offsetMiles: miles,
-      startMode: 'live',
+      startMode,
     },
     outdoor: {
       ...result.outdoor,
@@ -162,7 +192,13 @@ export async function withLiveDrive(result: NavigateResult, origin: LatLng): Pro
       durationMinutes: drive.durationMinutes,
       geometry: drive.geometry,
       steps: drive.steps,
-      traffic: drive.traffic,
+      traffic: {
+        ...drive.traffic,
+        note:
+          startMode === 'custom'
+            ? 'Drive from the chosen start to the nearest parking. Segment index is delay versus a typical speed.'
+            : 'Drive from the current location to the nearest parking. Segment index is delay versus a typical speed.',
+      },
     },
     journey: {
       ...result.journey,

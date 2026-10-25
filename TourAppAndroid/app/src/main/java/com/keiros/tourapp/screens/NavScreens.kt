@@ -43,6 +43,7 @@ import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.keiros.tourapp.data.Geo
 import com.keiros.tourapp.data.PropertyTour
 import com.keiros.tourapp.flow.TourMode
 import com.keiros.tourapp.flow.TourUiState
@@ -95,6 +96,9 @@ fun NavigationScreen(state: TourUiState, vm: TourViewModel) {
                         .let { if (it >= 0) it else state.currentStopIndex },
                     onSelectFloor = vm::selectFloor,
                     onSelectUnit = { id, floorId -> vm.choosePlace(id, floorId) },
+                    followPhone = state.locationFollowsPhone,
+                    userLatitude = state.userLatitude,
+                    userLongitude = state.userLongitude,
                 )
             } else {
                 OutdoorMapView(
@@ -103,6 +107,12 @@ fun NavigationScreen(state: TourUiState, vm: TourViewModel) {
                     weather = state.weatherSummary,
                     traffic = state.trafficLevel,
                     modifier = Modifier.fillMaxSize(),
+                    followPhone = state.locationFollowsPhone,
+                    chaseCamera = state.locationFollowsPhone,
+                    userLatitude = state.userLatitude,
+                    userLongitude = state.userLongitude,
+                    userHeading = state.userHeading,
+                    liveRoute = state.liveRoute,
                 )
             }
             Row(
@@ -190,10 +200,43 @@ fun NavigationScreen(state: TourUiState, vm: TourViewModel) {
                     .border(1.dp, Color(0x477DD3FC), RoundedCornerShape(14.dp))
                     .padding(12.dp),
             ) {
-                Text(stopLabel.uppercase(), color = if (indoors) Color(0xFFF9A8D4) else Color(0xFF7DD3FC), fontSize = 11.sp, fontWeight = FontWeight.Bold, fontFamily = Manrope)
-                Text(step?.instruction ?: "", color = TextPrimary, fontFamily = Manrope, fontWeight = FontWeight.SemiBold)
+                val live = state.locationFollowsPhone
+                val instruction = when {
+                    live && state.navInstruction.isNotBlank() -> state.navInstruction
+                    live && state.userLatitude == null -> "Finding your location…"
+                    else -> step?.instruction ?: ""
+                }
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(stopLabel.uppercase(), color = if (indoors) Color(0xFFF9A8D4) else Color(0xFF7DD3FC), fontSize = 11.sp, fontWeight = FontWeight.Bold, fontFamily = Manrope)
+                    if (live) {
+                        Text(
+                            "LIVE",
+                            modifier = Modifier
+                                .clip(CircleShape)
+                                .background(Color(0xFF7DD3FC))
+                                .padding(horizontal = 6.dp, vertical = 2.dp),
+                            color = Color(0xFF04243A),
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                        )
+                    }
+                }
+                Text(instruction, color = TextPrimary, fontFamily = Manrope, fontWeight = FontWeight.SemiBold)
+                val remaining = (tour.journey.size - state.activeStepIndex).coerceAtLeast(1)
+                val liveMeters = state.navDistanceMeters
+                val measured = (live || state.startMilesAway > 0) && liveMeters != null
+                val distanceLabel = when {
+                    measured && liveMeters != null -> {
+                        val eta = state.navEtaSeconds?.let { " · ${Geo.formatEta(it)}" }.orEmpty()
+                        "${Geo.formatDistance(liveMeters)}$eta"
+                    }
+                    state.startMilesAway > 0 && phase == "drive" -> {
+                        "5.0 mi · ~12 min · tip ${state.activeStepIndex + 1}/${tour.journey.size.coerceAtLeast(1)}"
+                    }
+                    else -> "${remaining * 90} ft · ~$remaining min · tip ${state.activeStepIndex + 1}/${tour.journey.size.coerceAtLeast(1)}"
+                }
                 Text(
-                    "${(tour.journey.size - state.activeStepIndex) * 90} ft · ~${(tour.journey.size - state.activeStepIndex).coerceAtLeast(1)} min · tip ${state.activeStepIndex + 1}/${tour.journey.size.coerceAtLeast(1)}",
+                    distanceLabel,
                     color = TextMuted,
                     fontSize = 12.sp,
                     fontFamily = Manrope,
@@ -206,9 +249,15 @@ fun NavigationScreen(state: TourUiState, vm: TourViewModel) {
                         .clip(CircleShape)
                         .background(Color(0x26ADC9E8)),
                 ) {
+                    val leg = state.routeLegMeters
+                    val covered = if (!state.insideBuilding && measured && liveMeters != null && leg > 1.0) {
+                        ((leg - liveMeters) / leg).toFloat().coerceIn(0f, 1f)
+                    } else {
+                        (state.activeStepIndex + 1f) / tour.journey.size.coerceAtLeast(1)
+                    }
                     Box(
                         Modifier
-                            .fillMaxWidth((state.activeStepIndex + 1f) / tour.journey.size.coerceAtLeast(1))
+                            .fillMaxWidth(covered)
                             .height(3.dp)
                             .background(Brush.horizontalGradient(listOf(Teal, Color(0xFF2B7DE9)))),
                     )
@@ -511,6 +560,9 @@ fun IndoorSketch(
     activeStopIndex: Int,
     onSelectFloor: (String) -> Unit,
     onSelectUnit: (String, String) -> Unit,
+    followPhone: Boolean = false,
+    userLatitude: Double? = null,
+    userLongitude: Double? = null,
 ) {
     var yaw by remember { mutableFloatStateOf(0.48f) }
     var pitch by remember { mutableFloatStateOf(0.52f) }
@@ -652,31 +704,27 @@ fun IndoorSketch(
             2f,
         )
 
+        fun placedOn(floorId: String) = tour.units.filter {
+            it.floorId == floorId && it.type != "parking" && Geo.isPlaced(it.latitude, it.longitude)
+        }
         fun unitPoint(unitId: String): Offset? {
             val unit = tour.units.find { it.id == unitId } ?: return null
             val floorIndex = floors.indexOfFirst { it.id == unit.floorId }
             if (floorIndex < 0) return null
-            val peers = tour.units.filter { it.floorId == unit.floorId && it.type != "parking" }
-            val lngs = peers.map { it.longitude }
-            val lats = peers.map { it.latitude }
-            val minLng = lngs.minOrNull() ?: 0.0
-            val maxLng = lngs.maxOrNull() ?: 0.0
-            val minLat = lats.minOrNull() ?: 0.0
-            val maxLat = lats.maxOrNull() ?: 0.0
-            val u = if (maxLng == minLng) {
-                val local = peers.indexOfFirst { it.id == unit.id }.coerceAtLeast(0)
-                (local % 4) / 4f
-            } else {
-                ((unit.longitude - minLng) / (maxLng - minLng)).toFloat()
-            }
-            val v = if (maxLat == minLat) {
-                val local = peers.indexOfFirst { it.id == unit.id }.coerceAtLeast(0)
-                (local / 4) / 4f
-            } else {
-                ((unit.latitude - minLat) / (maxLat - minLat)).toFloat()
-            }
             val z = (floorIndex + 1) * storyH + 0.04f
-            return p(0.45f + u * (width - 0.9f), 0.4f + v * (depth - 0.8f), z)
+            val peers = placedOn(unit.floorId)
+            if (Geo.isPlaced(unit.latitude, unit.longitude) && peers.size >= 2) {
+                val minLng = peers.minOf { it.longitude }
+                val maxLng = peers.maxOf { it.longitude }
+                val minLat = peers.minOf { it.latitude }
+                val maxLat = peers.maxOf { it.latitude }
+                val u = if (maxLng == minLng) 0.5f else ((unit.longitude - minLng) / (maxLng - minLng)).toFloat()
+                val v = if (maxLat == minLat) 0.5f else ((unit.latitude - minLat) / (maxLat - minLat)).toFloat()
+                return p(0.45f + u.coerceIn(0f, 1f) * (width - 0.9f), 0.4f + v.coerceIn(0f, 1f) * (depth - 0.8f), z)
+            }
+            val indexed = tour.units.filter { it.floorId == unit.floorId && it.type != "parking" }
+            val local = indexed.indexOfFirst { it.id == unit.id }.coerceAtLeast(0)
+            return p(0.45f + (local % 4) / 4f * (width - 0.9f), 0.4f + (local / 4) / 4f * (depth - 0.8f), z)
         }
 
         val route = tour.stops.mapNotNull { stop -> unitPoint(stop.id)?.let { stop to it } }
@@ -716,6 +764,34 @@ fun IndoorSketch(
             val name = textMeasurer.measure(unit.name, TextStyle(color = Color(0xFFECFDF5), fontSize = 10.sp))
             drawText(name, topLeft = Offset(at.x + 14f, at.y - 8f))
         }
+
+        val personPeers = placedOn(selectedFloorId).ifEmpty {
+            tour.units.filter { it.type != "parking" && Geo.isPlaced(it.latitude, it.longitude) }
+        }
+        if (followPhone && userLatitude != null && userLongitude != null && personPeers.size >= 2) {
+            val centerLat = personPeers.map { it.latitude }.average()
+            val centerLng = personPeers.map { it.longitude }.average()
+            if (Geo.meters(userLatitude, userLongitude, centerLat, centerLng) < 160) {
+            val floorIndex = floors.indexOfFirst { it.id == selectedFloorId }.let { if (it >= 0) it else 0 }
+            val personZ = (floorIndex + 1) * storyH + 0.2f
+            val minLng = personPeers.minOf { it.longitude }
+            val maxLng = personPeers.maxOf { it.longitude }
+            val minLat = personPeers.minOf { it.latitude }
+            val maxLat = personPeers.maxOf { it.latitude }
+            val u = if (maxLng == minLng) 0.5f else ((userLongitude - minLng) / (maxLng - minLng)).toFloat().coerceIn(0f, 1f)
+            val v = if (maxLat == minLat) 0.5f else ((userLatitude - minLat) / (maxLat - minLat)).toFloat().coerceIn(0f, 1f)
+            val at = p(0.45f + u * (width - 0.9f), 0.4f + v * (depth - 0.8f), personZ)
+            drawCircle(Color(0x594285F4), 26f, at)
+            drawCircle(Color(0xFF1A73E8), 16f, at)
+            drawCircle(Color.White, 16f, at, style = Stroke(2.5f))
+            drawCircle(Color.White, 3.2f, Offset(at.x, at.y - 6f))
+            drawLine(Color.White, Offset(at.x, at.y - 2.5f), Offset(at.x, at.y + 5f), strokeWidth = 2.2f)
+            drawLine(Color.White, Offset(at.x, at.y + 5f), Offset(at.x - 4.5f, at.y + 11f), strokeWidth = 2.2f)
+            drawLine(Color.White, Offset(at.x, at.y + 5f), Offset(at.x + 4.5f, at.y + 11f), strokeWidth = 2.2f)
+            drawLine(Color.White, Offset(at.x, at.y - 0.5f), Offset(at.x - 5f, at.y + 3f), strokeWidth = 2.2f)
+            drawLine(Color.White, Offset(at.x, at.y - 0.5f), Offset(at.x + 5f, at.y + 3f), strokeWidth = 2.2f)
+            }
+        }
     }
     Column(Modifier.align(Alignment.TopEnd).padding(top = 56.dp, end = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         MapCtrl("+") { zoom = (zoom * 1.15f).coerceIn(0.6f, 2.2f) }
@@ -727,8 +803,14 @@ fun IndoorSketch(
         }
     }
     val floorName = tour.floors.find { it.id == selectedFloorId }?.label ?: ""
+    val placeLabel = "${tour.buildingName} · ${tour.floors.size} floors · $floorName · stop ${activeStopIndex + 1}/${tour.stops.size.coerceAtLeast(1)}"
+    val caption = when {
+        followPhone && userLatitude == null -> "Finding you · $placeLabel"
+        followPhone -> "You · $placeLabel"
+        else -> placeLabel
+    }
     Text(
-        "${tour.buildingName} · ${tour.floors.size} floors · $floorName · stop ${activeStopIndex + 1}/${tour.stops.size.coerceAtLeast(1)}",
+        caption,
         modifier = Modifier.align(Alignment.BottomStart).padding(start = 12.dp, bottom = 118.dp),
         color = TextSecondary,
         fontSize = 11.sp,

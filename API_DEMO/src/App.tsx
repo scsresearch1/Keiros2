@@ -4,18 +4,21 @@ import {
   fetchHierarchy,
   navigate,
   refreshConditions,
+  applyDriveRefresh,
   phaseLabel,
   type Hierarchy,
   type NavigateResult,
 } from './api'
 import { OutdoorMap } from './components/OutdoorMap'
 import { Indoor3D } from './components/Indoor3D'
+import { StartLocationPanel } from './components/StartLocationPanel'
 import { withLiveDrive } from './liveDrive'
+import type { StartPoint } from './startLocation'
 
 const DEMO_KEY = 'keiros_live_ot_demo_map_nav_2026'
 const KEY_STORAGE = 'keiros_api_demo_key'
 
-type StartMode = 'demo' | 'live'
+type StartMode = 'demo' | 'live' | 'custom'
 
 function readCurrentLocation(): Promise<{ latitude: number; longitude: number }> {
   return new Promise((resolve, reject) => {
@@ -46,6 +49,9 @@ export default function App() {
   const [journeyIndex, setJourneyIndex] = useState(0)
   const [refreshing, setRefreshing] = useState(false)
   const [startMode, setStartMode] = useState<StartMode>('demo')
+  const [liveSelected, setLiveSelected] = useState(false)
+  const [customOrigin, setCustomOrigin] = useState<StartPoint | null>(null)
+  const [pickerOpen, setPickerOpen] = useState(false)
   const [liveOrigin, setLiveOrigin] = useState<{ latitude: number; longitude: number } | null>(null)
   const [locating, setLocating] = useState(false)
 
@@ -102,7 +108,10 @@ export default function App() {
     return Boolean(apiKey && complexId && buildingId && floorId && unitId)
   }
 
-  async function planRoute(mode: StartMode, origin?: { latitude: number; longitude: number }) {
+  async function planRoute(
+    mode: StartMode,
+    origin?: { latitude: number; longitude: number; label?: string },
+  ) {
     if (!selectionReady()) {
       setError('Select complex, building, floor, and unit first.')
       return
@@ -110,17 +119,27 @@ export default function App() {
     setLoading(true)
     setError('')
     try {
+      const explicit = mode !== 'demo' && origin
       const nav = await navigate(apiKey, {
         complexId,
         buildingId,
         floorId,
         unitId,
         startMode: mode,
-        ...(mode === 'live' && origin
-          ? { originLatitude: origin.latitude, originLongitude: origin.longitude }
+        ...(explicit
+          ? {
+              originLatitude: origin.latitude,
+              originLongitude: origin.longitude,
+              ...(origin.label ? { originLabel: origin.label } : {}),
+            }
           : {}),
       })
-      const routed = mode === 'live' && origin ? await withLiveDrive(nav, origin) : nav
+      const routed = explicit
+        ? await withLiveDrive(nav, origin, {
+            label: origin.label,
+            startMode: mode === 'custom' ? 'custom' : 'live',
+          })
+        : nav
       setResult(routed)
       setJourneyIndex(0)
     } catch (err) {
@@ -130,9 +149,10 @@ export default function App() {
     }
   }
 
-  async function chooseStartMode(next: StartMode) {
+  async function chooseStartMode(next: 'demo' | 'live') {
     if (next === 'demo') {
       setStartMode('demo')
+      setLiveSelected(false)
       setLiveOrigin(null)
       setError('')
       if (selectionReady()) await planRoute('demo')
@@ -143,10 +163,12 @@ export default function App() {
     try {
       const coords = await readCurrentLocation()
       setLiveOrigin(coords)
+      setLiveSelected(true)
       setStartMode('live')
       if (selectionReady()) await planRoute('live', coords)
     } catch (err) {
       setStartMode('demo')
+      setLiveSelected(false)
       setLiveOrigin(null)
       setError(err instanceof Error ? err.message : 'Could not read the current location.')
     } finally {
@@ -158,6 +180,14 @@ export default function App() {
     e.preventDefault()
     if (!selectionReady()) {
       setError('Select complex, building, floor, and unit first.')
+      return
+    }
+    if (startMode === 'custom') {
+      if (!customOrigin) {
+        setError('Set a starting point, or switch to Demo Mode or Live.')
+        return
+      }
+      await planRoute('custom', customOrigin)
       return
     }
     if (startMode === 'live') {
@@ -181,29 +211,16 @@ export default function App() {
     setRefreshing(true)
     setError('')
     try {
-      const live = await refreshConditions(
-        apiKey,
-        result.destination.latitude,
-        result.destination.longitude,
-        result.origin.offsetMiles,
-        result.origin.startMode === 'live'
-          ? { latitude: result.origin.latitude, longitude: result.origin.longitude }
+      const live = await refreshConditions(apiKey, {
+        latitude: result.destination.latitude,
+        longitude: result.destination.longitude,
+        originMiles: result.origin.offsetMiles,
+        origin: { latitude: result.origin.latitude, longitude: result.origin.longitude },
+        parking: result.parking
+          ? { latitude: result.parking.latitude, longitude: result.parking.longitude }
           : undefined,
-      )
-      setResult((prev) =>
-        prev
-          ? {
-              ...prev,
-              weather: live.weather,
-              outdoor: {
-                ...prev.outdoor,
-                traffic: live.outdoor.traffic,
-                provider: live.outdoor.provider || prev.outdoor.provider,
-                steps: live.outdoor.steps ?? prev.outdoor.steps,
-              },
-            }
-          : prev,
-      )
+      })
+      setResult((prev) => (prev ? applyDriveRefresh(prev, live) : prev))
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not refresh conditions')
     } finally {
@@ -221,6 +238,25 @@ export default function App() {
     setFloorId('')
     setUnitId('')
     setKeyInput(DEMO_KEY)
+    setStartMode('demo')
+    setLiveSelected(false)
+    setCustomOrigin(null)
+    setPickerOpen(false)
+    setLiveOrigin(null)
+  }
+
+  async function applyCustomStart(point: StartPoint) {
+    setCustomOrigin(point)
+    setStartMode('custom')
+    setPickerOpen(false)
+    setError('')
+    if (selectionReady()) await planRoute('custom', point)
+  }
+
+  async function clearCustomStart() {
+    setCustomOrigin(null)
+    setPickerOpen(false)
+    await chooseStartMode(liveSelected ? 'live' : 'demo')
   }
 
   if (!apiKey || !hierarchy) {
@@ -268,6 +304,16 @@ export default function App() {
   const indoorStep = active?.phase === 'indoor' ? (active.indoorIndex ?? 0) : 0
   const showOutdoorMap = phase === 'drive' || phase === 'walk'
   const canNavigate = Boolean(complexId && buildingId && floorId && unitId)
+  const selectedUnit = units.find((unit) => unit.id === unitId) ?? null
+  const unitFocus =
+    selectedUnit &&
+    Number.isFinite(selectedUnit.latitude) &&
+    Number.isFinite(selectedUnit.longitude) &&
+    Math.abs(selectedUnit.latitude) <= 90 &&
+    Math.abs(selectedUnit.longitude) <= 180
+      ? { latitude: selectedUnit.latitude, longitude: selectedUnit.longitude, label: selectedUnit.name }
+      : null
+  const switchShowsLive = startMode === 'live' || (startMode === 'custom' && liveSelected)
 
   return (
     <div className="demo-shell">
@@ -360,16 +406,34 @@ export default function App() {
           </select>
         </label>
         <div className="demo-controls__go">
-          <div className="demo-mode" role="group" aria-label="Starting point">
+          <div
+            className={`demo-mode${startMode === 'custom' ? ' is-held' : ''}`}
+            role="group"
+            aria-label={
+              startMode === 'custom' ? 'Demo Mode or Live, paused while a custom start is used' : 'Demo Mode or Live'
+            }
+          >
             <span className={startMode === 'demo' ? 'is-active' : ''}>Demo Mode</span>
             <button
               type="button"
               role="switch"
-              className={`demo-mode__switch${startMode === 'live' ? ' is-live' : ''}`}
-              aria-checked={startMode === 'live'}
-              aria-label={startMode === 'live' ? 'Live, current location' : 'Demo Mode, simulated start'}
+              className={`demo-mode__switch${switchShowsLive ? ' is-live' : ''}`}
+              aria-checked={switchShowsLive}
+              aria-label={
+                startMode === 'custom'
+                  ? 'Custom start is in use. Activate to return to Demo Mode or Live.'
+                  : switchShowsLive
+                    ? 'Live, current location'
+                    : 'Demo Mode, simulated start'
+              }
               disabled={locating || loading}
-              onClick={() => void chooseStartMode(startMode === 'live' ? 'demo' : 'live')}
+              onClick={() => {
+                if (startMode === 'custom') {
+                  void chooseStartMode(liveSelected ? 'live' : 'demo')
+                  return
+                }
+                void chooseStartMode(startMode === 'live' ? 'demo' : 'live')
+              }}
             >
               <span className="demo-mode__knob" />
             </button>
@@ -378,6 +442,56 @@ export default function App() {
           <button type="submit" disabled={loading || locating || !canNavigate}>
             {loading ? 'Calling API…' : 'Navigate'}
           </button>
+        </div>
+        <div className="demo-start">
+          <div className="demo-start__bar">
+            <span className="demo-start__label">Starting point</span>
+            {startMode === 'custom' && customOrigin ? (
+              <div className="demo-start__chip">
+                <strong>{customOrigin.label}</strong>
+                <span>
+                  {customOrigin.latitude.toFixed(5)}, {customOrigin.longitude.toFixed(5)}
+                </span>
+                <button
+                  type="button"
+                  className="demo-ghost demo-ghost--small"
+                  onClick={() => setPickerOpen((open) => !open)}
+                >
+                  {pickerOpen ? 'Close' : 'Change'}
+                </button>
+                <button
+                  type="button"
+                  className="demo-ghost demo-ghost--small"
+                  onClick={() => void clearCustomStart()}
+                  disabled={loading || locating}
+                >
+                  Clear
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                className="demo-ghost demo-ghost--small"
+                onClick={() => setPickerOpen((open) => !open)}
+              >
+                {pickerOpen ? 'Close map' : 'Set starting point'}
+              </button>
+            )}
+            <span className="demo-hint">
+              {startMode === 'custom'
+                ? 'This point is the drive start. Switch Demo or Live to leave it.'
+                : 'Optional. Search, paste coordinates, or drop a pin. Demo Mode and Live stay as they are until you use a point.'}
+            </span>
+          </div>
+          {pickerOpen ? (
+            <StartLocationPanel
+              initial={customOrigin}
+              unit={unitFocus}
+              busy={loading || locating}
+              onUse={(point) => void applyCustomStart(point)}
+              onClose={() => setPickerOpen(false)}
+            />
+          ) : null}
         </div>
       </form>
       {error ? <p className="demo-error">{error}</p> : null}
@@ -433,9 +547,14 @@ export default function App() {
               </p>
               <p>
                 Start: {result.origin.label}
-                {liveOrigin && startMode === 'live'
-                  ? ` · device ${liveOrigin.latitude.toFixed(5)}, ${liveOrigin.longitude.toFixed(5)}`
-                  : ''}
+                {result.origin.startMode === 'custom' &&
+                !result.origin.label.includes(
+                  `${result.origin.latitude.toFixed(5)}, ${result.origin.longitude.toFixed(5)}`,
+                )
+                  ? ` · ${result.origin.latitude.toFixed(5)}, ${result.origin.longitude.toFixed(5)}`
+                  : liveOrigin && startMode === 'live'
+                    ? ` · device ${liveOrigin.latitude.toFixed(5)}, ${liveOrigin.longitude.toFixed(5)}`
+                    : ''}
               </p>
               <p>
                 Indoor {result.indoor?.walkMinutes ?? '—'} min · session{' '}

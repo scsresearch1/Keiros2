@@ -219,6 +219,179 @@ button:disabled {
   min-width: 8.5rem;
 }
 
+.demo-mode.is-held {
+  opacity: 0.72;
+}
+
+.demo-start {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 0.7rem;
+  padding-top: 0.85rem;
+  border-top: 1px solid var(--line);
+}
+
+.demo-start__bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem 0.75rem;
+}
+
+.demo-start__label {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.demo-start__chip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 0.6rem;
+  padding: 0.28rem 0.4rem 0.28rem 0.75rem;
+  border-radius: 999px;
+  border: 1px solid rgba(56, 189, 248, 0.45);
+  background: rgba(56, 189, 248, 0.1);
+  color: var(--ink);
+  font-size: 0.85rem;
+}
+
+.demo-start__chip span {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.demo-start__panel {
+  display: grid;
+  grid-template-columns: minmax(240px, 320px) minmax(0, 1fr);
+  gap: 0.75rem;
+  align-items: start;
+}
+
+.demo-start__fields {
+  position: relative;
+  z-index: 2;
+  display: grid;
+  gap: 0.55rem;
+  align-content: start;
+}
+
+.demo-start__search {
+  position: relative;
+}
+
+.demo-start__hits {
+  position: absolute;
+  z-index: 30;
+  left: 0;
+  right: 0;
+  top: calc(100% + 4px);
+  margin: 0;
+  padding: 0.25rem;
+  list-style: none;
+  max-height: 220px;
+  overflow: auto;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: #07122a;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+}
+
+.demo-start__hits button {
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  color: var(--ink);
+  border-radius: 8px;
+  padding: 0.45rem 0.55rem;
+  font-weight: 500;
+}
+
+.demo-start__hits button.is-active,
+.demo-start__hits button:hover {
+  background: rgba(56, 189, 248, 0.14);
+}
+
+.demo-start__hits small {
+  display: block;
+  color: var(--muted);
+  font-weight: 400;
+  font-size: 0.75rem;
+}
+
+.demo-start__coords {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem;
+}
+
+.demo-start__readout {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.demo-start__readout strong {
+  color: var(--ink);
+}
+
+.demo-start__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.demo-start__actions .demo-ghost {
+  background: transparent;
+}
+
+.demo-start-mapwrap {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.demo-start-map {
+  height: 300px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  overflow: hidden;
+}
+
+.demo-start-map .leaflet-container {
+  cursor: crosshair;
+  background: #0b1b36;
+  height: 100%;
+  width: 100%;
+}
+
+.demo-start-map .leaflet-marker-draggable {
+  cursor: grab;
+}
+
+.demo-start__map-hint {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.leaflet-div-icon.start-pin-icon {
+  background: transparent;
+  border: none;
+}
+
+.start-pin-icon span {
+  display: block;
+  width: 16px;
+  height: 16px;
+  margin: 5px;
+  border-radius: 50%;
+  background: #0ea5e9;
+  border: 3px solid #fff;
+  box-shadow: 0 0 0 5px rgba(14, 165, 233, 0.35);
+}
+
 .demo-meta {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -523,7 +696,8 @@ code {
 
 @media (max-width: 900px) {
   .demo-controls,
-  .demo-meta {
+  .demo-meta,
+  .demo-start__panel {
     grid-template-columns: 1fr;
   }
 
