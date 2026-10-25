@@ -1049,9 +1049,18 @@
 
 .nav-map__stage .floor-map__floors {
   position: absolute;
-  top: 4.4rem;
+  top: 4.6rem;
   left: 0.75rem;
   z-index: 6;
+  flex-direction: column;
+}
+
+.nav-map__stage .floor-map__then {
+  top: 4.5rem;
+}
+
+.nav-map__stage .floor-map__stats {
+  bottom: 6.6rem;
 }
 
 .nav-map__stage .floor-map__card,
@@ -1061,32 +1070,92 @@
 
 .floor-map__floors {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
   gap: 0.35rem;
 }
 
 .floor-map__floors button {
-  border: 1px solid #dadce0;
+  border: 0;
   background: #fff;
-  color: #3c4043;
-  border-radius: 999px;
-  padding: 0.28rem 0.7rem;
+  color: #3d4a5c;
+  border-radius: 12px;
+  min-width: 2.6rem;
+  padding: 0.45rem 0.55rem;
   font: inherit;
-  font-size: 0.75rem;
-  font-weight: 700;
+  font-size: 0.72rem;
+  font-weight: 800;
   cursor: pointer;
+  box-shadow: 0 2px 8px rgba(36, 32, 26, 0.12);
 }
 
 .floor-map__floors button.is-active {
-  background: #1a73e8;
-  border-color: #1a73e8;
+  background: #1d3557;
   color: #fff;
 }
 
 .floor-map__canvas {
   position: relative;
   overflow: hidden;
-  background: #e8eaed;
+  background: #f4f1eb;
+}
+
+.floor-map__then {
+  position: absolute;
+  top: 0.75rem;
+  left: 50%;
+  transform: translateX(-50%);
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.45rem 0.8rem;
+  border-radius: 999px;
+  background: #fff;
+  color: #243044;
+  font-size: 0.86rem;
+  font-weight: 700;
+  box-shadow: 0 6px 18px rgba(36, 32, 26, 0.14);
+  pointer-events: none;
+  white-space: nowrap;
+  z-index: 4;
+}
+
+.floor-map__stats {
+  position: absolute;
+  left: 0.75rem;
+  right: 0.75rem;
+  bottom: 0.75rem;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.55rem 0.7rem;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.94);
+  color: #243044;
+  box-shadow: 0 8px 22px rgba(36, 32, 26, 0.12);
+}
+
+.floor-map__stats strong {
+  font-size: 1.05rem;
+}
+
+.floor-map__stats span {
+  flex: 1;
+  color: #5c6570;
+  font-size: 0.86rem;
+}
+
+.floor-map__stats button {
+  border: 0;
+  background: #1d3557;
+  color: #fff;
+  border-radius: 999px;
+  padding: 0.4rem 0.75rem;
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 700;
+  cursor: pointer;
 }
 
 .floor-map__svg {

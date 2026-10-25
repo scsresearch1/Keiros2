@@ -286,13 +286,108 @@ function metersBetween(a, b) {
   return milesBetween(a, b) * 1609.344
 }
 
-function walkIsDirect(straightM, walkM) {
-  if (walkM > 550) return false
-  if (straightM < 30) return walkM < 180
-  return walkM <= Math.max(straightM * 2.4, straightM + 90)
+const parkingCache = new Map()
+
+function toLocalMeters(origin, point) {
+  const cos = Math.cos((origin.latitude * Math.PI) / 180) || 1
+  return {
+    x: (point.longitude - origin.longitude) * 111320 * cos,
+    y: (point.latitude - origin.latitude) * 111320,
+  }
 }
 
-const parkingCache = new Map()
+function fromLocalMeters(origin, xy) {
+  const cos = Math.cos((origin.latitude * Math.PI) / 180) || 1
+  return {
+    latitude: origin.latitude + xy.y / 111320,
+    longitude: origin.longitude + xy.x / (111320 * cos),
+  }
+}
+
+function ringContains(ring, entrance) {
+  let inside = false
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i, i += 1) {
+    const yi = ring[i][1]
+    const yj = ring[j][1]
+    const xi = ring[i][0]
+    const xj = ring[j][0]
+    const intersect =
+      yi > entrance.latitude !== yj > entrance.latitude &&
+      entrance.longitude < ((xj - xi) * (entrance.latitude - yi)) / (yj - yi || 1e-12) + xi
+    if (intersect) inside = !inside
+  }
+  return inside
+}
+
+/** Closest place on a parking outline, not the middle of a lot that stretches down the block. */
+function closestPointOnRing(ring, entrance) {
+  let best = null
+  let bestD = Infinity
+  for (let i = 0; i < ring.length - 1; i += 1) {
+    const a = toLocalMeters(entrance, { longitude: ring[i][0], latitude: ring[i][1] })
+    const b = toLocalMeters(entrance, { longitude: ring[i + 1][0], latitude: ring[i + 1][1] })
+    const abx = b.x - a.x
+    const aby = b.y - a.y
+    const len2 = abx * abx + aby * aby
+    const t = len2 > 0 ? Math.max(0, Math.min(1, (-a.x * abx + -a.y * aby) / len2)) : 0
+    const x = a.x + abx * t
+    const y = a.y + aby * t
+    const d = Math.hypot(x, y)
+    if (d < bestD) {
+      bestD = d
+      best = fromLocalMeters(entrance, { x, y })
+    }
+  }
+  return best ? { ...best, meters: bestD } : null
+}
+
+function bboxRing(bbox) {
+  if (!Array.isArray(bbox) || bbox.length < 4) return null
+  const south = Number(bbox[0])
+  const north = Number(bbox[1])
+  const west = Number(bbox[2])
+  const east = Number(bbox[3])
+  if (![south, north, west, east].every(Number.isFinite)) return null
+  return {
+    type: 'Polygon',
+    coordinates: [[[west, south], [east, south], [east, north], [west, north], [west, south]]],
+  }
+}
+
+function ringsOf(geojson) {
+  if (!geojson) return []
+  if (geojson.type === 'Polygon') return geojson.coordinates?.[0] ? [geojson.coordinates[0]] : []
+  if (geojson.type === 'MultiPolygon') return (geojson.coordinates || []).map((poly) => poly[0]).filter(Boolean)
+  return []
+}
+
+function nearestStall(geojson, entrance, fallback) {
+  const rings = ringsOf(geojson)
+  if (!rings.length) return { ...fallback, meters: metersBetween(fallback, entrance) }
+  let best = null
+  for (const ring of rings) {
+    const edge = closestPointOnRing(ring, entrance)
+    if (!edge) continue
+    const inside = ringContains(ring, entrance)
+    let spot = edge
+    if (inside && edge.meters > 20) {
+      const step = Math.min(28, edge.meters - 8) / edge.meters
+      spot = {
+        latitude: entrance.latitude + (edge.latitude - entrance.latitude) * step,
+        longitude: entrance.longitude + (edge.longitude - entrance.longitude) * step,
+        meters: metersBetween(
+          {
+            latitude: entrance.latitude + (edge.latitude - entrance.latitude) * step,
+            longitude: entrance.longitude + (edge.longitude - entrance.longitude) * step,
+          },
+          entrance,
+        ),
+      }
+    }
+    if (!best || spot.meters < best.meters) best = spot
+  }
+  return best || { ...fallback, meters: metersBetween(fallback, entrance) }
+}
 
 async function searchParkingLots(entrance, radiusM) {
   const dLat = radiusM / 111320
@@ -307,6 +402,7 @@ async function searchParkingLots(entrance, radiusM) {
   url.searchParams.set('dedupe', '1')
   url.searchParams.set('bounded', '1')
   url.searchParams.set('extratags', '1')
+  url.searchParams.set('polygon_geojson', '1')
   url.searchParams.set('viewbox', `${left},${top},${right},${bottom}`)
   url.searchParams.set('q', 'parking')
   const res = await fetch(url, {
@@ -316,17 +412,48 @@ async function searchParkingLots(entrance, radiusM) {
   if (!res.ok) throw new Error(`Parking search ${res.status}`)
   const rows = await res.json()
   if (!Array.isArray(rows)) return []
+  const ids = rows
+    .filter((row) => row?.osm_type && row?.osm_id)
+    .map((row) => `${String(row.osm_type)[0].toUpperCase()}${row.osm_id}`)
+    .join(',')
+  let outlines = new Map()
+  if (ids) {
+    try {
+      const lookupUrl = new URL('https://nominatim.openstreetmap.org/lookup')
+      lookupUrl.searchParams.set('format', 'jsonv2')
+      lookupUrl.searchParams.set('polygon_geojson', '1')
+      lookupUrl.searchParams.set('osm_ids', ids)
+      const lookup = await fetch(lookupUrl, {
+        headers: { 'User-Agent': 'KeirosNavigation/1.0', Accept: 'application/json' },
+        signal: AbortSignal.timeout(8000),
+      })
+      if (lookup.ok) {
+        const detailed = await lookup.json()
+        if (Array.isArray(detailed)) {
+          outlines = new Map(detailed.map((row) => [`${row.osm_type}:${row.osm_id}`, row.geojson]))
+        }
+      }
+    } catch {
+      outlines = new Map()
+    }
+  }
   return rows
     .filter((row) => row?.category === 'amenity' && row?.type === 'parking')
     .filter((row) => {
       const access = String(row.extratags?.access || '').toLowerCase()
       return access !== 'private' && access !== 'no'
     })
-    .map((row) => ({
-      latitude: Number(row.lat),
-      longitude: Number(row.lon),
-      label: row.name ? `${row.name} parking` : 'Nearest parking',
-    }))
+    .map((row) => {
+      const fallback = { latitude: Number(row.lat), longitude: Number(row.lon) }
+      const outline = outlines.get(`${row.osm_type}:${row.osm_id}`) || bboxRing(row.boundingbox)
+      const stall = nearestStall(outline, entrance, fallback)
+      return {
+        latitude: stall.latitude,
+        longitude: stall.longitude,
+        straightM: stall.meters,
+        label: row.name ? `${row.name} parking` : 'Nearest parking',
+      }
+    })
     .filter((spot) => Number.isFinite(spot.latitude) && Number.isFinite(spot.longitude))
 }
 
@@ -339,38 +466,6 @@ function curbCandidates(entrance) {
     })
   }
   return spots
-}
-
-async function footDistance(spot, entrance) {
-  const url =
-    `https://router.project-osrm.org/route/v1/foot/` +
-    `${spot.longitude},${spot.latitude};${entrance.longitude},${entrance.latitude}` +
-    `?overview=false&steps=false&alternatives=2`
-  const res = await fetch(url, {
-    headers: { 'User-Agent': 'KeirosNavigation/1.0', Accept: 'application/json' },
-    signal: AbortSignal.timeout(10000),
-  })
-  if (!res.ok) throw new Error(`OSRM foot ${res.status}`)
-  const json = await res.json()
-  const route = pickRoute(json.routes || [], 'foot')
-  if (!route) throw new Error('No walk')
-  return route.distance
-}
-
-async function driveSeconds(origin, spot) {
-  const url =
-    `https://router.project-osrm.org/route/v1/driving/` +
-    `${origin.longitude},${origin.latitude};${spot.longitude},${spot.latitude}` +
-    `?overview=false&steps=false&alternatives=2`
-  const res = await fetch(url, {
-    headers: { 'User-Agent': 'KeirosNavigation/1.0', Accept: 'application/json' },
-    signal: AbortSignal.timeout(10000),
-  })
-  if (!res.ok) throw new Error(`OSRM drive ${res.status}`)
-  const json = await res.json()
-  const route = pickRoute(json.routes || [], 'driving')
-  if (!route) throw new Error('No drive')
-  return route.duration
 }
 
 async function selectParking(entrance, origin) {
@@ -393,63 +488,14 @@ async function selectParking(entrance, origin) {
   } catch {
     spots = []
   }
-  if (!spots.length) spots = curbCandidates(entrance)
+  if (!spots.length) spots = curbCandidates(entrance).map((spot) => ({ ...spot, straightM: 40 }))
 
-  const ranked = spots
-    .map((spot) => ({ ...spot, straightM: metersBetween(spot, entrance) }))
-    .filter((spot) => spot.straightM <= 900)
-    .sort((a, b) => a.straightM - b.straightM)
-    .slice(0, 6)
-
-  const scored = (
-    await Promise.all(
-      ranked.map(async (spot) => {
-        try {
-          const walkM = await footDistance(spot, entrance)
-          return { spot, walkM }
-        } catch {
-          return null
-        }
-      }),
-    )
-  ).filter(Boolean)
-
-  let direct = scored.filter((row) => walkIsDirect(row.spot.straightM, row.walkM))
-  if (!direct.length) {
-    const curbScored = (
-      await Promise.all(
-        curbCandidates(entrance).map(async (spot) => {
-          const withStraight = { ...spot, straightM: metersBetween(spot, entrance) }
-          try {
-            return { spot: withStraight, walkM: await footDistance(withStraight, entrance) }
-          } catch {
-            return null
-          }
-        }),
-      )
-    ).filter(Boolean)
-    direct = curbScored.filter((row) => walkIsDirect(row.spot.straightM, row.walkM))
-    if (!direct.length && curbScored.length) scored.push(...curbScored)
-  }
-  const pool = (direct.length ? direct : scored).slice()
-  pool.sort((a, b) => a.walkM - b.walkM || a.spot.straightM - b.spot.straightM)
-  let chosenRow = pool[0]
-  if (origin && pool.length > 1 && pool[1].walkM <= pool[0].walkM + 40) {
-    const contenders = pool.filter((row) => row.walkM <= pool[0].walkM + 40).slice(0, 3)
-    const timed = await Promise.all(
-      contenders.map(async (row) => {
-        try {
-          return { ...row, driveS: await driveSeconds(origin, row.spot) }
-        } catch {
-          return { ...row, driveS: Number.POSITIVE_INFINITY }
-        }
-      }),
-    )
-    timed.sort((a, b) => a.driveS - b.driveS || a.walkM - b.walkM)
-    chosenRow = timed[0]
-  }
-  const chosen = chosenRow?.spot || ranked[0] || {
-    ...offsetMeters(entrance.latitude, entrance.longitude, 40, 180),
+  const nearest = spots
+    .filter((spot) => spot.straightM <= 220)
+    .sort((a, b) => a.straightM - b.straightM)[0]
+  const chosen = nearest || spots.sort((a, b) => a.straightM - b.straightM)[0] || {
+    ...offsetMeters(entrance.latitude, entrance.longitude, 35, 180),
+    straightM: 35,
     label: 'Curbside nearest the entrance',
   }
   parkingCache.set(key, { at: Date.now(), spot: chosen })
@@ -490,10 +536,10 @@ function walkSplitAtLot(walk, spot) {
   const coords = walk?.geometry?.coordinates || []
   if (coords.length < 2) return null
   const near = closestIndex(coords, spot)
-  if (near.meters > 55 || near.index < 2) return null
+  if (near.meters > 80 || near.index < 2) return null
   if (metersBetween(asLatLng(coords[0]), spot) <= 45) return null
   const approachM = polylineMeters(coords.slice(0, near.index + 1))
-  if (approachM < 25 || approachM > 320) return null
+  if (approachM < 25 || approachM > 700) return null
   return near.index
 }
 
@@ -502,10 +548,10 @@ function lotApproach(walk, driveEnd, spot) {
   if (coords.length < 2 || !driveEnd) return null
   if (metersBetween(asLatLng(coords[0]), driveEnd) > 50) return null
   const near = closestIndex(coords, spot)
-  if (near.meters > 55 || near.index < 2) return null
+  if (near.meters > 80 || near.index < 2) return null
   const approach = coords.slice(0, near.index + 1)
   const approachM = polylineMeters(approach)
-  if (approachM < 25 || approachM > 320) return null
+  if (approachM < 25 || approachM > 700) return null
   const straight = metersBetween(asLatLng(approach[0]), spot)
   if (approachM > Math.max(straight * 2.4, straight + 90)) return null
   return { approach, splitIndex: near.index }
@@ -647,7 +693,7 @@ export async function alignDriveWithParking(drive, walk, spot) {
     const split = walkSplitAtLot(walk, spot)
     return split == null ? { drive: parked, walk } : { drive: parked, walk: trimWalkAtLot(walk, split) }
   }
-  if (gap > 280) return { drive, walk }
+  if (gap > 700) return { drive, walk }
   try {
     const foot = await fetchOsrm('foot', driveEnd, spot, {
       phase: 'walk',
@@ -656,7 +702,7 @@ export async function alignDriveWithParking(drive, walk, spot) {
       arriveLabel: 'Drive into the nearest parking and leave the car',
     })
     if (!foot?.geometry?.coordinates || /fallback/i.test(foot.provider || '')) return { drive, walk }
-    if (foot.distanceM < 20 || foot.distanceM > 320) return { drive, walk }
+    if (foot.distanceM < 20 || foot.distanceM > 700) return { drive, walk }
     if (foot.distanceM > Math.max(gap * 2.4, gap + 90)) return { drive, walk }
     const extended = appendLotDrive(drive, foot.geometry.coordinates)
     const split = walkSplitAtLot(walk, spot)
@@ -673,7 +719,20 @@ export async function chooseArrival(entrance, origin) {
     fetchDriveRoute(origin, spot),
     fetchWalkRoute(spot, entrance),
   ])
-  const aligned = await alignDriveWithParking(drive, walk, spot)
+  let aligned = await alignDriveWithParking(drive, walk, spot)
+  if (!walkStartsBeside(aligned.walk, spot)) {
+    const end = routeEndpoint(aligned.drive)
+    if (end && metersBetween(end, spot) > 40 && metersBetween(end, spot) <= 180) {
+      aligned = {
+        drive: appendLotDrive(aligned.drive, [
+          [end.longitude, end.latitude],
+          [spot.longitude, spot.latitude],
+        ]),
+        walk: aligned.walk,
+      }
+    }
+    aligned = { drive: aligned.drive, walk: directWalk(spot, entrance) }
+  }
   return {
     parking: {
       latitude: spot.latitude,
@@ -683,6 +742,52 @@ export async function chooseArrival(entrance, origin) {
     },
     drive: aligned.drive,
     walk: aligned.walk,
+  }
+}
+
+function walkStartsBeside(walk, spot) {
+  const first = walk?.geometry?.coordinates?.[0]
+  return Boolean(first) && metersBetween(asLatLng(first), spot) <= 50
+}
+
+function directWalk(spot, entrance) {
+  const distanceM = Math.round(metersBetween(spot, entrance))
+  const coordinates = [
+    [spot.longitude, spot.latitude],
+    [entrance.longitude, entrance.latitude],
+  ]
+  return {
+    provider: 'Nearest parking walk',
+    profile: 'foot',
+    distanceM,
+    distanceMiles: Math.round((distanceM / 1609.344) * 10) / 10,
+    durationMinutes: Math.round((distanceM / 1.35 / 60) * 10) / 10,
+    geometry: { type: 'LineString', coordinates },
+    steps: [
+      {
+        id: 'wlk-0',
+        phase: 'walk',
+        index: 0,
+        instruction: 'Leave the car and walk to the entrance',
+        roadName: null,
+        distanceM,
+        durationSec: Math.max(8, Math.round(distanceM / 1.35)),
+        speedMph: 3,
+        trafficLevel: null,
+        congestionIndex: null,
+        latitude: spot.latitude,
+        longitude: spot.longitude,
+        geometry: coordinates,
+      },
+    ],
+    traffic: {
+      level: 'Pedestrian',
+      congestionIndex: 0,
+      averageSpeedMph: 3,
+      updatedAt: new Date().toISOString(),
+      note: 'Short walk from the nearest parking stall to the entrance.',
+      segments: [],
+    },
   }
 }
 

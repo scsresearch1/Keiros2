@@ -197,11 +197,11 @@ export function pullDriveIntoLot(
   const gap = meters(end, spot)
   const startsAtRoad = meters({ latitude: line[0][1], longitude: line[0][0] }, end) <= 50
   const near = closestPoint(line, spot)
-  const approach = startsAtRoad && near.distance <= 55 && near.index >= 2 ? line.slice(0, near.index + 1) : []
+  const approach = startsAtRoad && near.distance <= 80 && near.index >= 2 ? line.slice(0, near.index + 1) : []
   const approachM = lineMeters(approach)
   const straight = approach.length ? meters({ latitude: approach[0][1], longitude: approach[0][0] }, spot) : 0
   const usable =
-    approachM >= 25 && approachM <= 320 && approachM <= Math.max(straight * 2.4, straight + 90)
+    approachM >= 25 && approachM <= 700 && approachM <= Math.max(straight * 2.4, straight + 90)
 
   let nextDrive = driveSteps
   let nextCoords = driveCoords
@@ -283,7 +283,7 @@ export function pullDriveIntoLot(
 
 async function fetchLotApproach(from: LatLng, spot: LatLng) {
   const gap = meters(from, spot)
-  if (gap <= 40 || gap > 280) return null
+  if (gap <= 40 || gap > 700) return null
   const url =
     `https://router.project-osrm.org/route/v1/foot/` +
     `${from.longitude},${from.latitude};${spot.longitude},${spot.latitude}` +
@@ -292,7 +292,7 @@ async function fetchLotApproach(from: LatLng, spot: LatLng) {
   if (!res.ok) return null
   const json = (await res.json()) as { routes?: { distance: number; geometry: { coordinates: [number, number][] } }[] }
   const route = json.routes?.[0]
-  if (!route?.geometry?.coordinates || route.distance < 20 || route.distance > 320) return null
+  if (!route?.geometry?.coordinates || route.distance < 20 || route.distance > 700) return null
   if (route.distance > Math.max(gap * 2.4, gap + 90)) return null
   return route.geometry.coordinates
 }

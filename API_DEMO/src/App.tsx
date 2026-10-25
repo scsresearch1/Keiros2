@@ -50,6 +50,7 @@ export default function App() {
   const [journeyIndex, setJourneyIndex] = useState(0)
   const [refreshing, setRefreshing] = useState(false)
   const [startMode, setStartMode] = useState<StartMode>('demo')
+  const [startReady, setStartReady] = useState(false)
   const [liveSelected, setLiveSelected] = useState(false)
   const [customOrigin, setCustomOrigin] = useState<StartPoint | null>(null)
   const [pickerOpen, setPickerOpen] = useState(false)
@@ -115,7 +116,7 @@ export default function App() {
     origin?: { latitude: number; longitude: number; label?: string },
   ) {
     if (!selectionReady()) {
-      setError('Select complex, building, floor, and unit first.')
+      setError('Choose a starting position, then select complex, building, floor, and unit.')
       return
     }
     setLoading(true)
@@ -154,6 +155,7 @@ export default function App() {
   async function chooseStartMode(next: 'demo' | 'live') {
     if (next === 'demo') {
       setStartMode('demo')
+      setStartReady(true)
       setLiveSelected(false)
       setLiveOrigin(null)
       setError('')
@@ -167,6 +169,7 @@ export default function App() {
       setLiveOrigin(coords)
       setLiveSelected(true)
       setStartMode('live')
+      setStartReady(true)
       if (selectionReady()) await planRoute('live', coords)
     } catch (err) {
       setStartMode('demo')
@@ -180,8 +183,12 @@ export default function App() {
 
   async function runNavigate(e: FormEvent) {
     e.preventDefault()
+    if (!startReady) {
+      setError('Choose a starting position first.')
+      return
+    }
     if (!selectionReady()) {
-      setError('Select complex, building, floor, and unit first.')
+      setError('Select the destination: complex, building, floor, and unit.')
       return
     }
     if (startMode === 'custom') {
@@ -241,6 +248,7 @@ export default function App() {
     setUnitId('')
     setKeyInput(DEMO_KEY)
     setStartMode('demo')
+    setStartReady(false)
     setLiveSelected(false)
     setCustomOrigin(null)
     setPickerOpen(false)
@@ -250,6 +258,7 @@ export default function App() {
   async function applyCustomStart(point: StartPoint) {
     setCustomOrigin(point)
     setStartMode('custom')
+    setStartReady(true)
     setPickerOpen(false)
     setError('')
     if (selectionReady()) await planRoute('custom', point)
@@ -268,8 +277,8 @@ export default function App() {
           <p className="demo-brand">Keiros</p>
           <h1>Map Navigation API Demo</h1>
           <p className="demo-lede">
-            Client-only app. Enter an ERP API key, pick Complex → Building → Floor → Unit, then call the
-            navigation API. Activity appears live in ERP under API Logs & API Navigation Live.
+            Client-only app. Enter an ERP API key, choose a starting position, then pick Complex → Building →
+            Floor → Unit. Activity appears live in ERP under API Logs & API Navigation Live.
           </p>
           <form onSubmit={unlock} className="demo-gate__form">
             <label>
@@ -330,124 +339,58 @@ export default function App() {
       </header>
 
       <form className="demo-controls" onSubmit={runNavigate}>
-        <label>
-          Complex
-          <select
-            value={complexId}
-            onChange={(e) => {
-              setComplexId(e.target.value)
-              setBuildingId('')
-              setFloorId('')
-              setUnitId('')
-              setResult(null)
-            }}
-          >
-            <option value="">Select</option>
-            {hierarchy.complexes.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.name}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          Building
-          <select
-            value={buildingId}
-            disabled={!complexId}
-            onChange={(e) => {
-              setBuildingId(e.target.value)
-              setFloorId('')
-              setUnitId('')
-              setResult(null)
-            }}
-          >
-            <option value="">Select</option>
-            {buildings.map((b) => (
-              <option key={b.id} value={b.id}>
-                {b.name}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          Floor
-          <select
-            value={floorId}
-            disabled={!buildingId}
-            onChange={(e) => {
-              setFloorId(e.target.value)
-              setUnitId('')
-              setResult(null)
-            }}
-          >
-            <option value="">Select</option>
-            {floors.map((f) => (
-              <option key={f.id} value={f.id}>
-                {f.label} (L{f.level})
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          Unit
-          <select
-            value={unitId}
-            disabled={!floorId}
-            onChange={(e) => {
-              setUnitId(e.target.value)
-              setResult(null)
-            }}
-          >
-            <option value="">Select</option>
-            {units.map((u) => (
-              <option key={u.id} value={u.id}>
-                {u.name} · {u.type}
-              </option>
-            ))}
-          </select>
-        </label>
-        <div className="demo-controls__go">
-          <div
-            className={`demo-mode${startMode === 'custom' ? ' is-held' : ''}`}
-            role="group"
-            aria-label={
-              startMode === 'custom' ? 'Demo Mode or Live, paused while a custom start is used' : 'Demo Mode or Live'
-            }
-          >
-            <span className={startMode === 'demo' ? 'is-active' : ''}>Demo Mode</span>
-            <button
-              type="button"
-              role="switch"
-              className={`demo-mode__switch${switchShowsLive ? ' is-live' : ''}`}
-              aria-checked={switchShowsLive}
-              aria-label={
-                startMode === 'custom'
-                  ? 'Custom start is in use. Activate to return to Demo Mode or Live.'
-                  : switchShowsLive
-                    ? 'Live, current location'
-                    : 'Demo Mode, simulated start'
-              }
-              disabled={locating || loading}
-              onClick={() => {
-                if (startMode === 'custom') {
-                  void chooseStartMode(liveSelected ? 'live' : 'demo')
-                  return
-                }
-                void chooseStartMode(startMode === 'live' ? 'demo' : 'live')
-              }}
-            >
-              <span className="demo-mode__knob" />
-            </button>
-            <span className={startMode === 'live' ? 'is-active' : ''}>Live</span>
-          </div>
-          <button type="submit" disabled={loading || locating || !canNavigate}>
-            {loading ? 'Calling API…' : 'Navigate'}
-          </button>
-        </div>
-        <div className="demo-start">
+        <section className="demo-step">
+          <p className="demo-step__title">1 · Starting position</p>
           <div className="demo-start__bar">
-            <span className="demo-start__label">Starting point</span>
+            <div
+              className={`demo-mode${startMode === 'custom' && startReady ? ' is-held' : ''}`}
+              role="group"
+              aria-label="Starting position"
+            >
+              <button
+                type="button"
+                className={startReady && startMode === 'demo' ? 'is-active' : ''}
+                disabled={locating || loading}
+                onClick={() => void chooseStartMode('demo')}
+              >
+                Demo Mode
+              </button>
+              <button
+                type="button"
+                role="switch"
+                className={`demo-mode__switch${switchShowsLive ? ' is-live' : ''}`}
+                aria-checked={startReady && switchShowsLive}
+                aria-label={
+                  startReady && startMode === 'custom'
+                    ? 'Custom start is in use. Activate to return to Demo Mode or Live.'
+                    : startReady && switchShowsLive
+                      ? 'Live, current location'
+                      : 'Demo Mode, simulated start'
+                }
+                disabled={locating || loading}
+                onClick={() => {
+                  if (startMode === 'custom') {
+                    void chooseStartMode(liveSelected ? 'live' : 'demo')
+                    return
+                  }
+                  if (!startReady) {
+                    void chooseStartMode('demo')
+                    return
+                  }
+                  void chooseStartMode(startMode === 'live' ? 'demo' : 'live')
+                }}
+              >
+                <span className="demo-mode__knob" />
+              </button>
+              <button
+                type="button"
+                className={startReady && startMode === 'live' ? 'is-active' : ''}
+                disabled={locating || loading}
+                onClick={() => void chooseStartMode('live')}
+              >
+                Live
+              </button>
+            </div>
             {startMode === 'custom' && customOrigin ? (
               <div className="demo-start__chip">
                 <strong>{customOrigin.label}</strong>
@@ -476,13 +419,17 @@ export default function App() {
                 className="demo-ghost demo-ghost--small"
                 onClick={() => setPickerOpen((open) => !open)}
               >
-                {pickerOpen ? 'Close map' : 'Set starting point'}
+                {pickerOpen ? 'Close map' : 'Set a point'}
               </button>
             )}
             <span className="demo-hint">
-              {startMode === 'custom'
-                ? 'This point is the drive start. Switch Demo or Live to leave it.'
-                : 'Optional. Search, paste coordinates, or drop a pin. Demo Mode and Live stay as they are until you use a point.'}
+              {startReady && startMode === 'custom'
+                ? 'This point is the drive start. Then choose the destination.'
+                : startReady && startMode === 'live'
+                  ? 'Using this device as the start. Then choose the destination.'
+                  : startReady
+                    ? 'Using the simulated start. Then choose the destination.'
+                    : 'Choose Demo Mode, Live, or set a point. The destination opens after this.'}
             </span>
           </div>
           {pickerOpen ? (
@@ -494,7 +441,96 @@ export default function App() {
               onClose={() => setPickerOpen(false)}
             />
           ) : null}
-        </div>
+        </section>
+        <section className={`demo-step demo-step--dest${startReady ? '' : ' is-locked'}`}>
+          <p className="demo-step__title">2 · Destination</p>
+          <div className="demo-dest">
+            <label>
+              Complex
+              <select
+                value={complexId}
+                disabled={!startReady}
+                onChange={(e) => {
+                  setComplexId(e.target.value)
+                  setBuildingId('')
+                  setFloorId('')
+                  setUnitId('')
+                  setResult(null)
+                }}
+              >
+                <option value="">Select</option>
+                {hierarchy.complexes.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Building
+              <select
+                value={buildingId}
+                disabled={!startReady || !complexId}
+                onChange={(e) => {
+                  setBuildingId(e.target.value)
+                  setFloorId('')
+                  setUnitId('')
+                  setResult(null)
+                }}
+              >
+                <option value="">Select</option>
+                {buildings.map((b) => (
+                  <option key={b.id} value={b.id}>
+                    {b.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Floor
+              <select
+                value={floorId}
+                disabled={!startReady || !buildingId}
+                onChange={(e) => {
+                  setFloorId(e.target.value)
+                  setUnitId('')
+                  setResult(null)
+                }}
+              >
+                <option value="">Select</option>
+                {floors.map((f) => (
+                  <option key={f.id} value={f.id}>
+                    {f.label} (L{f.level})
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Unit
+              <select
+                value={unitId}
+                disabled={!startReady || !floorId}
+                onChange={(e) => {
+                  setUnitId(e.target.value)
+                  setResult(null)
+                }}
+              >
+                <option value="">Select</option>
+                {units.map((u) => (
+                  <option key={u.id} value={u.id}>
+                    {u.name} · {u.type}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="demo-controls__go">
+              <button type="submit" disabled={!startReady || loading || locating || !canNavigate}>
+                {loading ? 'Calling API…' : 'Navigate'}
+              </button>
+            </div>
+          </div>
+          {startReady ? null : <p className="demo-hint">Starting position comes first.</p>}
+        </section>
       </form>
       {error ? <p className="demo-error">{error}</p> : null}
 
@@ -693,14 +729,14 @@ export default function App() {
               {indoorView === 'floor' ? (
                 <IndoorFloorMap map3d={result.map3d} activeStep={indoorStep} instruction={active?.instruction} />
               ) : (
-                <Indoor3D map3d={result.map3d} activeStep={indoorStep} />
+                <Indoor3D map3d={result.map3d} activeStep={indoorStep} instruction={active?.instruction} />
               )}
             </div>
           )}
         </>
       ) : (
         <p className="demo-placeholder">
-          Choose Complex → Building → Floor → Unit (each starts at Select), then press Navigate.
+          Choose a starting position, then Complex → Building → Floor → Unit, then press Navigate.
         </p>
       )}
     </div>

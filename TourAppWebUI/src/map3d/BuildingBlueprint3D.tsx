@@ -106,6 +106,17 @@ function line(a: Pt, b: Pt) {
   return `M ${a.x.toFixed(1)} ${a.y.toFixed(1)} L ${b.x.toFixed(1)} ${b.y.toFixed(1)}`
 }
 
+function haversineMeters(a: { latitude: number; longitude: number }, b: { latitude: number; longitude: number }) {
+  const R = 6371000
+  const p = Math.PI / 180
+  const dLat = (b.latitude - a.latitude) * p
+  const dLng = (b.longitude - a.longitude) * p
+  const h =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(a.latitude * p) * Math.cos(b.latitude * p) * Math.sin(dLng / 2) ** 2
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)))
+}
+
 function slotForLevel(level: number, totalFloors: number, storyCount: number) {
   if (storyCount <= 1) return 0
   return Math.min(
@@ -260,6 +271,33 @@ export function BuildingBlueprint3D({
       })
       .filter((p): p is NonNullable<typeof p> => Boolean(p))
   }, [corner, routeStops, stopModelPoint])
+
+  const routeCue = useMemo(() => {
+    if (!routeStops?.length) return null
+    const here = routeStops[activeRouteIndex]
+    const nxt = routeStops[activeRouteIndex + 1]
+    const after = routeStops[activeRouteIndex + 2]
+    const floor = mappedFloors.find((item) => item.id === (here?.floorId || selectedFloorId))?.label || 'Floor'
+    let then = 'You have arrived'
+    if (here && nxt && nxt.floorId !== here.floorId) {
+      then = `Then stairs to ${mappedFloors.find((item) => item.id === nxt.floorId)?.label || 'the next floor'}`
+    } else if (here && nxt && after && after.floorId === nxt.floorId) {
+      const h1 = Math.atan2(nxt.longitude - here.longitude, nxt.latitude - here.latitude)
+      const h2 = Math.atan2(after.longitude - nxt.longitude, after.latitude - nxt.latitude)
+      let delta = h2 - h1
+      while (delta > Math.PI) delta -= Math.PI * 2
+      while (delta < -Math.PI) delta += Math.PI * 2
+      const deg = (delta * 180) / Math.PI
+      then = Math.abs(deg) < 28 ? 'Then continue straight' : deg > 0 ? 'Then turn right' : 'Then turn left'
+    } else if (nxt) {
+      then = `Then toward ${nxt.name}`
+    }
+    let remainM = 0
+    for (let i = activeRouteIndex; i < routeStops.length - 1; i += 1) {
+      remainM += haversineMeters(routeStops[i], routeStops[i + 1])
+    }
+    return { then, floor, remainM: Math.round(remainM) }
+  }, [activeRouteIndex, mappedFloors, routeStops, selectedFloorId])
 
   const c = {
     flb: corner(0, 0, 0),
@@ -613,22 +651,27 @@ export function BuildingBlueprint3D({
           <g className="k-bp3d__route">
             {routePoints.slice(0, -1).map((point, index) => {
               const next = routePoints[index + 1]
-              const activeSeg = index === activeRouteIndex || index + 1 === activeRouteIndex
+              const ahead = point.index >= activeRouteIndex
               return (
                 <path
                   key={`seg-${point.index}`}
                   d={line(point.screen, next.screen)}
-                  stroke={activeSeg ? '#f472b6' : '#22c55e'}
-                  strokeWidth={activeSeg ? 3.4 : 2.4}
+                  stroke={ahead ? '#7dd3fc' : '#334155'}
+                  strokeWidth={ahead ? 3.6 : 2}
                   fill="none"
-                  opacity={activeSeg ? 1 : 0.65}
+                  opacity={ahead ? 1 : 0.45}
                   strokeLinecap="round"
-                  filter={activeSeg ? `url(#bp-glow-${building.id})` : undefined}
+                  strokeDasharray={ahead ? '1.4 7' : undefined}
                 />
               )
             })}
             {routePoints.map((point) => {
               const active = point.index === activeRouteIndex
+              const next = routePoints.find((item) => item.index === point.index + 1)
+              const heading =
+                active && next
+                  ? (Math.atan2(next.screen.x - point.screen.x, -(next.screen.y - point.screen.y)) * 180) / Math.PI
+                  : 0
               return (
                 <g
                   key={`rp-${point.index}`}
@@ -636,28 +679,23 @@ export function BuildingBlueprint3D({
                   onClick={safeClick(() => onSelectRouteStep?.(point.index))}
                   style={{ cursor: 'pointer' }}
                 >
-                  <circle
-                    cx={point.screen.x}
-                    cy={point.screen.y}
-                    r={active ? 9 : 6}
-                    fill={active ? '#f472b6' : '#052e16'}
-                    stroke={active ? '#fce7f3' : '#4ade80'}
-                    strokeWidth={active ? 2.5 : 1.8}
-                  />
-                  <text
-                    x={point.screen.x}
-                    y={point.screen.y + 3.5}
-                    textAnchor="middle"
-                    className="k-bp3d__route-num"
-                  >
-                    {point.index + 1}
-                  </text>
-                  {showLabels ? (
-                    <text
-                      x={point.screen.x + 12}
-                      y={point.screen.y + 4}
-                      className={active ? 'k-bp3d__label is-hot' : 'k-bp3d__label'}
-                    >
+                  {active ? (
+                    <g transform={`translate(${point.screen.x} ${point.screen.y}) rotate(${heading})`}>
+                      <circle r={12} fill="#0f2744" stroke="#e0f2fe" strokeWidth={1.4} />
+                      <path d="M0 -7 L5.2 6 L0 2.4 L-5.2 6 Z" fill="#f8fafc" />
+                    </g>
+                  ) : (
+                    <circle
+                      cx={point.screen.x}
+                      cy={point.screen.y}
+                      r={5}
+                      fill="#0f2744"
+                      stroke="#7dd3fc"
+                      strokeWidth={1.4}
+                    />
+                  )}
+                  {showLabels && !active ? (
+                    <text x={point.screen.x + 10} y={point.screen.y + 4} className="k-bp3d__label">
                       {point.stop.name}
                     </text>
                   ) : null}
@@ -667,6 +705,14 @@ export function BuildingBlueprint3D({
           </g>
         ) : null}
       </svg>
+      {routeCue ? (
+        <div className="k-bp3d__nav">
+          <p>{routeCue.then}</p>
+          <span>
+            {routeCue.floor} · {routeCue.remainM > 0 ? `${routeCue.remainM} m left` : 'Arrived'}
+          </span>
+        </div>
+      ) : null}
       <div className="k-bp3d__caption">
         <strong>{building.name}</strong>
         <span>
