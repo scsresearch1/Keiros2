@@ -456,6 +456,216 @@ async function selectParking(entrance, origin) {
   return chosen
 }
 
+function asLatLng(coord) {
+  return { longitude: coord[0], latitude: coord[1] }
+}
+
+function polylineMeters(coords) {
+  let total = 0
+  for (let i = 1; i < coords.length; i += 1) total += metersBetween(asLatLng(coords[i - 1]), asLatLng(coords[i]))
+  return total
+}
+
+function closestIndex(coords, point) {
+  let index = 0
+  let meters = Infinity
+  for (let i = 0; i < coords.length; i += 1) {
+    const d = metersBetween(asLatLng(coords[i]), point)
+    if (d < meters) {
+      meters = d
+      index = i
+    }
+  }
+  return { index, meters }
+}
+
+function routeEndpoint(route) {
+  const coords = route?.geometry?.coordinates || []
+  const last = coords[coords.length - 1]
+  return last ? asLatLng(last) : null
+}
+
+/** Driving routers snap a lot to the public road, so the turn into the lot comes back as a walk. */
+function walkSplitAtLot(walk, spot) {
+  const coords = walk?.geometry?.coordinates || []
+  if (coords.length < 2) return null
+  const near = closestIndex(coords, spot)
+  if (near.meters > 55 || near.index < 2) return null
+  if (metersBetween(asLatLng(coords[0]), spot) <= 45) return null
+  const approachM = polylineMeters(coords.slice(0, near.index + 1))
+  if (approachM < 25 || approachM > 320) return null
+  return near.index
+}
+
+function lotApproach(walk, driveEnd, spot) {
+  const coords = walk?.geometry?.coordinates || []
+  if (coords.length < 2 || !driveEnd) return null
+  if (metersBetween(asLatLng(coords[0]), driveEnd) > 50) return null
+  const near = closestIndex(coords, spot)
+  if (near.meters > 55 || near.index < 2) return null
+  const approach = coords.slice(0, near.index + 1)
+  const approachM = polylineMeters(approach)
+  if (approachM < 25 || approachM > 320) return null
+  const straight = metersBetween(asLatLng(approach[0]), spot)
+  if (approachM > Math.max(straight * 2.4, straight + 90)) return null
+  return { approach, splitIndex: near.index }
+}
+
+function appendLotDrive(drive, approach) {
+  const approachM = polylineMeters(approach)
+  const steps = (drive.steps || []).map((step) => ({ ...step }))
+  const previous = steps[steps.length - 1]
+  if (previous && /park|leave the vehicle|arrive/i.test(previous.instruction || '')) {
+    previous.instruction = 'Continue to the parking lot entrance'
+  }
+  const step = {
+    id: `drv-lot-${steps.length}`,
+    phase: 'drive',
+    index: steps.length,
+    instruction: 'Drive into the nearest parking and leave the car',
+    roadName: null,
+    distanceM: Math.round(approachM),
+    durationSec: Math.max(8, Math.round(approachM / 4.5)),
+    speedMph: 10,
+    trafficLevel: 'Light',
+    congestionIndex: 0,
+    latitude: approach[0][1],
+    longitude: approach[0][0],
+    geometry: approach,
+  }
+  steps.push(step)
+  const driveCoords = [...(drive.geometry?.coordinates || [])]
+  const end = driveCoords[driveCoords.length - 1]
+  const tail = end && metersBetween(asLatLng(end), asLatLng(approach[0])) < 35 ? approach.slice(1) : approach
+  driveCoords.push(...tail)
+  const distanceM = Math.round((drive.distanceM || 0) + approachM)
+  return {
+    ...drive,
+    steps,
+    geometry: { type: 'LineString', coordinates: driveCoords },
+    distanceM,
+    distanceMiles: Math.round((distanceM / 1609.344) * 10) / 10,
+    durationMinutes: Math.round(((drive.durationMinutes || 0) + approachM / 4.5 / 60) * 10) / 10,
+    traffic: drive.traffic
+      ? {
+          ...drive.traffic,
+          segments: [
+            ...(drive.traffic.segments || []),
+            { id: step.id, trafficLevel: 'Light', speedMph: 10, distanceM: Math.round(approachM) },
+          ],
+        }
+      : drive.traffic,
+  }
+}
+
+function trimWalkAtLot(walk, splitIndex) {
+  const coords = walk.geometry?.coordinates || []
+  const rest = coords.slice(splitIndex)
+  if (rest.length < 2) return walk
+  const restM = polylineMeters(rest)
+  const splitPoint = asLatLng(coords[splitIndex])
+  const kept = []
+  for (const step of walk.steps || []) {
+    const geom = step.geometry || []
+    if (!geom.length) continue
+    const start = closestIndex(coords, asLatLng(geom[0]))
+    const end = closestIndex(coords, asLatLng(geom[geom.length - 1]))
+    if (end.index <= splitIndex) continue
+    if (start.index >= splitIndex) {
+      kept.push({ ...step })
+      continue
+    }
+    const clipped = geom.filter((coord) => closestIndex(coords, asLatLng(coord)).index >= splitIndex)
+    if (clipped.length < 2) continue
+    kept.push({
+      ...step,
+      instruction: 'Leave the car and walk to the entrance',
+      latitude: splitPoint.latitude,
+      longitude: splitPoint.longitude,
+      distanceM: Math.round(polylineMeters(clipped)),
+      geometry: clipped,
+    })
+  }
+  if (!kept.length) {
+    kept.push({
+      id: 'wlk-0',
+      phase: 'walk',
+      index: 0,
+      instruction: 'Leave the car and walk to the entrance',
+      roadName: null,
+      distanceM: Math.round(restM),
+      durationSec: Math.round(restM / 1.35),
+      speedMph: 3,
+      trafficLevel: null,
+      congestionIndex: null,
+      latitude: splitPoint.latitude,
+      longitude: splitPoint.longitude,
+      geometry: rest,
+    })
+  } else {
+    const first = kept[0]
+    const atLot = metersBetween({ latitude: first.latitude, longitude: first.longitude }, splitPoint) < 30
+    if (atLot && /depart|turn|continue|leave parking/i.test(first.instruction || '')) {
+      kept[0] = { ...first, instruction: 'Leave the car and walk to the entrance' }
+    }
+  }
+  return {
+    ...walk,
+    distanceM: Math.round(restM),
+    distanceMiles: Math.round((restM / 1609.344) * 10) / 10,
+    durationMinutes: Math.round((restM / 1.35 / 60) * 10) / 10,
+    geometry: { type: 'LineString', coordinates: rest },
+    steps: kept.map((step, index) => ({ ...step, index, phase: 'walk' })),
+  }
+}
+
+/**
+ * Keep the driveway into the lot on the drive leg.
+ * The car can follow that path; only the walk from the parking pin to the door stays a walk.
+ */
+export async function alignDriveWithParking(drive, walk, spot) {
+  if (!drive || !spot?.latitude || !spot?.longitude) return { drive, walk }
+  const already = (drive.steps || []).some((step) => /drive into the nearest parking/i.test(step.instruction || ''))
+  const driveEnd = routeEndpoint(drive)
+  if (!driveEnd) return { drive, walk }
+  const gap = metersBetween(driveEnd, spot)
+  const approach = walk ? lotApproach(walk, driveEnd, spot) : null
+  if (already) {
+    return approach ? { drive, walk: trimWalkAtLot(walk, approach.splitIndex) } : { drive, walk }
+  }
+  if (approach && gap > 40) {
+    return { drive: appendLotDrive(drive, approach.approach), walk: trimWalkAtLot(walk, approach.splitIndex) }
+  }
+  if (approach) return { drive, walk: trimWalkAtLot(walk, approach.splitIndex) }
+  if (gap <= 40) {
+    const steps = (drive.steps || []).map((step) => ({ ...step }))
+    const last = steps[steps.length - 1]
+    if (last && /arrive|park|leave the vehicle/i.test(last.instruction || '')) {
+      last.instruction = 'Arrive at the nearest parking — leave the car here'
+    }
+    const parked = { ...drive, steps }
+    const split = walkSplitAtLot(walk, spot)
+    return split == null ? { drive: parked, walk } : { drive: parked, walk: trimWalkAtLot(walk, split) }
+  }
+  if (gap > 280) return { drive, walk }
+  try {
+    const foot = await fetchOsrm('foot', driveEnd, spot, {
+      phase: 'walk',
+      idPrefix: 'lot',
+      departLabel: 'Drive into the nearest parking and leave the car',
+      arriveLabel: 'Drive into the nearest parking and leave the car',
+    })
+    if (!foot?.geometry?.coordinates || /fallback/i.test(foot.provider || '')) return { drive, walk }
+    if (foot.distanceM < 20 || foot.distanceM > 320) return { drive, walk }
+    if (foot.distanceM > Math.max(gap * 2.4, gap + 90)) return { drive, walk }
+    const extended = appendLotDrive(drive, foot.geometry.coordinates)
+    const split = walkSplitAtLot(walk, spot)
+    return { drive: extended, walk: split == null ? walk : trimWalkAtLot(walk, split) }
+  } catch {
+    return { drive, walk }
+  }
+}
+
 /** Nearest reachable parking, then the fastest drive and shortest walk. */
 export async function chooseArrival(entrance, origin) {
   const spot = await selectParking(entrance, origin)
@@ -463,15 +673,16 @@ export async function chooseArrival(entrance, origin) {
     fetchDriveRoute(origin, spot),
     fetchWalkRoute(spot, entrance),
   ])
+  const aligned = await alignDriveWithParking(drive, walk, spot)
   return {
     parking: {
       latitude: spot.latitude,
       longitude: spot.longitude,
       label: spot.label || 'Nearest parking',
-      offsetMeters: Math.round(walk.distanceM || metersBetween(spot, entrance)),
+      offsetMeters: Math.round(aligned.walk?.distanceM || metersBetween(spot, entrance)),
     },
-    drive,
-    walk,
+    drive: aligned.drive,
+    walk: aligned.walk,
   }
 }
 

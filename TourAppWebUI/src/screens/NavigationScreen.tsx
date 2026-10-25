@@ -8,6 +8,7 @@ import {
   phaseLabel,
   refreshConditions,
 } from '../api/client'
+import { IndoorFloorMap } from '../map2d/IndoorFloorMap'
 import { OutdoorMap } from '../map2d/OutdoorMap'
 import { TowerIndoorNav } from '../map3d/TowerIndoorNav'
 import { recordTrackingEvent } from '../mock/tracking'
@@ -37,6 +38,7 @@ export function NavigationScreen() {
   } = useTour()
 
   const [forceView, setForceView] = useState<'map' | '3d'>(insideBuilding ? '3d' : 'map')
+  const [indoorPlan, setIndoorPlan] = useState<'floor' | 'building'>('floor')
   const [refreshing, setRefreshing] = useState(false)
   const [showTrack, setShowTrack] = useState(false)
   const [listOpen, setListOpen] = useState(false)
@@ -263,7 +265,7 @@ export function NavigationScreen() {
               weather={navigateResult.weather}
               traffic={navigateResult.outdoor.traffic}
             />
-          ) : (
+          ) : indoorPlan === 'building' ? (
             <TowerIndoorNav
               map3d={navigateResult.map3d}
               activeIndoorStep={indoorIndex}
@@ -285,6 +287,17 @@ export function NavigationScreen() {
                 if (!step) return
                 const global = steps.findIndex((s) => s.id === step.id)
                 if (global >= 0) setActiveStepIndex(global)
+              }}
+            />
+          ) : (
+            <IndoorFloorMap
+              map3d={navigateResult.map3d}
+              activeStep={indoorIndex}
+              instruction={active?.instruction}
+              onSelectFloor={(id) => setSelectedFloorId(id)}
+              onSelectUnit={(id) => {
+                const loc = navigateResult.map3d.locations.find((l) => l.id === id)
+                void chooseDestination(id, loc?.floorId)
               }}
             />
           )}
@@ -318,9 +331,20 @@ export function NavigationScreen() {
           )}
           {insideBuilding && (
             <div className="nav-chrome__end">
-              <div className="mode-toggle glossy-toggle">
-                <button type="button" className="active">
-                  Floor by floor
+              <div className="mode-toggle glossy-toggle" role="tablist" aria-label="Indoor map">
+                <button
+                  type="button"
+                  className={indoorPlan === 'floor' ? 'active' : ''}
+                  onClick={() => setIndoorPlan('floor')}
+                >
+                  Floor map
+                </button>
+                <button
+                  type="button"
+                  className={indoorPlan === 'building' ? 'active' : ''}
+                  onClick={() => setIndoorPlan('building')}
+                >
+                  3D building
                 </button>
               </div>
               <button type="button" className="end-tour-btn" onClick={endTourEarly}>

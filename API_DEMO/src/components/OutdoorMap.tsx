@@ -214,7 +214,9 @@ export function OutdoorMap({ result, activeStep, weather, traffic }: Props) {
       fillOpacity: 1,
       weight: 2,
     })
-      .bindPopup(`<strong>${activeStep.phase === 'walk' ? 'Walk' : 'Drive'}</strong><br/>${activeStep.instruction}`)
+      .bindPopup(
+        `<strong>${activeStep.phase === 'walk' ? 'Walk' : 'Drive'}</strong><br/>${escapeHtml(activeStep.instruction)}`,
+      )
       .addTo(map)
       .openPopup()
     map.panTo([activeStep.latitude, activeStep.longitude], { animate: true })

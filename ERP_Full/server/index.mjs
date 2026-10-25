@@ -7,7 +7,7 @@ import dotenv from 'dotenv'
 import { loadCollection, upsert, isUsingLocalFallback } from './lib/firebase.mjs'
 import { authenticateApiKey, extractApiKey, requireScope } from './lib/auth.mjs'
 import { buildIndoorJourney, serializeStop } from './lib/indoor.mjs'
-import { fetchDriveRoute, fetchWeather, offsetMiles, milesBetween, MILES_START, chooseArrival, buildJourneySteps } from './lib/outdoor.mjs'
+import { fetchDriveRoute, fetchWeather, offsetMiles, milesBetween, MILES_START, chooseArrival, buildJourneySteps, alignDriveWithParking } from './lib/outdoor.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 dotenv.config({ path: resolve(__dirname, '.env') })
@@ -613,10 +613,15 @@ app.get('/api/v1/conditions', (req, res) =>
       Math.abs(parkLng) <= 180
         ? { latitude: parkLat, longitude: parkLng }
         : destination
-    const [outdoor, weather] = await Promise.all([
+    const hasParking =
+      driveTarget !== destination &&
+      Number.isFinite(parkLat) &&
+      Number.isFinite(parkLng)
+    const [routed, weather] = await Promise.all([
       fetchDriveRoute(origin, driveTarget),
       fetchWeather(lat, lng),
     ])
+    const outdoor = hasParking ? (await alignDriveWithParking(routed, null, driveTarget)).drive : routed
     return {
       body: {
         origin,

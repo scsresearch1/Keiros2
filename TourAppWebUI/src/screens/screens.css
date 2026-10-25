@@ -1030,6 +1030,72 @@
   z-index: 1;
 }
 
+.nav-map__stage .floor-map {
+  position: relative;
+  height: 100%;
+}
+
+.nav-map__stage .floor-map__canvas {
+  position: absolute;
+  inset: 0;
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+}
+
+.nav-map__stage .floor-map__svg {
+  height: 100%;
+}
+
+.nav-map__stage .floor-map__floors {
+  position: absolute;
+  top: 4.4rem;
+  left: 0.75rem;
+  z-index: 6;
+}
+
+.nav-map__stage .floor-map__card,
+.nav-map__stage .floor-map__hint {
+  display: none;
+}
+
+.floor-map__floors {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.floor-map__floors button {
+  border: 1px solid #dadce0;
+  background: #fff;
+  color: #3c4043;
+  border-radius: 999px;
+  padding: 0.28rem 0.7rem;
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.floor-map__floors button.is-active {
+  background: #1a73e8;
+  border-color: #1a73e8;
+  color: #fff;
+}
+
+.floor-map__canvas {
+  position: relative;
+  overflow: hidden;
+  background: #e8eaed;
+}
+
+.floor-map__svg {
+  width: 100%;
+  display: block;
+  touch-action: none;
+  cursor: grab;
+}
+
 .nav-chrome {
   position: absolute;
   top: calc(0.65rem + var(--safe-top));

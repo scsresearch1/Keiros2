@@ -11,8 +11,9 @@ import {
 } from './api'
 import { OutdoorMap } from './components/OutdoorMap'
 import { Indoor3D } from './components/Indoor3D'
+import { IndoorFloorMap } from './components/IndoorFloorMap'
 import { StartLocationPanel } from './components/StartLocationPanel'
-import { withLiveDrive } from './liveDrive'
+import { attachLotToResult, withLiveDrive } from './liveDrive'
 import type { StartPoint } from './startLocation'
 
 const DEMO_KEY = 'keiros_live_ot_demo_map_nav_2026'
@@ -54,6 +55,7 @@ export default function App() {
   const [pickerOpen, setPickerOpen] = useState(false)
   const [liveOrigin, setLiveOrigin] = useState<{ latitude: number; longitude: number } | null>(null)
   const [locating, setLocating] = useState(false)
+  const [indoorView, setIndoorView] = useState<'floor' | 'building'>('floor')
 
   useEffect(() => {
     void fetchHealth()
@@ -220,7 +222,7 @@ export default function App() {
           ? { latitude: result.parking.latitude, longitude: result.parking.longitude }
           : undefined,
       })
-      setResult((prev) => (prev ? applyDriveRefresh(prev, live) : prev))
+      setResult(await attachLotToResult(applyDriveRefresh(result, live)))
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not refresh conditions')
     } finally {
@@ -663,8 +665,36 @@ export default function App() {
             )
           ) : (
             <div className="demo-indoor-wrap">
-              <p className="demo-indoor-banner">Inside building — 3D floor navigation to the unit</p>
-              <Indoor3D map3d={result.map3d} activeStep={indoorStep} />
+              <div className="demo-indoor-head">
+                <p className="demo-indoor-banner">
+                  {indoorView === 'floor' ? 'Inside building — floor map' : 'Inside building — 3D view'}
+                </p>
+                <div className="demo-indoor-toggle" role="tablist" aria-label="Indoor map">
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={indoorView === 'floor'}
+                    className={indoorView === 'floor' ? 'is-active' : ''}
+                    onClick={() => setIndoorView('floor')}
+                  >
+                    Floor map
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={indoorView === 'building'}
+                    className={indoorView === 'building' ? 'is-active' : ''}
+                    onClick={() => setIndoorView('building')}
+                  >
+                    3D building
+                  </button>
+                </div>
+              </div>
+              {indoorView === 'floor' ? (
+                <IndoorFloorMap map3d={result.map3d} activeStep={indoorStep} instruction={active?.instruction} />
+              ) : (
+                <Indoor3D map3d={result.map3d} activeStep={indoorStep} />
+              )}
             </div>
           )}
         </>
