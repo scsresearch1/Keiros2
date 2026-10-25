@@ -20,11 +20,15 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
+import android.media.AudioManager
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -35,6 +39,7 @@ import kotlin.math.sin
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
@@ -76,6 +81,17 @@ fun NavigationScreen(state: TourUiState, vm: TourViewModel) {
         state.tourMode == TourMode.Guided && stop != null -> "Enter building · ${stop.title}"
         else -> state.destination?.name ?: "Destination"
     }
+    val speakLine = state.navInstruction.ifBlank { step?.instruction.orEmpty() }
+    val speakNext = state.navNextInstruction.ifBlank {
+        tour.journey.getOrNull(state.activeStepIndex + 1)?.instruction.orEmpty()
+    }
+    val context = LocalContext.current
+    val mediaMuted = remember(state.voiceReplay, speakLine) {
+        val audio = context.getSystemService(AudioManager::class.java)
+        audio != null && audio.getStreamVolume(AudioManager.STREAM_MUSIC) == 0
+    }
+    SpeakCue(speakLine, speakNext, state.navDistanceMeters, state.voiceOn)
+    val voiceMissing = LocalDirectionVoice.current?.engineState?.value == "missing"
     val atEnd = tour.journey.isNotEmpty() && state.activeStepIndex >= tour.journey.lastIndex
     val nextStop = tour.stops.getOrNull(state.currentStopIndex + 1)
     val arrive = when {
@@ -87,7 +103,14 @@ fun NavigationScreen(state: TourUiState, vm: TourViewModel) {
 
     Column(Modifier.fillMaxSize().background(Navy)) {
         Box(Modifier.weight(if (state.panelCollapsed) 1f else 1.05f).fillMaxWidth()) {
-            if (indoors) {
+            val showBuilding = indoors && state.indoorPlan == "building"
+            val nextIndoor = tour.journey.getOrNull(state.activeStepIndex + 1)
+            val cueThen = state.navNextInstruction.ifBlank { nextIndoor?.instruction.orEmpty() }
+            val cueFloor = tour.floors.find { it.id == state.selectedFloorId }?.label
+                ?: state.destination?.floorLabel
+                ?: "Floor"
+            val cueMeters = state.navDistanceMeters?.let { Geo.formatDistance(it) } ?: ""
+            if (showBuilding) {
                 IndoorSketch(
                     tour = tour,
                     selectedFloorId = state.selectedFloorId,
@@ -99,6 +122,17 @@ fun NavigationScreen(state: TourUiState, vm: TourViewModel) {
                     followPhone = state.locationFollowsPhone,
                     userLatitude = state.userLatitude,
                     userLongitude = state.userLongitude,
+                    cueThen = cueThen,
+                    cueFloor = cueFloor,
+                    cueMeters = cueMeters,
+                )
+            } else if (indoors) {
+                IndoorFloorMap(
+                    tour = tour,
+                    activeStepIndex = state.activeStepIndex,
+                    selectedFloorId = state.selectedFloorId,
+                    distanceMeters = state.navDistanceMeters,
+                    onSelectFloor = vm::selectFloor,
                 )
             } else {
                 OutdoorMapView(
@@ -131,12 +165,14 @@ fun NavigationScreen(state: TourUiState, vm: TourViewModel) {
                             .border(1.dp, Color(0x477DD3FC), CircleShape)
                             .padding(3.dp),
                     ) {
-                        ModePill("Outside", state.forceView == "map") { vm.setForceView("map") }
-                        ModePill("Inside", state.forceView == "3d") { vm.setForceView("3d") }
+                        ModePill("Outside", !indoors) { vm.setForceView("map") }
+                        ModePill("Floor map", indoors && state.indoorPlan != "building") { vm.setIndoorPlan("floor") }
+                        ModePill("3D", indoors && state.indoorPlan == "building") { vm.setIndoorPlan("building") }
                     }
                 } else {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        ModePill("Floor by floor", true) {}
+                        ModePill("Floor map", state.indoorPlan != "building") { vm.setIndoorPlan("floor") }
+                        ModePill("3D", state.indoorPlan == "building") { vm.setIndoorPlan("building") }
                         Text(
                             "End tour",
                             modifier = Modifier
@@ -241,6 +277,52 @@ fun NavigationScreen(state: TourUiState, vm: TourViewModel) {
                     fontSize = 12.sp,
                     fontFamily = Manrope,
                 )
+                val voice = LocalDirectionVoice.current
+                Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        if (state.voiceOn) "Voice on" else "Voice off",
+                        modifier = Modifier
+                            .clip(CircleShape)
+                            .background(if (state.voiceOn) Color(0xFF7DD3FC) else Color(0x332B7DE9))
+                            .clickable { vm.setVoice(!state.voiceOn) }
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                        color = if (state.voiceOn) Color(0xFF04243A) else TextPrimary,
+                        fontFamily = Manrope,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 12.sp,
+                    )
+                    Text(
+                        "Hear again",
+                        modifier = Modifier
+                            .clip(CircleShape)
+                            .border(1.dp, Color(0x667DD3FC), CircleShape)
+                            .clickable {
+                            voice?.speak(VoiceGuide.cue(speakLine, state.navDistanceMeters, speakNext), force = true)
+                        }
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                        color = TextPrimary,
+                        fontFamily = Manrope,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 12.sp,
+                    )
+                }
+                if (voiceMissing) {
+                    Text(
+                        "Voice didn’t start. Tap Hear again.",
+                        color = Color(0xFFFDE68A),
+                        fontFamily = Manrope,
+                        fontSize = 12.sp,
+                        modifier = Modifier.padding(top = 6.dp),
+                    )
+                } else if (mediaMuted && state.voiceOn) {
+                    Text(
+                        "Turn up media volume to hear directions.",
+                        color = Color(0xFFFDE68A),
+                        fontFamily = Manrope,
+                        fontSize = 12.sp,
+                        modifier = Modifier.padding(top = 6.dp),
+                    )
+                }
                 Box(
                     Modifier
                         .padding(top = 8.dp)
@@ -563,6 +645,9 @@ fun IndoorSketch(
     followPhone: Boolean = false,
     userLatitude: Double? = null,
     userLongitude: Double? = null,
+    cueThen: String = "",
+    cueFloor: String = "",
+    cueMeters: String = "",
 ) {
     var yaw by remember { mutableFloatStateOf(0.48f) }
     var pitch by remember { mutableFloatStateOf(0.52f) }
@@ -729,13 +814,19 @@ fun IndoorSketch(
 
         val route = tour.stops.mapNotNull { stop -> unitPoint(stop.id)?.let { stop to it } }
         route.zipWithNext().forEachIndexed { index, (from, to) ->
-            val activeSeg = index == activeStopIndex || index + 1 == activeStopIndex
+            val activeSeg = index == activeStopIndex
             drawLine(
-                color = if (activeSeg) Color(0xFFF472B6) else Color(0xFF22C55E),
+                color = if (activeSeg) Color(0xFFFDE68A) else Color(0xFF7DD3FC),
                 start = from.second,
                 end = to.second,
-                strokeWidth = if (activeSeg) 7f else 4.5f,
+                strokeWidth = if (activeSeg) 6f else 4f,
+                pathEffect = if (activeSeg) null else PathEffect.dashPathEffect(floatArrayOf(8f, 8f), 0f),
             )
+            if (activeSeg) {
+                val mid = Offset((from.second.x + to.second.x) / 2f, (from.second.y + to.second.y) / 2f)
+                drawCircle(Color(0xFF04243A), 9f, mid)
+                drawCircle(Color(0xFFFDE68A), 6f, mid)
+            }
         }
         route.forEachIndexed { index, (stop, at) ->
             val active = index == activeStopIndex
@@ -791,6 +882,27 @@ fun IndoorSketch(
             drawLine(Color.White, Offset(at.x, at.y - 0.5f), Offset(at.x - 5f, at.y + 3f), strokeWidth = 2.2f)
             drawLine(Color.White, Offset(at.x, at.y - 0.5f), Offset(at.x + 5f, at.y + 3f), strokeWidth = 2.2f)
             }
+        }
+    }
+    if (cueThen.isNotBlank() || cueMeters.isNotBlank()) {
+        Column(
+            Modifier
+                .align(Alignment.TopCenter)
+                .padding(top = 58.dp)
+                .clip(RoundedCornerShape(16.dp))
+                .background(Color(0xE60A1C38))
+                .border(1.dp, Color(0x667DD3FC), RoundedCornerShape(16.dp))
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+        ) {
+            if (cueThen.isNotBlank()) {
+                Text("Then  $cueThen", color = Color.White, fontFamily = Manrope, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+            }
+            Text(
+                listOf(cueFloor, cueMeters).filter { it.isNotBlank() }.joinToString(" · "),
+                color = Color(0xFF7DD3FC),
+                fontFamily = Manrope,
+                fontSize = 12.sp,
+            )
         }
     }
     Column(Modifier.align(Alignment.TopEnd).padding(top = 56.dp, end = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {

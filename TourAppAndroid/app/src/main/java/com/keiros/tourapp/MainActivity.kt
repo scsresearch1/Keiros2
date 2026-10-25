@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -19,6 +20,8 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.keiros.tourapp.flow.TourStep
 import com.keiros.tourapp.flow.TourViewModel
 import com.keiros.tourapp.screens.CompleteScreen
+import com.keiros.tourapp.screens.DirectionVoice
+import com.keiros.tourapp.screens.LocalDirectionVoice
 import com.keiros.tourapp.screens.LiveLocationBinding
 import com.keiros.tourapp.screens.DoorAccessScreen
 import com.keiros.tourapp.screens.DownloadScreen
@@ -34,14 +37,19 @@ import com.keiros.tourapp.ui.KeirosTheme
 import com.keiros.tourapp.ui.Navy
 
 class MainActivity : ComponentActivity() {
+    private var directionVoice: DirectionVoice? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        val voice = DirectionVoice(applicationContext)
+        directionVoice = voice
         setContent {
             KeirosTheme {
                 val vm: TourViewModel = viewModel()
                 val state by vm.state.collectAsState()
                 LiveLocationBinding(state.locationFollowsPhone, vm)
+                CompositionLocalProvider(LocalDirectionVoice provides voice) {
                 Box(
                     Modifier
                         .fillMaxSize()
@@ -70,7 +78,14 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 }
+                }
             }
         }
+    }
+
+    override fun onDestroy() {
+        directionVoice?.shutdown()
+        directionVoice = null
+        super.onDestroy()
     }
 }

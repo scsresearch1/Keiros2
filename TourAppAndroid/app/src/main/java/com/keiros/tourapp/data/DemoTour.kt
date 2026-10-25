@@ -158,8 +158,8 @@ object DemoTour {
     )
 
     val journey = listOf(
-        JourneyStep("s1", "drive", "Head north toward resident parking on the side of Tower A.", 41.8901, -87.6262),
-        JourneyStep("s2", "walk", "Walk from the garage to the main lobby entrance.", entranceLat, entranceLng),
+        JourneyStep("s1", "drive", "Drive to the nearest parking and leave the car.", 41.8901, -87.6262),
+        JourneyStep("s2", "walk", "Leave the car and walk to the main lobby entrance.", entranceLat, entranceLng),
         JourneyStep("s3", "indoor", "Enter through the lobby doors and check in.", stopId = "u1"),
         JourneyStep("s4", "indoor", "Continue to the leasing office on this floor.", stopId = "u2"),
         JourneyStep("s5", "indoor", "Take the elevator to Level 2 and enter the fitness center.", stopId = "u3"),

@@ -74,6 +74,10 @@ data class TourUiState(
     val rating: Int = 5,
     val feedbackDone: Boolean = false,
     val navigateLoading: Boolean = false,
+    val startReady: Boolean = false,
+    val indoorPlan: String = "floor",
+    val voiceOn: Boolean = true,
+    val voiceReplay: Int = 0,
     val locationFollowsPhone: Boolean = false,
     val startMilesAway: Double = 0.0,
     val locationBusy: Boolean = false,
@@ -90,6 +94,7 @@ data class TourUiState(
     val navDistanceMeters: Double? = null,
     val navEtaSeconds: Double? = null,
     val navInstruction: String = "",
+    val navNextInstruction: String = "",
     val liveRoute: List<Pair<Double, Double>> = emptyList(),
     val routeLegMeters: Double = 0.0,
     val gpsIndoor: Boolean = false,
@@ -293,6 +298,7 @@ class TourViewModel : ViewModel() {
                 insideBuilding = false,
                 destination = first.unit,
                 searchTab = "tour",
+                startReady = false,
                 step = TourStep.Search,
             )
         }
@@ -305,6 +311,7 @@ class TourViewModel : ViewModel() {
                 searchTab = "browse",
                 destination = null,
                 insideBuilding = false,
+                startReady = false,
                 step = TourStep.Search,
             )
         }
@@ -315,14 +322,28 @@ class TourViewModel : ViewModel() {
     fun setSearchTab(value: String) = _state.update { it.copy(searchTab = value) }
 
     fun selectStop(index: Int) {
+        if (!_state.value.startReady) return
         val stop = tour().stops.getOrNull(index) ?: return
         _state.update { it.copy(currentStopIndex = index, destination = stop.unit) }
     }
 
-    fun selectUnit(unit: TourUnit) = _state.update { it.copy(destination = unit) }
+    fun selectUnit(unit: TourUnit) {
+        if (!_state.value.startReady) return
+        _state.update { it.copy(destination = unit) }
+    }
+
+    fun confirmStart() = _state.update { it.copy(startReady = true) }
+
+    fun setVoice(on: Boolean) = _state.update { it.copy(voiceOn = on) }
+
+    fun replayVoice() = _state.update { it.copy(voiceReplay = it.voiceReplay + 1) }
+
+    fun setIndoorPlan(plan: String) = _state.update { it.copy(indoorPlan = plan, forceView = "3d") }
 
     fun runNavigate() {
+        if (!_state.value.startReady) return
         val dest = _state.value.destination ?: return
+        refreshConditions()
         viewModelScope.launch {
             _state.update { it.copy(navigateLoading = true) }
             delay(600)
@@ -342,6 +363,7 @@ class TourViewModel : ViewModel() {
 
     fun openNavigation() {
         _state.update { it.copy(step = TourStep.Navigation, showTrack = false) }
+        refreshConditions()
         viewModelScope.launch {
             delay(1600)
             if (!_state.value.trackingEnabled && _state.value.step == TourStep.Navigation) {
@@ -628,7 +650,10 @@ class TourViewModel : ViewModel() {
                 navDistanceMeters = straightMeters,
                 navEtaSeconds = straightMeters / pace,
                 navInstruction = state.navInstruction.ifBlank {
-                    if (walking) "Walk toward the entrance" else "Head toward parking"
+                    if (walking) "Walk toward the entrance" else "Let's head toward the nearest parking"
+                },
+                navNextInstruction = state.navNextInstruction.ifBlank {
+                    if (walking) "" else "Leave the car and walk to the entrance."
                 },
             )
         }
@@ -640,24 +665,34 @@ class TourViewModel : ViewModel() {
             walking -> 1.3
             else -> 11.0
         }
-        val maneuver = maneuverAt(progress.traveledMeters)
+        val (maneuver, upcoming) = maneuverPair(progress.traveledMeters)
+        val pullingIn = !walking && progress.remainingMeters < 80
+        val line = when {
+            pullingIn -> "Drive into the nearest parking and leave the car."
+            maneuver.isNotBlank() -> maneuver
+            walking -> "Walk toward the entrance"
+            else -> "Let's head toward the nearest parking"
+        }
         return state.copy(
             liveRoute = progress.trimmed,
             navDistanceMeters = progress.remainingMeters,
             navEtaSeconds = progress.remainingMeters / pace,
-            navInstruction = maneuver.ifBlank { state.navInstruction },
+            navInstruction = line,
+            navNextInstruction = if (pullingIn) "Leave the car and walk to the entrance." else upcoming.ifBlank { state.navNextInstruction },
         )
     }
 
-    private fun maneuverAt(traveledMeters: Double): String {
-        if (roadManeuvers.isEmpty()) return ""
+    private fun maneuverPair(traveledMeters: Double): Pair<String, String> {
+        if (roadManeuvers.isEmpty()) return "" to ""
         var cursor = 0.0
-        for (step in roadManeuvers) {
+        for ((index, step) in roadManeuvers.withIndex()) {
             val end = cursor + step.meters
-            if (traveledMeters < end - 12 || step == roadManeuvers.last()) return step.text
+            if (traveledMeters < end - 12 || index == roadManeuvers.lastIndex) {
+                return step.text to roadManeuvers.getOrNull(index + 1)?.text.orEmpty()
+            }
             cursor = end
         }
-        return roadManeuvers.last().text
+        return roadManeuvers.last().text to ""
     }
 
     private fun anchorToPhone(state: TourUiState, lat: Double, lng: Double): TourUiState {
@@ -675,7 +710,7 @@ class TourViewModel : ViewModel() {
             journey[idx] = journey[idx].copy(
                 latitude = lat,
                 longitude = lng,
-                instruction = "Starting from your current location.",
+                instruction = "Starting from this phone. Head toward the nearest parking.",
             )
         }
         return state.copy(tour = state.tour.copy(outdoor = shifted, journey = journey))
@@ -712,11 +747,18 @@ class TourViewModel : ViewModel() {
         val id = hit.step.stopId
         val unit = id?.let { stopId -> state.tour.units.find { it.id == stopId } }
         val stopIndex = id?.let { stopId -> state.tour.stops.indexOfFirst { it.id == stopId } } ?: -1
+        val following = state.tour.journey.getOrNull(hit.index + 1)
+        val followingName = following?.stopId?.let { stopId -> state.tour.units.find { it.id == stopId }?.name }
         return state.copy(
             atStop = arrived,
             navDistanceMeters = hit.distance,
             navEtaSeconds = hit.distance / 1.25,
             navInstruction = if (arrived) "You're at ${hit.name}" else "Walk to ${hit.name}",
+            navNextInstruction = when {
+                followingName != null -> "Continue to $followingName"
+                following != null -> following.instruction
+                else -> ""
+            },
             visitedStopIds = if (arrived && id != null) state.visitedStopIds + id else state.visitedStopIds,
             destination = unit ?: state.destination,
             selectedFloorId = if (arrived && unit != null) unit.floorId else state.selectedFloorId,
@@ -763,16 +805,19 @@ class TourViewModel : ViewModel() {
             roadRoute = path
             roadManeuvers = fetched?.maneuvers ?: emptyList()
             roadPace = if (seconds > 1) meters / seconds else if (walking) 1.35 else 11.0
-            val instruction = fetched?.instruction ?: if (walking) "Walk toward the entrance" else "Head toward parking"
+            val instruction = fetched?.instruction ?: if (walking) "Walk toward the entrance" else "Let's head toward the nearest parking"
+            val nextManeuver = fetched?.maneuvers?.getOrNull(1)?.text.orEmpty()
             val geometryMeters = Geo.along(path, path.first().first, path.first().second).let { it.traveledMeters + it.remainingMeters }
             _state.update { current ->
                 if (!current.locationFollowsPhone || current.insideBuilding) return@update current
                 val seeded = current.copy(
                     routeLegMeters = if (geometryMeters > 1) geometryMeters else meters,
                     navInstruction = instruction,
+                    navNextInstruction = nextManeuver.ifBlank { current.navNextInstruction },
                     navDistanceMeters = meters,
                     navEtaSeconds = seconds,
                     liveRoute = path,
+                    trafficLevel = if (walking) current.trafficLevel else trafficBand(meters, seconds),
                 )
                 val userLat = current.userLatitude
                 val userLng = current.userLongitude
@@ -806,6 +851,8 @@ class TourViewModel : ViewModel() {
                     navDistanceMeters = fetched.meters,
                     navEtaSeconds = fetched.seconds,
                     navInstruction = fetched.instruction,
+                    navNextInstruction = fetched.maneuvers.getOrNull(1)?.text.orEmpty(),
+                    trafficLevel = trafficBand(fetched.meters, fetched.seconds),
                     routeLegMeters = fetched.meters,
                     liveRoute = fetched.path,
                 )
@@ -901,14 +948,58 @@ class TourViewModel : ViewModel() {
     fun enableTracking() = _state.update { it.copy(trackingEnabled = true, showTrack = false, liveSec = 0) }
 
     fun refreshConditions() {
-        val options = listOf(
-            "Clear · 68°F" to "Light",
-            "Partly cloudy · 66°F" to "Moderate",
-            "Breezy · 64°F" to "Light",
-        )
-        val current = _state.value.weatherSummary
-        val next = options[(options.indexOfFirst { it.first == current } + 1).coerceAtLeast(0) % options.size]
-        _state.update { it.copy(weatherSummary = next.first, trafficLevel = next.second) }
+        val snapshot = _state.value
+        val lat = snapshot.userLatitude ?: snapshot.tour.outdoor.entranceLat
+        val lng = snapshot.userLongitude ?: snapshot.tour.outdoor.entranceLng
+        viewModelScope.launch {
+            val summary = withContext(Dispatchers.IO) { fetchWeather(lat, lng) } ?: return@launch
+            _state.update { it.copy(weatherSummary = summary) }
+        }
+    }
+
+    private fun trafficBand(meters: Double, seconds: Double): String {
+        if (seconds < 1) return "Light"
+        val mph = (meters / 1609.344) / (seconds / 3600.0)
+        val expected = when {
+            meters >= 1500 -> 55.0
+            meters >= 400 -> 32.0
+            else -> 18.0
+        }
+        return when {
+            mph >= expected * 0.85 -> "Light"
+            mph >= expected * 0.55 -> "Moderate"
+            else -> "Heavy"
+        }
+    }
+
+    private fun fetchWeather(lat: Double, lng: Double): String? {
+        return try {
+            val url = URL(
+                "https://api.open-meteo.com/v1/forecast?latitude=$lat&longitude=$lng&current=temperature_2m,weather_code&temperature_unit=fahrenheit",
+            )
+            val conn = url.openConnection() as HttpURLConnection
+            conn.connectTimeout = 8000
+            conn.readTimeout = 8000
+            val body = conn.inputStream.bufferedReader().readText()
+            conn.disconnect()
+            val current = JSONObject(body).optJSONObject("current") ?: return null
+            val temp = current.optDouble("temperature_2m", Double.NaN)
+            if (temp.isNaN()) return null
+            "${weatherName(current.optInt("weather_code", -1))} · ${temp.toInt()}°F"
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun weatherName(code: Int) = when (code) {
+        0 -> "Clear"
+        1, 2 -> "Mostly clear"
+        3 -> "Cloudy"
+        45, 48 -> "Fog"
+        51, 53, 55, 61, 63, 65, 80, 81, 82 -> "Rain"
+        71, 73, 75, 85, 86 -> "Snow"
+        95, 96, 99 -> "Storms"
+        else -> "Weather"
     }
     fun dismissTrack() = _state.update { it.copy(showTrack = false) }
 

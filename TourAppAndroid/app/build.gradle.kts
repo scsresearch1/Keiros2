@@ -19,8 +19,11 @@ android {
         applicationId = "com.keiros.tourapp"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 13
+        versionName = "13.0"
+        ndk {
+            abiFilters += listOf("arm64-v8a")
+        }
         buildConfigField("String", "FIREBASE_API_KEY", "\"${firebaseValue("VITE_FIREBASE_API_KEY")}\"")
         buildConfigField("String", "FIREBASE_PROJECT_ID", "\"${firebaseValue("VITE_FIREBASE_PROJECT_ID")}\"")
     }
@@ -48,6 +51,10 @@ android {
         compose = true
         buildConfig = true
     }
+
+    androidResources {
+        noCompress += "onnx"
+    }
 }
 
 dependencies {
@@ -68,5 +75,6 @@ dependencies {
     implementation("androidx.camera:camera-lifecycle:1.4.0")
     implementation("androidx.camera:camera-view:1.4.0")
     implementation("com.google.mlkit:barcode-scanning:17.3.0")
+    implementation(files("libs/sherpa-onnx.aar"))
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

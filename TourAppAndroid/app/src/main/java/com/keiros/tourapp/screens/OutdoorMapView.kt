@@ -3,6 +3,8 @@ package com.keiros.tourapp.screens
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color as AndroidColor
+import android.graphics.ColorMatrix
+import android.graphics.ColorMatrixColorFilter
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.drawable.BitmapDrawable
@@ -38,17 +40,13 @@ import org.osmdroid.views.overlay.Marker
 import org.osmdroid.views.overlay.Polyline
 import org.osmdroid.views.overlay.infowindow.InfoWindow
 
-private val darkTiles = XYTileSource(
-    "CartoDark",
+private val streetTiles = XYTileSource(
+    "OsmStreets",
     0,
-    20,
+    19,
     256,
     ".png",
-    arrayOf(
-        "https://a.basemaps.cartocdn.com/dark_all/",
-        "https://b.basemaps.cartocdn.com/dark_all/",
-        "https://c.basemaps.cartocdn.com/dark_all/",
-    ),
+    arrayOf("https://tile.openstreetmap.org/"),
 )
 
 @Composable
@@ -71,12 +69,27 @@ fun OutdoorMapView(
     }
     val camera = remember { doubleArrayOf(Double.NaN, Double.NaN, -1.0) }
     val map = androidx.compose.runtime.remember {
-        Configuration.getInstance().userAgentValue = context.packageName
+        Configuration.getInstance().userAgentValue = "KeirosTour/9 (com.keiros.tourapp)"
+        Configuration.getInstance().osmdroidBasePath = context.cacheDir
+        Configuration.getInstance().osmdroidTileCache = java.io.File(context.cacheDir, "osmdroid")
         MapView(context).apply {
-            setTileSource(darkTiles)
+            setTileSource(streetTiles)
             setMultiTouchControls(true)
             controller.setZoom(15.0)
             controller.setCenter(GeoPoint(route.parkingLat, route.parkingLng))
+            overlayManager.tilesOverlay.loadingBackgroundColor = AndroidColor.parseColor("#0B1220")
+            overlayManager.tilesOverlay.setColorFilter(
+                ColorMatrixColorFilter(
+                    ColorMatrix(
+                        floatArrayOf(
+                            -0.9f, 0f, 0f, 0f, 235f,
+                            0f, -0.9f, 0f, 0f, 235f,
+                            0f, 0f, -0.85f, 0f, 245f,
+                            0f, 0f, 0f, 1f, 0f,
+                        ),
+                    ),
+                ),
+            )
         }
     }
     DisposableEffect(map) {

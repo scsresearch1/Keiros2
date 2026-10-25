@@ -172,8 +172,9 @@ fun SearchScreen(state: TourUiState, vm: TourViewModel) {
                     TabPill("Explore map", state.searchTab == "browse") { vm.setSearchTab("browse") }
                 }
             }
+            StartCard(state, vm)
             if (showTour) {
-                Eyebrow("SELF-GUIDED · ~${tour.estimateMinutes()} MIN")
+                Eyebrow("2 · DESTINATION")
                 Text("Floor by floor", fontFamily = Sora, fontSize = 30.sp, fontWeight = FontWeight.SemiBold, color = TextPrimary)
                 Text(
                     "Start on the lowest floor, visit every unit there, then move up one floor at a time. You can end the tour anytime once you’re inside.",
@@ -194,7 +195,7 @@ fun SearchScreen(state: TourUiState, vm: TourViewModel) {
                     Spacer(Modifier.height(10.dp))
                 }
             } else {
-                Eyebrow("EXPLORE")
+                Eyebrow("2 · DESTINATION")
                 Text("Places to see", fontFamily = Sora, fontSize = 30.sp, fontWeight = FontWeight.SemiBold, color = TextPrimary)
                 Text("Pick anything on the property — we’ll take you there.", color = TextSecondary, fontFamily = Manrope)
                 BasicTextField(
@@ -238,12 +239,55 @@ fun SearchScreen(state: TourUiState, vm: TourViewModel) {
                 .padding(18.dp),
         ) {
             val label = when {
+                !state.startReady -> "Choose a starting position"
                 state.navigateLoading -> "Getting directions…"
                 showTour && stop != null -> "Head to ${stop.title}"
                 state.destination != null -> "Head to ${state.destination.name}"
                 else -> "Choose a stop"
             }
-            PrimaryButton(label, vm::runNavigate, enabled = state.destination != null && !state.navigateLoading)
+            PrimaryButton(label, vm::runNavigate, enabled = state.startReady && state.destination != null && !state.navigateLoading)
+        }
+    }
+}
+
+@Composable
+private fun StartCard(state: TourUiState, vm: TourViewModel) {
+    val live = state.locationFollowsPhone
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(bottom = 14.dp)
+            .clip(RoundedCornerShape(18.dp))
+            .background(Color(0xB8101F35))
+            .border(1.dp, if (state.startReady) Color(0x8C2B7DE9) else BorderStrong, RoundedCornerShape(18.dp))
+            .padding(14.dp),
+    ) {
+        Text("1 · STARTING POSITION", color = Color(0xFF7DD3FC), fontSize = 11.sp, fontWeight = FontWeight.Bold, fontFamily = Manrope)
+        Text(
+            when {
+                state.startReady && live -> "Starting from this phone."
+                state.startReady -> "Demo start, about 5 miles from the property."
+                live -> "Use this phone as the start, then choose where you’re going."
+                else -> "This demo starts about 5 miles from the property. Confirm it, then choose the destination."
+            },
+            color = TextPrimary,
+            fontFamily = Manrope,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.padding(top = 4.dp),
+        )
+        if (!state.startReady) {
+            Text(
+                if (live) "Use this phone" else "Use this start",
+                modifier = Modifier
+                    .padding(top = 10.dp)
+                    .clip(RoundedCornerShape(99.dp))
+                    .background(Brush.linearGradient(listOf(Color(0xFF38BDF8), Color(0xFF818CF8))))
+                    .clickable(onClick = vm::confirmStart)
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                color = Color(0xFF04101F),
+                fontFamily = Manrope,
+                fontWeight = FontWeight.Bold,
+            )
         }
     }
 }
@@ -348,6 +392,20 @@ private fun filteredUnits(state: TourUiState): List<TourUnit> {
 @Composable
 fun RoutePreviewScreen(state: TourUiState, vm: TourViewModel) {
     val tour = state.tour
+    val previewLine = state.navInstruction.ifBlank {
+        tour.journey.firstOrNull { it.phase == "drive" }?.instruction ?: "Let's head toward the nearest parking"
+    }
+    val previewNext = state.navNextInstruction.ifBlank {
+        tour.journey.firstOrNull { it.phase == "walk" }?.instruction.orEmpty()
+    }
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val mediaMuted = androidx.compose.runtime.remember(state.voiceReplay, previewLine) {
+        val audio = context.getSystemService(android.media.AudioManager::class.java)
+        audio != null && audio.getStreamVolume(android.media.AudioManager.STREAM_MUSIC) == 0
+    }
+    val voice = LocalDirectionVoice.current
+    val voiceMissing = voice?.engineState?.value == "missing"
+    SpeakCue(previewLine, previewNext, state.navDistanceMeters, state.voiceOn)
     val stop = tour.stops.getOrNull(state.currentStopIndex)
     val title = stop?.title ?: state.destination?.name ?: "Next stop"
     Column(Modifier.fillMaxSize().background(Navy)) {
@@ -442,6 +500,51 @@ fun RoutePreviewScreen(state: TourUiState, vm: TourViewModel) {
                 Stat("${indoorStops}m", "Inside", Modifier.weight(1f))
             }
             Text("${state.weatherSummary} · $indoorStops indoor checkpoints", color = TextMuted, fontSize = 12.sp, fontFamily = Manrope, modifier = Modifier.padding(vertical = 10.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(bottom = 10.dp)) {
+                Text(
+                    if (state.voiceOn) "Voice on" else "Voice off",
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(99.dp))
+                        .background(if (state.voiceOn) Color(0xFF7DD3FC) else Color(0x332B7DE9))
+                        .clickable { vm.setVoice(!state.voiceOn) }
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    color = if (state.voiceOn) Color(0xFF04243A) else TextPrimary,
+                    fontFamily = Manrope,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 12.sp,
+                )
+                Text(
+                    "Hear again",
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(99.dp))
+                        .border(1.dp, Color(0x667DD3FC), RoundedCornerShape(99.dp))
+                        .clickable {
+                            voice?.speak(VoiceGuide.cue(previewLine, state.navDistanceMeters, previewNext), force = true)
+                        }
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    color = TextPrimary,
+                    fontFamily = Manrope,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 12.sp,
+                )
+            }
+            if (voiceMissing) {
+                Text(
+                    "Voice didn’t start. Tap Hear again.",
+                    color = Color(0xFFFDE68A),
+                    fontFamily = Manrope,
+                    fontSize = 12.sp,
+                    modifier = Modifier.padding(bottom = 8.dp),
+                )
+            } else if (mediaMuted && state.voiceOn) {
+                Text(
+                    "Turn up media volume to hear directions.",
+                    color = Color(0xFFFDE68A),
+                    fontFamily = Manrope,
+                    fontSize = 12.sp,
+                    modifier = Modifier.padding(bottom = 8.dp),
+                )
+            }
             PrimaryButton("Continue to this stop", vm::openNavigation)
         }
     }

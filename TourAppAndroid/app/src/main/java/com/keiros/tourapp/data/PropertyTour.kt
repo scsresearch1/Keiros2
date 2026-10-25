@@ -98,8 +98,13 @@ object TourBuilder {
                 role = if (index == 0) "entry" else "inside",
             )
         }
-        val parking = places.firstOrNull { it.type == "parking" } ?: places.minBy { it.elevation }
         val entrance = chosen.firstOrNull() ?: places.minBy { it.elevation }
+        val parkings = places.filter { it.type == "parking" }
+        val parking = if (parkings.isEmpty()) {
+            places.minBy { Geo.meters(it.lat, it.lng, entrance.lat, entrance.lng) }
+        } else {
+            parkings.minBy { Geo.meters(it.lat, it.lng, entrance.lat, entrance.lng) }
+        }
         val originLat = entrance.lat - 0.006
         val originLng = entrance.lng - 0.004
         val midLat = (originLat + parking.lat) / 2
@@ -112,8 +117,8 @@ object TourBuilder {
             listOf(parking.lat to parking.lng, walkMidLat to walkMidLng, entrance.lat to entrance.lng),
         )
         val journey = buildList {
-            add(JourneyStep("drive", "drive", "Drive to parking at ${buildingName}.", midLat, midLng))
-            add(JourneyStep("walk", "walk", "Walk from parking to ${entrance.name}.", entrance.lat, entrance.lng))
+            add(JourneyStep("drive", "drive", "Drive to the nearest parking and leave the car.", midLat, midLng))
+            add(JourneyStep("walk", "walk", "Leave the car and walk to ${entrance.name}.", entrance.lat, entrance.lng))
             stops.forEach { stop ->
                 add(JourneyStep(stop.id, "indoor", "Continue to ${stop.title} on ${stop.floorLabel}.", stopId = stop.id))
             }
