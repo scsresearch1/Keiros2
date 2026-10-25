@@ -13,6 +13,7 @@ import { OutdoorMap } from './components/OutdoorMap'
 import { Indoor3D } from './components/Indoor3D'
 import { IndoorFloorMap } from './components/IndoorFloorMap'
 import { StartLocationPanel } from './components/StartLocationPanel'
+import { primeVoice, useDirectionVoice } from './voiceGuide'
 import { attachLotToResult, withLiveDrive } from './liveDrive'
 import type { StartPoint } from './startLocation'
 
@@ -183,6 +184,7 @@ export default function App() {
 
   async function runNavigate(e: FormEvent) {
     e.preventDefault()
+    primeVoice()
     if (!startReady) {
       setError('Choose a starting position first.')
       return
@@ -269,6 +271,12 @@ export default function App() {
     setPickerOpen(false)
     await chooseStartMode(liveSelected ? 'live' : 'demo')
   }
+
+  const voiceSteps = result?.journey.steps ?? []
+  const voiceCurrent = voiceSteps[journeyIndex]
+    ? { ...voiceSteps[journeyIndex], id: `${result?.sessionId ?? 'route'}:${voiceSteps[journeyIndex].id}` }
+    : null
+  const voice = useDirectionVoice(voiceCurrent, voiceSteps[journeyIndex + 1] ?? null)
 
   if (!apiKey || !hierarchy) {
     return (
@@ -638,7 +646,19 @@ export default function App() {
             </div>
             {active ? (
               <div className={`demo-step-card is-${active.phase === 'outdoor' ? 'drive' : active.phase}`}>
-                <strong>{active.title ?? `Step ${journeyIndex + 1}`}</strong>
+                <div className="demo-voice">
+                  <strong>{active.title ?? `Step ${journeyIndex + 1}`}</strong>
+                  {voice.supported ? (
+                    <div>
+                      <button type="button" aria-pressed={voice.on} onClick={voice.toggle}>
+                        {voice.on ? 'Voice on' : 'Voice off'}
+                      </button>
+                      <button type="button" onClick={voice.replay} disabled={!voice.on}>
+                        Hear again
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
                 <p>{active.instruction}</p>
                 <p className="demo-hint">
                   {active.phase === 'drive' || active.phase === 'outdoor' ? (

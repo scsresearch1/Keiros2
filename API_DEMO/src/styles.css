@@ -544,6 +544,41 @@ button:disabled {
   margin-bottom: 0.85rem;
 }
 
+.demo-voice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.demo-voice > div {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.demo-voice button {
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--ink);
+  border-radius: 999px;
+  padding: 0.28rem 0.7rem;
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.demo-voice button[aria-pressed='true'] {
+  background: #1d3557;
+  border-color: #1d3557;
+  color: #fff;
+}
+
+.demo-voice button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
 .demo-step-card {
   border: 1px solid var(--line);
   border-radius: 12px;

@@ -3,6 +3,7 @@ import { BackChip, PrimaryButton } from '../ui/chrome'
 import { useTour } from '../flow/TourContext'
 import { normalizePhase } from '../api/client'
 import { OutdoorMap } from '../map2d/OutdoorMap'
+import { primeVoice } from '../voice/voiceGuide'
 
 export function RoutePreviewScreen() {
   const {
@@ -101,7 +102,14 @@ export function RoutePreviewScreen() {
           {summary?.temp != null ? ` · ${summary.temp}°F` : ''}
           {summary ? ` · ${summary.indoorStops} indoor checkpoints` : ''}
         </p>
-        <PrimaryButton onClick={() => goTo('navigation')}>Continue to this stop</PrimaryButton>
+        <PrimaryButton
+          onClick={() => {
+            primeVoice()
+            goTo('navigation')
+          }}
+        >
+          Continue to this stop
+        </PrimaryButton>
       </div>
     </section>
   )

@@ -13,6 +13,7 @@ import { OutdoorMap } from '../map2d/OutdoorMap'
 import { TowerIndoorNav } from '../map3d/TowerIndoorNav'
 import { recordTrackingEvent } from '../mock/tracking'
 import { useLiveDwellSync } from '../hooks/useLiveDwellSync'
+import { useDirectionVoice } from '../voice/voiceGuide'
 
 export function NavigationScreen() {
   const {
@@ -61,6 +62,10 @@ export function NavigationScreen() {
         )
       : activeStepIndex
   const active = steps[activeStepIndex] ?? null
+  const voice = useDirectionVoice(
+    active ? { ...active, id: `${navigateResult?.sessionId ?? 'route'}:${active.id}` } : null,
+    steps[activeStepIndex + 1] ?? null,
+  )
   const phase = active ? normalizePhase(active.phase) : 'indoor'
   const showOutdoor = !insideBuilding && forceView === 'map'
   const indoors = !showOutdoor
@@ -380,6 +385,14 @@ export function NavigationScreen() {
               <span>
                 {remaining.distFt} ft · ~{remaining.mins} min · tip {activeStepIndex + 1}/{steps.length}
               </span>
+            </div>
+            <div className="nav-voice">
+              <button type="button" aria-pressed={voice.on} onClick={voice.toggle} disabled={!voice.supported}>
+                {voice.on ? 'Voice on' : 'Voice off'}
+              </button>
+              <button type="button" onClick={voice.replay} disabled={!voice.on}>
+                Hear again
+              </button>
             </div>
             <div className="nav-banner__bar" aria-hidden>
               <div style={{ width: `${remaining.pct}%` }} />

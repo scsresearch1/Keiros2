@@ -763,6 +763,40 @@
 .phase-tag--walk { color: #38bdf8; }
 .phase-tag--indoor { color: #4ade80; }
 
+.nav-voice {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.4rem;
+}
+
+.nav-banner .nav-voice {
+  pointer-events: auto;
+  margin: 0.45rem 0 0.15rem;
+}
+
+.nav-voice button {
+  border: 1px solid rgba(125, 211, 252, 0.35);
+  background: rgba(8, 20, 42, 0.55);
+  color: #e0f2fe;
+  border-radius: 999px;
+  padding: 0.32rem 0.7rem;
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.nav-voice button[aria-pressed='true'] {
+  background: #e0f2fe;
+  color: #0f2744;
+  border-color: #e0f2fe;
+}
+
+.nav-voice button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
 .nav-actions {
   display: flex;
   gap: 0.5rem;
