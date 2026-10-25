@@ -58,6 +58,11 @@ struct TourUiState {
     var navDistanceMeters: Double?
     var navEtaSeconds: Double?
     var navInstruction: String = ""
+    var navNextInstruction: String = ""
+    var startReady: Bool = false
+    var indoorPlan: String = "floor"
+    var voiceOn: Bool = true
+    var voiceMissing: Bool = false
     var pristineOutdoor: OutdoorRoute?
     var pristineDriveInstruction: String?
     var gpsIndoor: Bool = false
@@ -66,10 +71,12 @@ struct TourUiState {
 @MainActor
 final class TourStore: ObservableObject {
     @Published var state = TourUiState()
+    let voice = DirectionVoice()
     private var ticker: Timer?
     private let order = TourStep.allCases
 
     init() {
+        state.voiceMissing = voice.engineState == "missing"
         ticker = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
@@ -203,6 +210,7 @@ final class TourStore: ObservableObject {
         state.insideBuilding = false
         state.destination = first.unit
         state.searchTab = "tour"
+        state.startReady = false
         state.step = .search
     }
 
@@ -211,6 +219,7 @@ final class TourStore: ObservableObject {
         state.searchTab = "browse"
         state.destination = nil
         state.insideBuilding = false
+        state.startReady = false
         state.step = .search
     }
 
@@ -219,16 +228,37 @@ final class TourStore: ObservableObject {
     func setSearchTab(_ value: String) { state.searchTab = value }
 
     func selectStop(_ index: Int) {
+        guard state.startReady else { return }
         guard state.tour.stops.indices.contains(index) else { return }
         state.currentStopIndex = index
         state.destination = state.tour.stops[index].unit
     }
 
-    func selectUnit(_ unit: TourUnit) { state.destination = unit }
+    func selectUnit(_ unit: TourUnit) {
+        guard state.startReady else { return }
+        state.destination = unit
+    }
+
+    func confirmStart() { state.startReady = true }
+
+    func setVoice(_ on: Bool) {
+        state.voiceOn = on
+        if !on { voice.stop() }
+    }
+
+    func setIndoorPlan(_ plan: String) {
+        state.indoorPlan = plan
+        state.forceView = "3d"
+    }
+
+    func hearAgain(line: String, next: String, meters: Double?) {
+        voice.speak(VoiceGuide.cue(current: line, distanceMeters: meters, upcoming: next), force: true)
+    }
 
     func runNavigate() {
-        guard let dest = state.destination else { return }
+        guard state.startReady, let dest = state.destination else { return }
         state.navigateLoading = true
+        refreshConditions()
         Task {
             try? await Task.sleep(nanoseconds: 600_000_000)
             state.navigateLoading = false
@@ -236,6 +266,7 @@ final class TourStore: ObservableObject {
             state.activeStepIndex = 0
             state.insideBuilding = false
             state.forceView = "map"
+            state.indoorPlan = "floor"
             state.panelCollapsed = false
             state.step = .routePreview
         }
@@ -244,6 +275,7 @@ final class TourStore: ObservableObject {
     func openNavigation() {
         state.step = .navigation
         state.showTrack = false
+        refreshConditions()
         Task {
             try? await Task.sleep(nanoseconds: 1_600_000_000)
             if !state.trackingEnabled && state.step == .navigation { state.showTrack = true }
@@ -268,6 +300,7 @@ final class TourStore: ObservableObject {
     func toggleTips() { state.listOpen.toggle() }
     func toggleDest() { state.destOpen.toggle() }
     func selectFloor(_ id: String) { state.selectedFloorId = id; state.showAllFloors = false; state.destOpen = true }
+    func pinFloor(_ id: String) { state.selectedFloorId = id; state.showAllFloors = false }
     func showAllFloors() { state.showAllFloors = true }
     func enableTracking() { state.trackingEnabled = true; state.showTrack = false; state.liveSec = 0 }
     func dismissTrack() { state.showTrack = false }
@@ -353,20 +386,26 @@ final class TourStore: ObservableObject {
         if let idx = state.tour.journey.firstIndex(where: { $0.phase == "drive" }) {
             state.tour.journey[idx].latitude = lat
             state.tour.journey[idx].longitude = lng
-            state.tour.journey[idx].instruction = "Starting from your current location."
+            state.tour.journey[idx].instruction = "Starting from this phone. Head toward the nearest parking."
         }
     }
 
-    func updateNavCue(meters: Double, seconds: Double, instruction: String) {
+    func updateNavCue(meters: Double, seconds: Double, instruction: String, next: String = "", walking: Bool = false) {
         guard state.locationFollowsPhone || state.startMilesAway > 0 else { return }
         guard !state.insideBuilding else { return }
-        let sameInstruction = state.navInstruction == instruction
+        let pullingIn = !walking && meters < 80
+        let line = pullingIn ? "Drive into the nearest parking and leave the car." : instruction
+        let upcoming = pullingIn ? "Leave the car and walk to the entrance." : next
+        let sameInstruction = state.navInstruction == line
         let closeMeters = abs((state.navDistanceMeters ?? -999) - meters) < 12
         let closeEta = abs((state.navEtaSeconds ?? -999) - seconds) < 15
-        if sameInstruction && closeMeters && closeEta { return }
+        let nextStable = upcoming.isEmpty || state.navNextInstruction == upcoming
+        if sameInstruction && closeMeters && closeEta && nextStable { return }
         state.navDistanceMeters = meters
         state.navEtaSeconds = seconds
-        state.navInstruction = instruction
+        state.navInstruction = line
+        if !upcoming.isEmpty { state.navNextInstruction = upcoming }
+        if !walking { state.trafficLevel = trafficBand(meters: meters, seconds: seconds) }
     }
 
     private func finishLocationChoice(_ status: CLAuthorizationStatus) {
@@ -505,6 +544,15 @@ final class TourStore: ObservableObject {
         state.navDistanceMeters = hit.distance
         state.navEtaSeconds = hit.distance / 1.25
         state.navInstruction = arrived ? "You're at \(hit.name)" : "Walk to \(hit.name)"
+        if let following = state.tour.journey[safe: hit.index + 1] {
+            if let stopId = following.stopId, let followingName = state.tour.units.first(where: { $0.id == stopId })?.name {
+                state.navNextInstruction = "Continue to \(followingName)"
+            } else {
+                state.navNextInstruction = following.instruction
+            }
+        } else {
+            state.navNextInstruction = ""
+        }
         if arrived, let id = hit.step.stopId {
             state.visitedStopIds.insert(id)
         }
@@ -569,11 +617,55 @@ final class TourStore: ObservableObject {
     }
 
     func refreshConditions() {
-        let options = [("Clear · 68°F", "Light"), ("Partly cloudy · 66°F", "Moderate"), ("Breezy · 64°F", "Light")]
-        let index = options.firstIndex { $0.0 == state.weatherSummary } ?? -1
-        let next = options[(index + 1 + options.count) % options.count]
-        state.weatherSummary = next.0
-        state.trafficLevel = next.1
+        let lat = state.userLatitude ?? state.tour.outdoor.entranceLat
+        let lng = state.userLongitude ?? state.tour.outdoor.entranceLng
+        Task {
+            if let summary = await fetchWeather(lat: lat, lng: lng) {
+                state.weatherSummary = summary
+            }
+        }
+    }
+
+    private func trafficBand(meters: Double, seconds: Double) -> String {
+        if seconds < 1 { return "Light" }
+        let mph = (meters / 1609.344) / (seconds / 3600.0)
+        let expected = meters >= 1500 ? 55.0 : (meters >= 400 ? 32.0 : 18.0)
+        if mph >= expected * 0.85 { return "Light" }
+        if mph >= expected * 0.55 { return "Moderate" }
+        return "Heavy"
+    }
+
+    private func fetchWeather(lat: Double, lng: Double) async -> String? {
+        var components = URLComponents(string: "https://api.open-meteo.com/v1/forecast")
+        components?.queryItems = [
+            URLQueryItem(name: "latitude", value: String(lat)),
+            URLQueryItem(name: "longitude", value: String(lng)),
+            URLQueryItem(name: "current", value: "temperature_2m,weather_code"),
+            URLQueryItem(name: "temperature_unit", value: "fahrenheit"),
+        ]
+        guard let url = components?.url else { return nil }
+        guard let (data, _) = try? await URLSession.shared.data(from: url),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let current = json["current"] as? [String: Any] else { return nil }
+        let temp = current["temperature_2m"] as? Double ?? (current["temperature_2m"] as? NSNumber)?.doubleValue
+        guard let temp else { return nil }
+        let code = current["weather_code"] as? Int
+            ?? (current["weather_code"] as? NSNumber)?.intValue
+            ?? -1
+        return "\(weatherName(code)) · \(Int(temp))°F"
+    }
+
+    private func weatherName(_ code: Int) -> String {
+        switch code {
+        case 0: return "Clear"
+        case 1, 2: return "Mostly clear"
+        case 3: return "Cloudy"
+        case 45, 48: return "Fog"
+        case 51, 53, 55, 61, 63, 65, 80, 81, 82: return "Rain"
+        case 71, 73, 75, 85, 86: return "Snow"
+        case 95, 96, 99: return "Storms"
+        default: return "Weather"
+        }
     }
 
     func selectTip(_ index: Int) { applyJourneyIndex(index) }
@@ -661,8 +753,10 @@ final class TourStore: ObservableObject {
     }
 
     func resetTour() {
+        voice.stop()
         LocationAuth.shared.stop()
         state = TourUiState()
+        state.voiceMissing = voice.engineState == "missing"
     }
 
     func filteredUnits() -> [TourUnit] {

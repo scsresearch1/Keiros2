@@ -15,10 +15,19 @@ struct NavigationScreen: View {
         let live = store.state.startMilesAway == 0 && (store.state.locationFollowsPhone || LocationAuth.shared.isAuthorized)
         let instruction = navigationInstruction(live: live, step: step)
         let detail = navigationDetail(live: live, tour: tour)
+        let nextStep = tour.journey[safe: store.state.activeStepIndex + 1]
+        let speakLine = store.state.navInstruction.isEmpty ? (step?.instruction ?? "") : store.state.navInstruction
+        let speakNext = store.state.navNextInstruction.isEmpty ? (nextStep?.instruction ?? "") : store.state.navNextInstruction
+        let cueFloor = tour.floors.first { $0.id == store.state.selectedFloorId }?.label ?? ""
+        let cueMeters = store.state.navDistanceMeters.map { Geo.formatDistance($0) } ?? ""
+        let showBuilding = indoors && store.state.indoorPlan == "building"
         VStack(spacing: 0) {
+            SpeakCue(line: speakLine, next: speakNext, meters: store.state.navDistanceMeters, enabled: store.state.voiceOn, voice: store.voice)
             ZStack(alignment: .top) {
-                if indoors {
+                if showBuilding {
                     IndoorSketch(store: store)
+                } else if indoors {
+                    IndoorFloorMap(store: store)
                 } else {
                     OutdoorMapView(
                         route: tour.outdoor,
@@ -29,30 +38,55 @@ struct NavigationScreen: View {
                         userLatitude: store.state.userLatitude,
                         userLongitude: store.state.userLongitude,
                         userHeading: store.state.userHeading,
-                        onRouteUpdate: { meters, seconds, text in
-                            store.updateNavCue(meters: meters, seconds: seconds, instruction: text)
+                        onRouteUpdate: { meters, seconds, text, next, walking in
+                            store.updateNavCue(meters: meters, seconds: seconds, instruction: text, next: next, walking: walking)
                         },
                         onUserFix: { store.noteDeviceLocation($0) }
                     )
+                }
+                if showBuilding && (!speakNext.isEmpty || !cueMeters.isEmpty) {
+                    VStack(spacing: 2) {
+                        if !speakNext.isEmpty {
+                            Text("Then  \(speakNext)")
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(.white)
+                        }
+                        let meta = [cueFloor, cueMeters].filter { !$0.isEmpty }.joined(separator: " · ")
+                        if !meta.isEmpty {
+                            Text(meta)
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundStyle(Color(red: 0.49, green: 0.83, blue: 0.99))
+                        }
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(Color(red: 0.039, green: 0.110, blue: 0.220).opacity(0.9))
+                    .clipShape(RoundedRectangle(cornerRadius: 16))
+                    .padding(.top, 58)
                 }
                 HStack {
                     BackChip(action: store.goBack)
                     Spacer()
                     if !store.state.insideBuilding {
                         HStack(spacing: 0) {
-                            mode("Outside", store.state.forceView == "map") { store.setForceView("map") }
-                            mode("Inside", store.state.forceView == "3d") { store.setForceView("3d") }
+                            mode("Outside", !indoors) { store.setForceView("map") }
+                            mode("Floor map", indoors && store.state.indoorPlan != "building") { store.setIndoorPlan("floor") }
+                            mode("3D", indoors && store.state.indoorPlan == "building") { store.setIndoorPlan("building") }
                         }
                         .padding(3)
                         .background(Color.black.opacity(0.55))
                         .clipShape(Capsule())
                     } else {
-                        Button("End tour", action: store.endTour)
-                            .font(.system(size: 12, weight: .bold))
-                            .foregroundStyle(Color(red: 0.996, green: 0.804, blue: 0.827))
-                            .padding(.horizontal, 12).padding(.vertical, 8)
-                            .background(Color(red: 0.5, green: 0.11, blue: 0.11).opacity(0.55))
-                            .clipShape(Capsule())
+                        HStack(spacing: 0) {
+                            mode("Floor map", store.state.indoorPlan != "building") { store.setIndoorPlan("floor") }
+                            mode("3D", store.state.indoorPlan == "building") { store.setIndoorPlan("building") }
+                            Button("End tour", action: store.endTour)
+                                .font(.system(size: 12, weight: .bold))
+                                .foregroundStyle(Color(red: 0.996, green: 0.804, blue: 0.827))
+                                .padding(.horizontal, 12).padding(.vertical, 8)
+                                .background(Color(red: 0.5, green: 0.11, blue: 0.11).opacity(0.55))
+                                .clipShape(Capsule())
+                        }
                     }
                 }
                 .padding(12)
@@ -126,6 +160,7 @@ struct NavigationScreen: View {
                                 Button("Refresh", action: store.refreshConditions).font(.system(size: 12, weight: .bold)).foregroundStyle(KeirosColor.secondary)
                             }
                         }
+                        VoiceBar(store: store, line: speakLine, next: speakNext, meters: store.state.navDistanceMeters)
                         if indoors {
                             HStack {
                                 VStack(alignment: .leading) {
@@ -291,6 +326,227 @@ struct NavigationScreen: View {
             .background(active ? Color(red: 0.62, green: 0.09, blue: 0.30).opacity(0.4) : Color.white.opacity(0.06))
             .foregroundStyle(active ? Color(red: 0.988, green: 0.906, blue: 0.953) : KeirosColor.secondary)
             .clipShape(Capsule())
+    }
+}
+
+struct IndoorFloorMap: View {
+    @ObservedObject var store: TourStore
+    @State private var pinned: String?
+    @State private var pan = CGSize.zero
+    @State private var panStart = CGSize.zero
+
+    var body: some View {
+        let tour = store.state.tour
+        let active = tour.journey[safe: store.state.activeStepIndex]
+        let activeUnit = active?.stopId.flatMap { id in tour.units.first { $0.id == id } }
+        let activeFloor = activeUnit?.floorId ?? store.state.selectedFloorId
+        let floorId = pinned ?? activeFloor
+        let floor = tour.floors.first { $0.id == floorId }
+        let rooms = tour.units.filter { $0.floorId == floorId && $0.type != "parking" && $0.type != "path" }
+        let nextUnit = tour.journey[safe: store.state.activeStepIndex + 1]?.stopId.flatMap { id in tour.units.first { $0.id == id } }
+        let thenLine: String = {
+            if nextUnit == nil { return "You've arrived" }
+            if nextUnit?.floorId != floorId { return "Take the stairs or elevator" }
+            return "Continue to \(nextUnit?.name ?? "the next place")"
+        }()
+        let meters = store.state.navDistanceMeters ?? straightMeters(activeUnit: activeUnit, nextUnit: nextUnit)
+        let minutes = max(1, Int(((meters ?? 80) / 75).rounded()))
+        let meterLabel: String = {
+            guard let meters else { return "On this floor" }
+            if meters < 950 { return "\(Int(meters.rounded())) m" }
+            return String(format: "%.1f mi", meters / 1609.344)
+        }()
+        ZStack {
+            Color(red: 0.957, green: 0.945, blue: 0.922)
+            TimelineView(.animation) { timeline in
+                let cycle = timeline.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 2.8) / 2.8
+                let glide = 0.08 + 0.84 * cycle
+                Canvas { context, size in
+                    drawPlan(context: &context, size: size, rooms: rooms, tour: tour, activeId: activeUnit?.id, glide: glide)
+                }
+            }
+            .gesture(
+                DragGesture()
+                    .onChanged { value in
+                        pan = CGSize(width: panStart.width + value.translation.width, height: panStart.height + value.translation.height)
+                    }
+                    .onEnded { _ in panStart = pan }
+            )
+            if rooms.isEmpty {
+                Text("No places on this floor yet.")
+                    .foregroundStyle(Color(red: 0.36, green: 0.40, blue: 0.44))
+                    .allowsHitTesting(false)
+            }
+            HStack {
+                VStack(spacing: 6) {
+                    ForEach(tour.floors) { item in
+                        let on = item.id == floorId
+                        Button(item.label) {
+                            pinned = item.id
+                            store.pinFloor(item.id)
+                        }
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(on ? Color.white : Color(red: 0.11, green: 0.14, blue: 0.19))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                        .background(on ? Color(red: 0.114, green: 0.306, blue: 0.537) : Color(red: 0.984, green: 0.976, blue: 0.961))
+                        .overlay(RoundedRectangle(cornerRadius: 12).stroke(on ? Color(red: 0.114, green: 0.306, blue: 0.537) : Color(red: 0.851, green: 0.827, blue: 0.780), lineWidth: 1))
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                    }
+                }
+                .padding(.leading, 8)
+                Spacer().allowsHitTesting(false)
+            }
+            VStack {
+                Text("Then  \(thenLine)")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(Color(red: 0.11, green: 0.14, blue: 0.19).opacity(0.95))
+                    .clipShape(Capsule())
+                    .padding(.top, 58)
+                Spacer().allowsHitTesting(false)
+            }
+            VStack {
+                Spacer().allowsHitTesting(false)
+                HStack {
+                    Text("\(floor?.label ?? "Floor") · \(minutes) min · \(meterLabel)")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Color(red: 0.11, green: 0.14, blue: 0.19))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(Color(red: 0.984, green: 0.976, blue: 0.961).opacity(0.95))
+                        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color(red: 0.851, green: 0.827, blue: 0.780), lineWidth: 1))
+                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                    Spacer().allowsHitTesting(false)
+                    Button("Center") {
+                        pan = .zero
+                        panStart = .zero
+                    }
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(Color(red: 0.114, green: 0.306, blue: 0.537))
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(Color(red: 0.984, green: 0.976, blue: 0.961).opacity(0.95))
+                    .clipShape(Capsule())
+                }
+                .padding(.horizontal, 12)
+                .padding(.bottom, 12)
+            }
+        }
+        .onChange(of: store.state.activeStepIndex) { _ in pinned = nil }
+    }
+
+    private func straightMeters(activeUnit: TourUnit?, nextUnit: TourUnit?) -> Double? {
+        guard let activeUnit, let nextUnit,
+              Geo.isPlaced(activeUnit.latitude, activeUnit.longitude),
+              Geo.isPlaced(nextUnit.latitude, nextUnit.longitude) else { return nil }
+        return Geo.meters(activeUnit.latitude, activeUnit.longitude, nextUnit.latitude, nextUnit.longitude)
+    }
+
+    private func drawPlan(context: inout GraphicsContext, size: CGSize, rooms: [TourUnit], tour: PropertyTour, activeId: String?, glide: Double) {
+        if rooms.isEmpty { return }
+        let placed = rooms.filter { Geo.isPlaced($0.latitude, $0.longitude) }
+        let useGeo = placed.count >= 2
+        let spanLat = useGeo ? (placed.map(\.latitude).max() ?? 0) - (placed.map(\.latitude).min() ?? 0) : 0
+        let spanLng = useGeo ? (placed.map(\.longitude).max() ?? 0) - (placed.map(\.longitude).min() ?? 0) : 0
+        let swap = useGeo && spanLat > spanLng * 1.25
+        let minLng = useGeo ? placed.map(\.longitude).min() ?? 0 : 0
+        let maxLng = useGeo ? placed.map(\.longitude).max() ?? 1 : 1
+        let minLat = useGeo ? placed.map(\.latitude).min() ?? 0 : 0
+        let maxLat = useGeo ? placed.map(\.latitude).max() ?? 1 : 1
+        let left: CGFloat = 86
+        let top: CGFloat = 86
+        let plotW = max(40, size.width - left - 28)
+        let plotH = max(40, size.height - top - 96)
+        let rows = max(1, (rooms.count + 2) / 3)
+        struct Spot { var id: String; var name: String; var cx: CGFloat; var cy: CGFloat; var hot: Bool }
+        let spots: [Spot] = rooms.enumerated().map { index, unit in
+            let nx: CGFloat
+            let ny: CGFloat
+            if !useGeo || !Geo.isPlaced(unit.latitude, unit.longitude) {
+                nx = CGFloat(index % 3) / 2
+                ny = CGFloat(index / 3) / CGFloat(max(rows - 1, 1))
+            } else {
+                let ax = swap ? unit.latitude : unit.longitude
+                let ay = swap ? unit.longitude : unit.latitude
+                let minX = swap ? minLat : minLng
+                let maxX = swap ? maxLat : maxLng
+                let minY = swap ? minLng : minLat
+                let maxY = swap ? maxLng : maxLat
+                nx = maxX == minX ? 0.5 : CGFloat((ax - minX) / (maxX - minX))
+                ny = maxY == minY ? 0.5 : CGFloat((ay - minY) / (maxY - minY))
+            }
+            return Spot(
+                id: unit.id,
+                name: unit.name,
+                cx: left + min(max(nx, 0), 1) * plotW + pan.width,
+                cy: top + min(max(ny, 0), 1) * plotH + pan.height,
+                hot: unit.id == activeId
+            )
+        }
+        for spot in spots {
+            let rect = CGRect(x: spot.cx - 59, y: spot.cy - 34, width: 118, height: 68)
+            let box = Path(roundedRect: rect, cornerRadius: 18)
+            context.fill(box, with: .color(spot.hot ? Color(red: 0.906, green: 0.941, blue: 0.980) : Color(red: 0.984, green: 0.976, blue: 0.961)))
+            context.stroke(box, with: .color(spot.hot ? Color(red: 0.114, green: 0.306, blue: 0.537) : Color(red: 0.851, green: 0.827, blue: 0.780)), lineWidth: spot.hot ? 3.5 : 1.6)
+        }
+        let ordered = tour.journey.compactMap { step -> Spot? in
+            guard step.phase == "indoor", let id = step.stopId else { return nil }
+            return spots.first { $0.id == id }
+        }
+        if ordered.count >= 2 {
+            var path = Path()
+            for (index, spot) in ordered.enumerated() {
+                if index == 0 {
+                    path.move(to: CGPoint(x: spot.cx, y: spot.cy))
+                } else {
+                    let prev = ordered[index - 1]
+                    path.addLine(to: CGPoint(x: spot.cx, y: prev.cy))
+                    path.addLine(to: CGPoint(x: spot.cx, y: spot.cy))
+                }
+            }
+            context.stroke(path, with: .color(Color(red: 0.173, green: 0.290, blue: 0.451)), style: StrokeStyle(lineWidth: 5, lineCap: .round, dash: [2, 12]))
+        }
+        let legIndex = ordered.firstIndex(where: { $0.hot }) ?? 0
+        if let from = ordered[safe: legIndex] {
+            let toSpot = ordered[safe: legIndex + 1] ?? from
+            let corner = CGPoint(x: toSpot.cx, y: from.cy)
+            let firstLen = abs(corner.x - from.cx)
+            let secondLen = abs(toSpot.cy - from.cy)
+            let total = max(firstLen + secondLen, 1)
+            let travel = CGFloat(glide) * total
+            let at: CGPoint
+            let angle: Double
+            if travel <= firstLen {
+                let t = firstLen < 1 ? 1 : travel / firstLen
+                at = CGPoint(x: from.cx + (corner.x - from.cx) * t, y: from.cy)
+                angle = corner.x >= from.cx ? 90 : -90
+            } else {
+                let t = secondLen < 1 ? 1 : (travel - firstLen) / secondLen
+                at = CGPoint(x: corner.x, y: from.cy + (toSpot.cy - from.cy) * t)
+                angle = toSpot.cy >= from.cy ? 180 : 0
+            }
+            var chevron = Path()
+            chevron.move(to: CGPoint(x: 0, y: -13))
+            chevron.addLine(to: CGPoint(x: -8, y: 8))
+            chevron.addLine(to: CGPoint(x: 8, y: 8))
+            chevron.closeSubpath()
+            var mark = context
+            mark.translateBy(x: at.x, y: at.y)
+            mark.rotate(by: .degrees(angle))
+            mark.fill(chevron, with: .color(Color(red: 0.114, green: 0.306, blue: 0.537)))
+        }
+        for spot in spots {
+            context.draw(
+                Text(spot.name)
+                    .font(.system(size: 12, weight: spot.hot ? .bold : .medium))
+                    .foregroundColor(Color(red: 0.11, green: 0.14, blue: 0.19)),
+                at: CGPoint(x: spot.cx, y: spot.cy),
+                anchor: .center
+            )
+        }
     }
 }
 

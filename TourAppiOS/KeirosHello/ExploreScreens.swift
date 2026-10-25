@@ -81,7 +81,9 @@ struct SearchScreen: View {
                             pill("Explore map", store.state.searchTab == "browse") { store.setSearchTab("browse") }
                         }
                     }
+                    StartCard(store: store)
                     if showTour {
+                        Text("2 · DESTINATION").font(.system(size: 11, weight: .bold)).foregroundStyle(Color(red: 0.49, green: 0.83, blue: 0.99))
                         Text("SELF-GUIDED · ~\(tour.estimateMinutes()) MIN").font(.system(size: 12, weight: .bold)).foregroundStyle(KeirosColor.teal)
                         Text("Floor by floor").font(.system(size: 30, weight: .semibold)).foregroundStyle(KeirosColor.text)
                         Text("Start on the lowest floor, visit every unit there, then move up one floor at a time.")
@@ -99,6 +101,7 @@ struct SearchScreen: View {
                             }
                         }
                     } else {
+                        Text("2 · DESTINATION").font(.system(size: 11, weight: .bold)).foregroundStyle(Color(red: 0.49, green: 0.83, blue: 0.99))
                         Text("EXPLORE").font(.system(size: 12, weight: .bold)).foregroundStyle(KeirosColor.teal)
                         Text("Places to see").font(.system(size: 30, weight: .semibold)).foregroundStyle(KeirosColor.text)
                         TextField("Search homes or amenities", text: Binding(get: { store.state.searchQuery }, set: store.setSearchQuery))
@@ -142,12 +145,13 @@ struct SearchScreen: View {
                 .padding(.bottom, 120)
             }
             let label: String = {
+                if !store.state.startReady { return "Choose a starting position" }
                 if store.state.navigateLoading { return "Getting directions…" }
                 if showTour, let stop { return "Head to \(stop.title)" }
                 if let dest = store.state.destination { return "Head to \(dest.name)" }
                 return "Choose a stop"
             }()
-            PrimaryButton(label: label, action: store.runNavigate, enabled: store.state.destination != nil && !store.state.navigateLoading)
+            PrimaryButton(label: label, action: store.runNavigate, enabled: store.state.startReady && store.state.destination != nil && !store.state.navigateLoading)
                 .padding(18)
                 .background(LinearGradient(colors: [.clear, KeirosColor.navy], startPoint: .top, endPoint: .bottom))
         }
@@ -161,6 +165,42 @@ struct SearchScreen: View {
             .background(active ? Color(red: 0.22, green: 0.74, blue: 0.97) : Color.clear)
             .foregroundStyle(active ? Color(red: 0.016, green: 0.06, blue: 0.12) : KeirosColor.secondary)
             .clipShape(Capsule())
+    }
+}
+
+struct StartCard: View {
+    @ObservedObject var store: TourStore
+    var body: some View {
+        let live = store.state.locationFollowsPhone
+        VStack(alignment: .leading, spacing: 6) {
+            Text("1 · STARTING POSITION").font(.system(size: 11, weight: .bold)).foregroundStyle(Color(red: 0.49, green: 0.83, blue: 0.99))
+            Text(startCopy(live: live))
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(KeirosColor.text)
+            if !store.state.startReady {
+                Button(live ? "Use this phone" : "Use this start", action: store.confirmStart)
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(Color(red: 0.016, green: 0.063, blue: 0.122))
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    .background(LinearGradient(colors: [Color(red: 0.22, green: 0.74, blue: 0.97), Color(red: 0.51, green: 0.55, blue: 0.97)], startPoint: .leading, endPoint: .trailing))
+                    .clipShape(Capsule())
+                    .padding(.top, 4)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .background(Color(red: 0.063, green: 0.122, blue: 0.208).opacity(0.72))
+        .overlay(RoundedRectangle(cornerRadius: 18).stroke(store.state.startReady ? Color(red: 0.169, green: 0.490, blue: 0.914).opacity(0.55) : Color.white.opacity(0.16), lineWidth: 1))
+        .clipShape(RoundedRectangle(cornerRadius: 18))
+        .padding(.bottom, 4)
+    }
+
+    private func startCopy(live: Bool) -> String {
+        if store.state.startReady && live { return "Starting from this phone." }
+        if store.state.startReady { return "Demo start, about 5 miles from the property." }
+        if live { return "Use this phone as the start, then choose where you’re going." }
+        return "This demo starts about 5 miles from the property. Confirm it, then choose the destination."
     }
 }
 
@@ -196,7 +236,14 @@ struct RoutePreviewScreen: View {
         let tour = store.state.tour
         let stop = tour.stops[safe: store.state.currentStopIndex]
         let title = stop?.title ?? store.state.destination?.name ?? "Next stop"
+        let previewLine = store.state.navInstruction.isEmpty
+            ? (tour.journey.first { $0.phase == "drive" }?.instruction ?? "Let's head toward the nearest parking")
+            : store.state.navInstruction
+        let previewNext = store.state.navNextInstruction.isEmpty
+            ? (tour.journey.first { $0.phase == "walk" }?.instruction ?? "")
+            : store.state.navNextInstruction
         VStack(spacing: 0) {
+            SpeakCue(line: previewLine, next: previewNext, meters: store.state.navDistanceMeters, enabled: store.state.voiceOn, voice: store.voice)
             ZStack(alignment: .topLeading) {
                 OutdoorMapView(
                     route: tour.outdoor,
@@ -208,17 +255,22 @@ struct RoutePreviewScreen: View {
                     userLatitude: store.state.userLatitude,
                     userLongitude: store.state.userLongitude,
                     userHeading: store.state.userHeading,
-                    onRouteUpdate: { meters, seconds, text in
-                        store.updateNavCue(meters: meters, seconds: seconds, instruction: text)
+                    onRouteUpdate: { meters, seconds, text, next, walking in
+                        store.updateNavCue(meters: meters, seconds: seconds, instruction: text, next: next, walking: walking)
                     },
                     onUserFix: { store.noteDeviceLocation($0) }
                 )
                 BackChip(action: store.goBack).padding(14)
-                Text("\(store.state.weatherSummary) · Traffic \(store.state.trafficLevel)")
-                    .font(.system(size: 12)).foregroundStyle(Color(red: 0.49, green: 0.83, blue: 0.99))
-                    .padding(8).background(KeirosColor.navy.opacity(0.85)).clipShape(RoundedRectangle(cornerRadius: 12))
-                    .padding(12)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+                HStack(spacing: 8) {
+                    Text("\(store.state.weatherSummary) · Traffic \(store.state.trafficLevel)")
+                        .font(.system(size: 12)).foregroundStyle(Color(red: 0.49, green: 0.83, blue: 0.99))
+                    Button("Refresh", action: store.refreshConditions)
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(KeirosColor.secondary)
+                }
+                .padding(8).background(KeirosColor.navy.opacity(0.85)).clipShape(RoundedRectangle(cornerRadius: 12))
+                .padding(12)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
             }
             VStack(alignment: .leading, spacing: 8) {
                 Text(store.state.tourMode == .guided && store.state.currentStopIndex == 0 ? "STEP 1 · GET INSIDE" : "NEXT ON YOUR TOUR")
@@ -239,6 +291,7 @@ struct RoutePreviewScreen: View {
                     stat(entranceStat, "To entrance")
                     stat("\(tour.journey.filter { $0.phase == "indoor" }.count)", "Inside stops")
                 }
+                VoiceBar(store: store, line: previewLine, next: previewNext, meters: store.state.navDistanceMeters)
                 PrimaryButton(label: "Continue to this stop", action: store.openNavigation)
             }
             .padding(16)

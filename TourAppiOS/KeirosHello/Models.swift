@@ -248,8 +248,8 @@ enum DemoTour {
     ]
 
     static let journey: [JourneyStep] = [
-        JourneyStep(id: "s1", phase: "drive", instruction: "Head north toward resident parking on the side of Tower A.", latitude: 41.8901, longitude: -87.6262),
-        JourneyStep(id: "s2", phase: "walk", instruction: "Walk from the garage to the main lobby entrance.", latitude: entranceLat, longitude: entranceLng),
+        JourneyStep(id: "s1", phase: "drive", instruction: "Drive to the nearest parking and leave the car.", latitude: 41.8901, longitude: -87.6262),
+        JourneyStep(id: "s2", phase: "walk", instruction: "Leave the car and walk to the main lobby entrance.", latitude: entranceLat, longitude: entranceLng),
         JourneyStep(id: "s3", phase: "indoor", instruction: "Enter through the lobby doors and check in.", latitude: units[0].latitude, longitude: units[0].longitude, stopId: "u1"),
         JourneyStep(id: "s4", phase: "indoor", instruction: "Continue to the leasing office on this floor.", latitude: units[1].latitude, longitude: units[1].longitude, stopId: "u2"),
         JourneyStep(id: "s5", phase: "indoor", instruction: "Take the elevator to Level 2 and enter the fitness center.", latitude: units[2].latitude, longitude: units[2].longitude, stopId: "u3"),
@@ -393,8 +393,12 @@ enum TourBuilder {
             let unit = units.first { $0.id == place.id }!
             return TourStop(id: place.id, unit: unit, title: place.name, blurb: "\(place.floorLabel) · \(place.buildingName)", order: index + 1, floorId: place.floorId, floorLabel: place.floorLabel, role: index == 0 ? "entry" : "inside")
         }
-        let parking = places.first { $0.type == "parking" } ?? places.min { $0.elevation < $1.elevation }!
         let entrance = chosen.first ?? places.min { $0.elevation < $1.elevation }!
+        let parkings = places.filter { $0.type == "parking" }
+        let parkingPool = parkings.isEmpty ? places : parkings
+        guard let parking = parkingPool.min(by: {
+            Geo.meters($0.lat, $0.lng, entrance.lat, entrance.lng) < Geo.meters($1.lat, $1.lng, entrance.lat, entrance.lng)
+        }) else { return nil }
         let originLat = entrance.lat - 0.006
         let originLng = entrance.lng - 0.004
         let outdoor = OutdoorRoute(
@@ -405,8 +409,8 @@ enum TourBuilder {
             walkPath: [(parking.lat, parking.lng), ((parking.lat + entrance.lat) / 2, (parking.lng + entrance.lng) / 2), (entrance.lat, entrance.lng)]
         )
         var journey: [JourneyStep] = [
-            JourneyStep(id: "drive", phase: "drive", instruction: "Drive to parking at \(buildingName).", latitude: (originLat + parking.lat) / 2, longitude: (originLng + parking.lng) / 2),
-            JourneyStep(id: "walk", phase: "walk", instruction: "Walk from parking to \(entrance.name).", latitude: entrance.lat, longitude: entrance.lng),
+            JourneyStep(id: "drive", phase: "drive", instruction: "Drive to the nearest parking and leave the car.", latitude: (originLat + parking.lat) / 2, longitude: (originLng + parking.lng) / 2),
+            JourneyStep(id: "walk", phase: "walk", instruction: "Leave the car and walk to \(entrance.name).", latitude: entrance.lat, longitude: entrance.lng),
         ]
         journey.append(contentsOf: stops.map { JourneyStep(id: $0.id, phase: "indoor", instruction: "Continue to \($0.title) on \($0.floorLabel).", latitude: $0.unit.latitude, longitude: $0.unit.longitude, stopId: $0.id) })
         let doors = places.filter { ["door", "lobby", "entry", "gym", "pool", "parking", "amenity"].contains($0.type) }
@@ -472,5 +476,71 @@ enum TourBuilder {
             return nil
         }
         return nil
+    }
+}
+
+enum VoiceGuide {
+    static func cue(current: String, distanceMeters: Double?, upcoming: String?) -> String {
+        let now = soften(current)
+        if now.isEmpty { return "" }
+        let next = upcoming.map { soften($0) } ?? ""
+        let arriving = now.range(of: "reached the parking|you're at|you're inside|you've arrived|park here", options: [.regularExpression, .caseInsensitive]) != nil
+        let span = arriving ? "" : distancePhrase(distanceMeters ?? 0)
+        let finished = finish(now)
+        if !next.isEmpty && !span.isEmpty {
+            return "\(finished) Follow this for \(span). Then, \(lowerFirst(next))."
+        }
+        if !next.isEmpty {
+            return "\(finished) Then, \(lowerFirst(next))."
+        }
+        return finished
+    }
+
+    private static func soften(_ raw: String) -> String {
+        var line = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let swaps = [
+            ("Start driving toward", "Let's head toward"),
+            ("Head toward parking", "Let's head toward the nearest parking"),
+            ("Let's head toward parking", "Let's head toward the nearest parking"),
+            ("Continue toward parking", "Let's head toward the nearest parking"),
+            ("Drive to the nearest parking and leave the car", "Let's head toward the nearest parking"),
+            ("Drive to parking", "Let's head toward the nearest parking"),
+            ("visitor parking", "the visitor parking"),
+            ("garage parking", "the visitor parking"),
+            ("Arrive at nearest parking", "You've reached the parking. You can leave the car here"),
+            ("Arrive at the nearest parking", "You've reached the parking. You can leave the car here"),
+            ("Leave the car and walk", "Leave the car, and walk over"),
+            ("Walk from parking", "Leave the car, and walk"),
+            ("Enter building", "You're inside. Head"),
+            ("Take vertical access", "Take the stairs or elevator"),
+            ("Go to", "Continue to"),
+            ("Arrive at", "You've arrived at"),
+        ]
+        for (from, to) in swaps {
+            line = line.replacingOccurrences(of: from, with: to, options: .caseInsensitive)
+        }
+        return line
+    }
+
+    private static func distancePhrase(_ meters: Double) -> String {
+        if meters < 80 { return "" }
+        if meters < 950 {
+            let rounded = max(50, Int((meters / 50.0).rounded()) * 50)
+            return "about \(rounded) meters"
+        }
+        let shown = (meters / 1609.344 * 10).rounded() / 10
+        let label = shown == 1.0 ? "mile" : "miles"
+        return "about \(shown) \(label)"
+    }
+
+    private static func finish(_ line: String) -> String {
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: ". "))
+        return trimmed.isEmpty ? "" : "\(trimmed)."
+    }
+
+    private static func lowerFirst(_ line: String) -> String {
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        guard let first = trimmed.first else { return "" }
+        return first.lowercased() + trimmed.dropFirst()
     }
 }

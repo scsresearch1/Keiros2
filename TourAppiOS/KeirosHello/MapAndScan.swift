@@ -11,7 +11,7 @@ struct OutdoorMapView: UIViewRepresentable {
     var userLatitude: Double?
     var userLongitude: Double?
     var userHeading: Double = -1
-    var onRouteUpdate: ((Double, Double, String) -> Void)?
+    var onRouteUpdate: ((Double, Double, String, String, Bool) -> Void)?
     var onUserFix: ((CLLocation) -> Void)?
 
     func makeUIView(context: Context) -> MKMapView {
@@ -117,7 +117,7 @@ struct OutdoorMapView: UIViewRepresentable {
     }
 
     final class Coordinator: NSObject, MKMapViewDelegate {
-        var onRouteUpdate: ((Double, Double, String) -> Void)?
+        var onRouteUpdate: ((Double, Double, String, String, Bool) -> Void)?
         var fittedKey: String?
         var pinKey: String?
         var routeKey: String?
@@ -179,8 +179,10 @@ struct OutdoorMapView: UIViewRepresentable {
                     map.addOverlay(path.polyline, level: .aboveRoads)
                     self.hasRealApproach = true
                     map.setVisibleMapRect(path.polyline.boundingMapRect, edgePadding: UIEdgeInsets(top: 72, left: 36, bottom: 72, right: 36), animated: false)
-                    let instruction = path.steps.first { !$0.instructions.isEmpty }?.instructions ?? "Drive to parking"
-                    self.onRouteUpdate?(path.distance, path.expectedTravelTime, instruction)
+                    let steps = path.steps.filter { !$0.instructions.isEmpty }
+                    let instruction = steps.first?.instructions ?? "Let's head toward the nearest parking"
+                    let next = steps.dropFirst().first?.instructions ?? ""
+                    self.onRouteUpdate?(path.distance, path.expectedTravelTime, instruction, next, false)
                 }
             }
         }
@@ -253,9 +255,11 @@ struct OutdoorMapView: UIViewRepresentable {
                     self.lastRouted = from
                     if let route = response?.routes.first {
                         self.show(route.polyline, on: map)
-                        let instruction = route.steps.first { !$0.instructions.isEmpty }?.instructions
-                            ?? (walking ? "Walk toward the entrance" : "Continue toward parking")
-                        self.onRouteUpdate?(route.distance, route.expectedTravelTime, instruction)
+                        let steps = route.steps.filter { !$0.instructions.isEmpty }
+                        let instruction = steps.first?.instructions
+                            ?? (walking ? "Walk toward the entrance" : "Let's head toward the nearest parking")
+                        let next = steps.dropFirst().first?.instructions ?? ""
+                        self.onRouteUpdate?(route.distance, route.expectedTravelTime, instruction, next, walking)
                         if !self.chaseCamera {
                             map.setVisibleMapRect(route.polyline.boundingMapRect, edgePadding: UIEdgeInsets(top: 72, left: 40, bottom: 72, right: 40), animated: true)
                         }
@@ -266,7 +270,7 @@ struct OutdoorMapView: UIViewRepresentable {
                         }
                         let meters = Geo.meters(from.latitude, from.longitude, to.latitude, to.longitude)
                         let speed = walking ? 1.35 : 11.0
-                        self.onRouteUpdate?(meters, meters / speed, walking ? "Walk toward the entrance" : "Head toward parking")
+                        self.onRouteUpdate?(meters, meters / speed, walking ? "Walk toward the entrance" : "Let's head toward the nearest parking", "", walking)
                     }
                 }
             }
@@ -416,6 +420,109 @@ final class QrCamera: NSObject, ObservableObject, AVCaptureMetadataOutputObjects
         guard !handled, let code = metadataObjects.compactMap({ $0 as? AVMetadataMachineReadableCodeObject }).first?.stringValue else { return }
         handled = true
         handler?(code)
+    }
+}
+
+@MainActor
+final class DirectionVoice: ObservableObject {
+    private let synth = AVSpeechSynthesizer()
+    private var lastText = ""
+    private var lastAt = Date.distantPast
+    let engineState: String
+
+    init() {
+        engineState = AVSpeechSynthesisVoice(language: "en-US") == nil ? "missing" : "ready"
+    }
+
+    func speak(_ text: String, force: Bool = false) {
+        let line = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if line.isEmpty || engineState == "missing" { return }
+        let session = AVAudioSession.sharedInstance()
+        try? session.setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
+        try? session.setActive(true)
+        let now = Date()
+        if !force && line == lastText && now.timeIntervalSince(lastAt) < 2.5 { return }
+        lastText = line
+        lastAt = now
+        if synth.isSpeaking { synth.stopSpeaking(at: .immediate) }
+        let utterance = AVSpeechUtterance(string: line)
+        utterance.voice = AVSpeechSynthesisVoice(language: "en-US")
+        utterance.rate = AVSpeechUtteranceDefaultSpeechRate * 0.96
+        synth.speak(utterance)
+    }
+
+    func stop() {
+        if synth.isSpeaking { synth.stopSpeaking(at: .immediate) }
+        lastText = ""
+    }
+
+    var outputMuted: Bool {
+        AVAudioSession.sharedInstance().outputVolume == 0
+    }
+}
+
+struct SpeakCue: View {
+    var line: String
+    var next: String
+    var meters: Double?
+    var enabled: Bool
+    var voice: DirectionVoice
+
+    var body: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            .onAppear { speak() }
+            .onChange(of: spoken) { _ in speak() }
+            .onChange(of: enabled) { on in
+                if on { speak() } else { voice.stop() }
+            }
+    }
+
+    private var spoken: String { VoiceGuide.cue(current: line, distanceMeters: meters, upcoming: next) }
+
+    private func speak() {
+        if !enabled {
+            voice.stop()
+            return
+        }
+        if line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return }
+        voice.speak(spoken)
+    }
+}
+
+struct VoiceBar: View {
+    @ObservedObject var store: TourStore
+    var line: String
+    var next: String
+    var meters: Double?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Button(store.state.voiceOn ? "Voice on" : "Voice off") { store.setVoice(!store.state.voiceOn) }
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(store.state.voiceOn ? Color(red: 0.016, green: 0.141, blue: 0.227) : KeirosColor.text)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(store.state.voiceOn ? Color(red: 0.49, green: 0.83, blue: 0.99) : Color(red: 0.169, green: 0.490, blue: 0.914).opacity(0.2))
+                    .clipShape(Capsule())
+                Button("Hear again") { store.hearAgain(line: line, next: next, meters: meters) }
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(KeirosColor.text)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .overlay(Capsule().stroke(Color(red: 0.49, green: 0.83, blue: 0.99).opacity(0.4), lineWidth: 1))
+            }
+            if store.state.voiceMissing {
+                Text("Voice didn’t start. Tap Hear again.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Color(red: 0.992, green: 0.902, blue: 0.541))
+            } else if store.state.voiceOn && store.voice.outputMuted {
+                Text("Turn up media volume to hear directions.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Color(red: 0.992, green: 0.902, blue: 0.541))
+            }
+        }
     }
 }
 
