@@ -40,16 +40,32 @@ function turnWord(fromBearing, toBearing) {
 const HUB_TYPES = new Set(['Corridor', 'Lobby', 'Entry', 'Exit', 'Elevator', 'Stairs', 'Door', 'Amenity'])
 const VERTICAL_TYPES = new Set(['Elevator', 'Stairs'])
 
+/** Keriosa often stored dwellings as type Entry — treat those as units for routing. */
+function looksLikeDwelling(label) {
+  const t = String(label || '').trim()
+  if (!t) return false
+  if (/\b(unit|suite|apt\.?|apartment)\s*[#-]?\s*[a-z0-9-]+\b/i.test(t)) return true
+  if (/#\s*\d{1,4}[a-z]?\b/i.test(t)) return true
+  return false
+}
+
+function effectiveType(loc) {
+  if (loc?.type === 'Entry' && looksLikeDwelling(loc.name)) return 'Unit'
+  return loc?.type
+}
+
 function isHub(loc) {
-  return HUB_TYPES.has(loc.type) || /corridor|hall|lobby|elevator|stair|door|entry/i.test(loc.name || '')
+  const type = effectiveType(loc)
+  if (type === 'Unit' || type === 'Room') return false
+  return HUB_TYPES.has(type) || /corridor|hall|lobby|elevator|stair|door|entry/i.test(loc.name || '')
 }
 
 function edgeCost(a, b) {
   let meters = haversineMeters(a, b)
   // Prefer corridors / hubs over cutting through random units
   if (!isHub(a) && !isHub(b)) meters *= 1.35
-  if (VERTICAL_TYPES.has(a.type) || VERTICAL_TYPES.has(b.type)) meters *= 0.92
-  if (a.type === 'Unit' && b.type === 'Unit') meters *= 1.55
+  if (VERTICAL_TYPES.has(effectiveType(a)) || VERTICAL_TYPES.has(effectiveType(b))) meters *= 0.92
+  if (effectiveType(a) === 'Unit' && effectiveType(b) === 'Unit') meters *= 1.55
   meters += Math.abs((a.elevation || 0) - (b.elevation || 0)) * 0.4
   return meters
 }
@@ -232,13 +248,28 @@ export function routePath(from, to, locations) {
   return dijkstraFloor(from, to, floorLocs.length ? floorLocs : [from, to])
 }
 
-export function nearestEntry(locations) {
-  const scored = locations
-    .filter((l) => l.type === 'Entry' || l.type === 'Lobby' || l.type === 'Door')
-    .map((l) => ({
-      l,
-      score: l.type === 'Entry' ? 0 : l.type === 'Lobby' ? 1 : 2,
-    }))
+export function nearestEntry(locations, preferNear = null, preferFloorId = null) {
+  let pool = locations.filter((l) => {
+    const t = effectiveType(l)
+    return t === 'Entry' || t === 'Lobby' || t === 'Door'
+  })
+  if (!pool.length) pool = locations.filter((l) => isHub(l))
+  if (!pool.length && preferNear) {
+    // No portals left — use the geographically nearest other stop as a synthetic start.
+    pool = locations.filter((l) => l.id !== preferNear.id)
+  }
+  if (preferFloorId) {
+    const sameFloor = pool.filter((l) => l.floorId === preferFloorId)
+    if (sameFloor.length) pool = sameFloor
+  }
+  if (!pool.length) return locations[0] ?? null
+  const scored = pool
+    .map((l) => {
+      const t = effectiveType(l)
+      const typeScore = t === 'Entry' ? 0 : t === 'Lobby' ? 1 : t === 'Door' ? 2 : 3
+      const dist = preferNear ? haversineMeters(preferNear, l) : 0
+      return { l, score: typeScore * 40 + dist }
+    })
     .sort((a, b) => a.score - b.score)
   return scored[0]?.l ?? locations[0] ?? null
 }
@@ -355,14 +386,28 @@ function instructionForStop(stops, i, destinationLabel) {
 
 export function buildIndoorJourney(destination, allLocations) {
   const buildingLocs = allLocations.filter((l) => l.buildingId === destination.buildingId)
-  const entry = nearestEntry(buildingLocs)
-  if (!entry) {
+  // Prefer an entrance on the destination floor so indoor nav starts where the unit lives.
+  const entry =
+    nearestEntry(buildingLocs, destination, destination.floorId) ||
+    nearestEntry(buildingLocs, destination) ||
+    buildingLocs[0] ||
+    destination
+  if (!entry || entry.id === destination.id) {
+    const sameFloor = buildingLocs.filter((l) => l.floorId === destination.floorId)
+    const neighbor =
+      [...sameFloor]
+        .filter((l) => l.id !== destination.id)
+        .sort((a, b) => haversineMeters(destination, a) - haversineMeters(destination, b))[0] || null
+    const stops = neighbor ? [neighbor, destination] : [destination]
+    const distanceM = pathDistanceMeters(stops)
+    const cues = stops.map((_, i) => instructionForStop(stops, i, destination.name))
     return {
-      stops: [destination],
-      distanceM: 0,
-      walkMinutes: 0,
+      stops,
+      distanceM: Math.round(distanceM),
+      walkMinutes: estimateWalkMinutes(distanceM, 0),
       floorChanges: 0,
-      cues: [],
+      entry: neighbor || destination,
+      cues,
     }
   }
   const stops = routePath(entry, destination, allLocations)

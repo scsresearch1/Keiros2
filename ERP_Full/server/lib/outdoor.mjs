@@ -1022,6 +1022,134 @@ function directWalk(spot, entrance) {
   }
 }
 
+/**
+ * Point-to-point (no parking): origin → destination on roads.
+ * Short distance walks; longer distance drives straight to the destination pin.
+ */
+export async function choosePointToPoint(origin, destination, opts = {}) {
+  const destLabel = opts.destLabel || 'destination'
+  const toDest = metersBetween(origin, destination)
+
+  if (toDest <= AT_ENTRANCE_M) {
+    return {
+      parking: {
+        latitude: origin.latitude,
+        longitude: origin.longitude,
+        label: 'Already near destination',
+        offsetMeters: Math.round(toDest),
+        mode: 'on-site',
+      },
+      drive: emptyDrive(origin, 'You are already at the destination.'),
+      walk: {
+        provider: 'on-site',
+        profile: 'foot',
+        distanceM: 0,
+        distanceMiles: 0,
+        durationMinutes: 0,
+        geometry: {
+          type: 'LineString',
+          coordinates: [[destination.longitude, destination.latitude]],
+        },
+        steps: [
+          {
+            id: 'wlk-0',
+            phase: 'walk',
+            index: 0,
+            instruction: `You're at ${destLabel} — continue inside if needed`,
+            roadName: null,
+            distanceM: 0,
+            durationSec: 0,
+            speedMph: 3,
+            trafficLevel: null,
+            congestionIndex: null,
+            latitude: destination.latitude,
+            longitude: destination.longitude,
+            geometry: [[destination.longitude, destination.latitude]],
+          },
+        ],
+        traffic: {
+          level: 'Pedestrian',
+          congestionIndex: 0,
+          averageSpeedMph: 3,
+          updatedAt: new Date().toISOString(),
+          note: 'Point-to-point — already on site.',
+          segments: [],
+        },
+      },
+      arrivalMode: 'point-to-point',
+    }
+  }
+
+  const preferWalk = toDest <= WALK_FROM_HERE_M || opts.preferWalk === true
+  if (preferWalk) {
+    let walk = await fetchOsrm('foot', origin, destination, {
+      phase: 'walk',
+      idPrefix: 'wlk',
+      departLabel: `Walk toward ${destLabel}`,
+      arriveLabel: `Arrive at ${destLabel}`,
+    })
+    if (!isRoadSnapped(walk)) {
+      const viaRoads = await fetchOsrm('driving', origin, destination, {
+        phase: 'walk',
+        idPrefix: 'wlk',
+        departLabel: `Walk toward ${destLabel}`,
+        arriveLabel: `Arrive at ${destLabel}`,
+      })
+      if (isRoadSnapped(viaRoads)) walk = { ...viaRoads, profile: 'foot' }
+    }
+    return {
+      parking: {
+        latitude: origin.latitude,
+        longitude: origin.longitude,
+        label: 'Start — point to point',
+        offsetMeters: Math.round(walk.distanceM || toDest),
+        mode: 'point-to-point',
+      },
+      drive: emptyDrive(origin, 'Point-to-point walk — no parking stop.'),
+      walk,
+      arrivalMode: 'point-to-point',
+    }
+  }
+
+  const drive = await fetchOsrm('driving', origin, destination, {
+    phase: 'drive',
+    idPrefix: 'drv',
+    departLabel: `Drive toward ${destLabel}`,
+    arriveLabel: `Arrive at ${destLabel}`,
+  })
+  return {
+    parking: {
+      latitude: destination.latitude,
+      longitude: destination.longitude,
+      label: destLabel,
+      offsetMeters: 0,
+      mode: 'point-to-point',
+    },
+    drive,
+    walk: {
+      provider: 'on-site',
+      profile: 'foot',
+      distanceM: 0,
+      distanceMiles: 0,
+      durationMinutes: 0,
+      geometry: {
+        type: 'LineString',
+        coordinates: [[destination.longitude, destination.latitude]],
+      },
+      steps: [],
+      traffic: {
+        level: 'Pedestrian',
+        congestionIndex: 0,
+        averageSpeedMph: 3,
+        updatedAt: new Date().toISOString(),
+        note: 'Point-to-point drive ends at the destination.',
+        segments: [],
+      },
+    },
+    arrivalMode: 'point-to-point',
+  }
+}
+
 export async function fetchDriveRoute(origin, parking) {
   return fetchOsrm('driving', origin, parking, {
     phase: 'drive',

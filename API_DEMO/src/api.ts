@@ -214,6 +214,8 @@ export async function navigate(
     floorId: string
     unitId: string
     startMode?: 'demo' | 'live' | 'custom'
+    /** When true, include drive → parking → walk. Default is direct indoor to the unit. */
+    viaParking?: boolean
     originLatitude?: number
     originLongitude?: number
     originLabel?: string

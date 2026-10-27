@@ -50,8 +50,21 @@ export function floorLevel(floorRaw: string): number {
   return Number.isFinite(n) ? n : 1
 }
 
+/** True when the house/name clearly refers to a dwelling, not a building portal. */
+export function looksLikeDwelling(label: string): boolean {
+  const t = (label || '').trim()
+  if (!t) return false
+  if (/\b(unit|suite|apt\.?|apartment)\s*[#-]?\s*[a-z0-9-]+\b/i.test(t)) return true
+  if (/#\s*\d{1,4}[a-z]?\b/i.test(t)) return true
+  const norm = normLabel(t)
+  return /^(suite|apt|apartment|unit)\b/.test(norm) || /^\d{2,4}[a-z]?$/.test(norm)
+}
+
 /** Map keriosa point_type + house hint → ERP location type. */
 export function inferLocationType(pointType: string, house: string): LocationType {
+  // Keriosa often tags dwellings as point_type "entry" — house/name wins when it is a unit.
+  if (looksLikeDwelling(house)) return 'Unit'
+
   const pt = normLabel(pointType)
   const map: Record<string, LocationType> = {
     room: 'Room',
@@ -74,8 +87,6 @@ export function inferLocationType(pointType: string, house: string): LocationTyp
     gym: 'Gym',
   }
   if (map[pt]) return map[pt]
-  const houseNorm = normLabel(house)
-  if (/^suite|^apt|^unit|^\d{2,4}$/.test(houseNorm)) return 'Unit'
   if (pt.includes('room')) return 'Room'
   return 'Unit'
 }

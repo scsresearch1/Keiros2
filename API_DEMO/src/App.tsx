@@ -59,6 +59,8 @@ export default function App() {
   const [journeyIndex, setJourneyIndex] = useState(0)
   const [refreshing, setRefreshing] = useState(false)
   const [startMode, setStartMode] = useState<StartMode>('demo')
+  /** Off by default: go straight to the unit. Enable to add drive → parking → walk. */
+  const [viaParking, setViaParking] = useState(false)
   /** Demo Mode is the default start — destination can be chosen immediately. */
   const [startReady, setStartReady] = useState(true)
   const [liveSelected, setLiveSelected] = useState(false)
@@ -126,38 +128,56 @@ export default function App() {
 
   const complexOptions = useMemo<AutocompleteOption[]>(() => {
     if (!hierarchy) return []
-    return hierarchy.complexes.map((c) => ({
-      id: c.id,
-      label: c.name,
-      hint: [c.city, c.address].filter(Boolean).join(' · ') || undefined,
-      searchText: `${c.name} ${c.city ?? ''} ${c.address ?? ''}`,
-    }))
+    const rows = hierarchy.complexes.map((c) => {
+      const buildingCount = hierarchy.buildings.filter((b) => b.complexId === c.id).length
+      const unitCount = hierarchy.units.filter((u) => u.complexId === c.id).length
+      return {
+        id: c.id,
+        label: c.name,
+        hint: [`${buildingCount} buildings`, `${unitCount} locations`, c.city].filter(Boolean).join(' · '),
+        searchText: `${c.name} ${c.city ?? ''} ${c.address ?? ''}`,
+        unitCount,
+      }
+    })
+    // Duplicate names (e.g. empty Cameron Crossing clone): put the populated one first.
+    return rows
+      .sort((a, b) => b.unitCount - a.unitCount || a.label.localeCompare(b.label))
+      .map(({ unitCount: _unitCount, ...option }) => option)
   }, [hierarchy])
 
   const buildingOptions = useMemo<AutocompleteOption[]>(() => {
-    return buildings.map((b) => ({
-      id: b.id,
-      label: b.name,
-      hint: b.complexName || undefined,
-      searchText: `${b.name} ${b.complexName ?? ''}`,
-    }))
-  }, [buildings])
+    if (!hierarchy) return []
+    return buildings.map((b) => {
+      const floorCount = hierarchy.floors.filter((f) => f.buildingId === b.id).length
+      const unitCount = hierarchy.units.filter((u) => u.buildingId === b.id).length
+      return {
+        id: b.id,
+        label: b.name,
+        hint: `${floorCount} floors · ${unitCount} locations`,
+        searchText: `${b.name} ${b.complexName ?? ''}`,
+      }
+    })
+  }, [buildings, hierarchy])
 
   const floorOptions = useMemo<AutocompleteOption[]>(() => {
-    return floors.map((f) => ({
-      id: f.id,
-      label: `${f.label} (L${f.level})`,
-      hint: f.buildingName || undefined,
-      searchText: `${f.label} L${f.level} ${f.buildingName}`,
-    }))
-  }, [floors])
+    if (!hierarchy) return []
+    return floors.map((f) => {
+      const unitCount = hierarchy.units.filter((u) => u.floorId === f.id).length
+      return {
+        id: f.id,
+        label: `${f.label} (L${f.level})`,
+        hint: `${unitCount} locations`,
+        searchText: `${f.label} L${f.level} ${f.buildingName}`,
+      }
+    })
+  }, [floors, hierarchy])
 
   /** Unit list is scoped to the selected floor (cascade). */
   const unitOptions = useMemo<AutocompleteOption[]>(() => {
     return units.map((u) => ({
       id: u.id,
-      label: `${u.name} · ${u.type}`,
-      hint: u.type || undefined,
+      label: u.name,
+      hint: u.type,
       searchText: `${u.name} ${u.type} ${u.code}`,
     }))
   }, [units])
@@ -238,6 +258,7 @@ export default function App() {
         floorId,
         unitId,
         startMode: mode,
+        viaParking,
         ...(explicit
           ? {
               originLatitude: origin.latitude,
@@ -246,18 +267,23 @@ export default function App() {
             }
           : {}),
       })
-      const routed = explicit
-        ? await withLiveDrive(nav, origin, {
-            label: origin.label,
-            startMode: mode === 'custom' ? 'custom' : 'live',
-          })
-        : await attachLotToResult(nav)
+      // Parking rebuild only when opted in; otherwise keep server point-to-point path.
+      const routed = viaParking
+        ? explicit
+          ? await withLiveDrive(nav, origin, {
+              label: origin.label,
+              startMode: mode === 'custom' ? 'custom' : 'live',
+            })
+          : await attachLotToResult(nav)
+        : nav
       setResult(routed)
+      // Point-to-point starts at the first step (origin → destination).
       setJourneyIndex(0)
+      setIndoorView('floor')
       setLiveNav(true)
       setLiveProgress(null)
       setRecalculating(false)
-      manualHoldUntil.current = 0
+      manualHoldUntil.current = Date.now() + 8000
       rerouteLockUntil.current = 0
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Navigate failed')
@@ -496,7 +522,17 @@ export default function App() {
   const phase = active?.phase === 'outdoor' ? 'drive' : (active?.phase ?? 'drive')
   const indoorStep = active?.phase === 'indoor' ? (active.indoorIndex ?? 0) : 0
   const showOutdoorMap = phase === 'drive' || phase === 'walk'
+  const firstIndoorIndex = steps.findIndex((s) => s.phase === 'indoor')
+  const indoorStepCount = steps.filter((s) => s.phase === 'indoor').length
   const canNavigate = Boolean(complexId && buildingId && floorId && unitId)
+
+  function jumpToPhase(target: 'drive' | 'walk' | 'indoor') {
+    const idx = steps.findIndex((s) => {
+      if (target === 'drive') return s.phase === 'drive' || s.phase === 'outdoor'
+      return s.phase === target
+    })
+    if (idx >= 0) jumpJourney(idx)
+  }
   const selectedUnit =
     (hierarchy?.units.find((unit) => unit.id === unitId) ?? null) ||
     (units.find((unit) => unit.id === unitId) ?? null)
@@ -662,11 +698,24 @@ export default function App() {
               onChange={selectUnit}
             />
             <div className="demo-controls__go">
+              <label className="demo-via-parking">
+                <input
+                  type="checkbox"
+                  checked={viaParking}
+                  onChange={(e) => setViaParking(e.target.checked)}
+                />
+                Via parking
+              </label>
               <button type="submit" disabled={loading || locating || !canNavigate}>
-                {loading ? 'Calling API…' : 'Navigate'}
+                {loading ? 'Calling API…' : viaParking ? 'Navigate via parking' : 'Navigate'}
               </button>
             </div>
           </div>
+          <p className="demo-hint demo-hint--tight">
+            {viaParking
+              ? 'Drive to parking → walk to entrance → indoor to the unit.'
+              : 'Point-to-point: your start → entrance → unit (no parking stop).'}
+          </p>
         </section>
       </form>
       {error ? <p className="demo-error">{error}</p> : null}
@@ -711,7 +760,9 @@ export default function App() {
               <h3>Journey</h3>
               <p>
                 {result.journey?.summary ??
-                  'Drive to parking → walk to entrance → navigate inside.'}
+                  (viaParking
+                    ? 'Drive to parking → walk to entrance → navigate inside.'
+                    : 'Point-to-point: start → entrance → unit.')}
               </p>
               <p>
                 {result.journey?.driveSteps ?? result.journey?.outdoorSteps ?? 0} drive ·{' '}
@@ -747,19 +798,74 @@ export default function App() {
           </section>
 
           <div className="demo-phase-strip" aria-label="Journey phases">
-            {result.outdoor.provider === 'on-site' || !(result.outdoor.steps?.length) ? (
+            {steps.some((s) => s.phase === 'drive' || s.phase === 'outdoor') ? (
               <>
-                <span className={phase === 'walk' ? 'is-active phase-walk' : 'phase-walk'}>1 · Walk to entrance</span>
-                <span className={phase === 'indoor' ? 'is-active phase-inside' : 'phase-inside'}>2 · Inside building</span>
+                <button
+                  type="button"
+                  className={phase === 'drive' ? 'is-active phase-drive' : 'phase-drive'}
+                  onClick={() => jumpToPhase('drive')}
+                >
+                  1 · Drive to parking
+                </button>
+                <button
+                  type="button"
+                  className={phase === 'walk' ? 'is-active phase-walk' : 'phase-walk'}
+                  onClick={() => jumpToPhase('walk')}
+                >
+                  2 · Walk to entrance
+                </button>
+                <button
+                  type="button"
+                  className={phase === 'indoor' ? 'is-active phase-inside' : 'phase-inside'}
+                  onClick={() => jumpToPhase('indoor')}
+                  disabled={firstIndoorIndex < 0}
+                >
+                  3 · Inside building
+                  {indoorStepCount ? ` (${indoorStepCount})` : ''}
+                </button>
+              </>
+            ) : steps.some((s) => s.phase === 'walk') ? (
+              <>
+                <button
+                  type="button"
+                  className={phase === 'walk' ? 'is-active phase-walk' : 'phase-walk'}
+                  onClick={() => jumpToPhase('walk')}
+                >
+                  1 · Walk to entrance
+                </button>
+                <button
+                  type="button"
+                  className={phase === 'indoor' ? 'is-active phase-inside' : 'phase-inside'}
+                  onClick={() => jumpToPhase('indoor')}
+                  disabled={firstIndoorIndex < 0}
+                >
+                  2 · Inside building
+                  {indoorStepCount ? ` (${indoorStepCount})` : ''}
+                </button>
               </>
             ) : (
-              <>
-                <span className={phase === 'drive' ? 'is-active phase-drive' : 'phase-drive'}>1 · Drive to parking</span>
-                <span className={phase === 'walk' ? 'is-active phase-walk' : 'phase-walk'}>2 · Walk to entrance</span>
-                <span className={phase === 'indoor' ? 'is-active phase-inside' : 'phase-inside'}>3 · Inside building</span>
-              </>
+              <button
+                type="button"
+                className={phase === 'indoor' ? 'is-active phase-inside' : 'phase-inside'}
+                onClick={() => jumpToPhase('indoor')}
+                disabled={firstIndoorIndex < 0}
+              >
+                Inside · to unit
+                {indoorStepCount ? ` (${indoorStepCount})` : ''}
+              </button>
             )}
           </div>
+          {firstIndoorIndex >= 0 && phase !== 'indoor' ? (
+            <div className="demo-indoor-jump">
+              <button type="button" className="demo-indoor-next" onClick={() => jumpToPhase('indoor')}>
+                Resume indoor navigation
+              </button>
+              <span className="demo-hint">
+                Indoor starts automatically after Navigate · {indoorStepCount} step
+                {indoorStepCount === 1 ? '' : 's'} on the floor map
+              </span>
+            </div>
+          ) : null}
 
           {active && (showOutdoorMap || phase === 'indoor') ? (
             <NavGuidanceBanner

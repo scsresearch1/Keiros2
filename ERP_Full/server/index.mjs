@@ -7,7 +7,17 @@ import dotenv from 'dotenv'
 import { loadCollection, upsert, isUsingLocalFallback } from './lib/firebase.mjs'
 import { authenticateApiKey, extractApiKey, requireScope } from './lib/auth.mjs'
 import { buildIndoorJourney, serializeStop } from './lib/indoor.mjs'
-import { fetchDriveRoute, fetchWeather, offsetMiles, milesBetween, MILES_START, chooseArrival, buildJourneySteps, alignDriveWithParking } from './lib/outdoor.mjs'
+import {
+  fetchDriveRoute,
+  fetchWeather,
+  offsetMiles,
+  milesBetween,
+  MILES_START,
+  chooseArrival,
+  choosePointToPoint,
+  buildJourneySteps,
+  alignDriveWithParking,
+} from './lib/outdoor.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 dotenv.config({ path: resolve(__dirname, '.env') })
@@ -296,8 +306,15 @@ app.get('/api/v1/hierarchy', (req, res) =>
       loadCollection('locations'),
     ])
 
+    // Include every location with coordinates so the nav demo can reach the full DB.
+    // Prefer mapped units first; still expose drafts so nothing looks "missing".
     const units = locations
-      .filter((l) => l.mapped !== false)
+      .filter(
+        (l) =>
+          Number.isFinite(Number(l.latitude)) &&
+          Number.isFinite(Number(l.longitude)) &&
+          !(Number(l.latitude) === 0 && Number(l.longitude) === 0),
+      )
       .map((l) => ({
         id: l.id,
         name: l.name,
@@ -312,17 +329,47 @@ app.get('/api/v1/hierarchy', (req, res) =>
         latitude: l.latitude,
         longitude: l.longitude,
         elevation: l.elevation,
+        mapped: l.mapped !== false,
       }))
+      .sort((a, b) => Number(b.mapped) - Number(a.mapped) || String(a.name).localeCompare(String(b.name)))
+
+    const unitCountByComplex = new Map()
+    const unitCountByBuilding = new Map()
+    for (const u of units) {
+      if (u.complexId) unitCountByComplex.set(u.complexId, (unitCountByComplex.get(u.complexId) || 0) + 1)
+      if (u.buildingId) unitCountByBuilding.set(u.buildingId, (unitCountByBuilding.get(u.buildingId) || 0) + 1)
+    }
+
+    // One complex per display name — keep the populated record when imports created duplicates.
+    const buildingsByComplex = new Map()
+    for (const b of buildings) {
+      if (!b.complexId) continue
+      buildingsByComplex.set(b.complexId, (buildingsByComplex.get(b.complexId) || 0) + 1)
+    }
+    const bestByName = new Map()
+    for (const c of complexes) {
+      const key = String(c.name || '')
+        .trim()
+        .toLowerCase()
+      const score = (buildingsByComplex.get(c.id) || 0) * 1000 + (unitCountByComplex.get(c.id) || 0)
+      const prev = bestByName.get(key)
+      if (!prev || score > prev.score) bestByName.set(key, { id: c.id, score })
+    }
+    const keepComplexIds = new Set([...bestByName.values()].map((row) => row.id))
 
     return {
       body: {
-        complexes: complexes.map((c) => ({
-          id: c.id,
-          name: c.name,
-          city: c.city,
-          status: c.status,
-          address: c.address,
-        })),
+        complexes: complexes
+          .filter((c) => keepComplexIds.has(c.id))
+          .map((c) => ({
+            id: c.id,
+            name: c.name,
+            city: c.city,
+            status: c.status,
+            address: c.address,
+            buildingCount: buildingsByComplex.get(c.id) || 0,
+            unitCount: unitCountByComplex.get(c.id) || 0,
+          })),
         buildings: buildings.map((b) => ({
           id: b.id,
           name: b.name,
@@ -331,6 +378,7 @@ app.get('/api/v1/hierarchy', (req, res) =>
           floors: b.floors,
           status: b.status,
           city: b.city,
+          unitCount: unitCountByBuilding.get(b.id) || 0,
         })),
         floors: floors.map((f) => ({
           id: f.id,
@@ -344,10 +392,11 @@ app.get('/api/v1/hierarchy', (req, res) =>
         units,
       },
       logMeta: {
-        complexes: complexes.length,
+        complexes: keepComplexIds.size,
         buildings: buildings.length,
         floors: floors.length,
         units: units.length,
+        locationsTotal: locations.length,
       },
     }
   }),
@@ -427,29 +476,63 @@ app.post('/api/v1/navigate', (req, res) =>
       throw err
     }
     const explicitStart = requestedStart !== 'demo'
-    const origin = explicitStart
-      ? { latitude: bodyLat, longitude: bodyLng }
-      : offsetMiles(entry.latitude, entry.longitude, MILES_START, 315)
-    const chosenLabel = cleanOriginLabel(req.body?.originLabel)
-    const startMode = explicitStart ? requestedStart : 'demo'
+    // Default: point-to-point start → unit. Parking only when explicitly requested.
+    const viaParking =
+      req.body?.viaParking === true ||
+      req.body?.includeParking === true ||
+      String(req.body?.arrivalMode || '').toLowerCase() === 'drive-park-walk'
     const entrancePoint = {
       latitude: entry.latitude,
       longitude: entry.longitude,
       name: entry.name || 'Building entrance',
     }
+    // Outdoor handoff pin = building entrance; indoor continues to the unit.
+    const routeTarget = {
+      latitude: entrancePoint.latitude,
+      longitude: entrancePoint.longitude,
+    }
+    const origin = explicitStart
+      ? { latitude: bodyLat, longitude: bodyLng }
+      : offsetMiles(
+          routeTarget.latitude,
+          routeTarget.longitude,
+          viaParking ? MILES_START : Math.min(MILES_START, 0.45),
+          315,
+        )
+    const chosenLabel = cleanOriginLabel(req.body?.originLabel)
+    const startMode = explicitStart ? requestedStart : 'demo'
 
-    const [arrival, weather] = await Promise.all([
-      chooseArrival(entrancePoint, origin),
-      fetchWeather(destination.latitude, destination.longitude),
-    ])
-    const { parking, drive, walk, arrivalMode } = arrival
-    const originMiles = Math.round(milesBetween(origin, parking) * 10) / 10
-    const outdoorNote =
-      arrivalMode === 'at-entrance'
-        ? 'You are already at the entrance — continue indoors.'
-        : arrivalMode === 'walk-from-origin'
-          ? 'Close enough to walk from your start to the entrance (no parking detour).'
-          : 'Drive ends at parking. Walk from parking to entrance, then continue indoors.'
+    const weatherPromise = fetchWeather(destination.latitude, destination.longitude)
+    let parking
+    let drive
+    let walk
+    let arrivalMode
+    let outdoorNote
+    if (viaParking) {
+      const arrival = await chooseArrival(entrancePoint, origin)
+      parking = arrival.parking
+      drive = arrival.drive
+      walk = arrival.walk
+      arrivalMode = arrival.arrivalMode
+      outdoorNote =
+        arrivalMode === 'at-entrance'
+          ? 'You are already at the entrance — continue indoors.'
+          : arrivalMode === 'walk-from-origin'
+            ? 'Close enough to walk from your start to the entrance (no parking detour).'
+            : 'Drive ends at parking. Walk from parking to entrance, then continue indoors.'
+    } else {
+      const arrival = await choosePointToPoint(origin, routeTarget, {
+        destLabel: entrancePoint.name || unit.name,
+      })
+      parking = arrival.parking
+      drive = arrival.drive
+      walk = arrival.walk
+      arrivalMode = 'point-to-point'
+      outdoorNote =
+        'Point-to-point: start → entrance → unit. No parking stop. Enable “Via parking” for the car-park route.'
+    }
+    const weather = await weatherPromise
+    const originMiles = Math.round(milesBetween(origin, routeTarget) * 10) / 10
 
     const outdoor = {
       ...drive,
@@ -462,7 +545,7 @@ app.post('/api/v1/navigate', (req, res) =>
         type: entry.type || 'Entry',
       },
       note: outdoorNote,
-      arrivalMode: arrivalMode || 'drive-park-walk',
+      arrivalMode: arrivalMode || (viaParking ? 'drive-park-walk' : 'point-to-point'),
     }
 
     const buildingUnits = locations.filter((l) => l.buildingId === building.id)
@@ -538,9 +621,10 @@ app.post('/api/v1/navigate', (req, res) =>
               ? chosenLabel || `Chosen start (${bodyLat.toFixed(5)}, ${bodyLng.toFixed(5)})`
               : startMode === 'live'
                 ? `Current location (${bodyLat.toFixed(5)}, ${bodyLng.toFixed(5)})`
-                : `Start (~${MILES_START} mi NW of parking)`,
+                : `Start (~${viaParking ? MILES_START : Math.min(MILES_START, 0.45)} mi from destination)`,
           offsetMiles: originMiles,
           startMode,
+          viaParking,
         },
         parking,
         entrance: outdoor.entrance,
@@ -559,9 +643,14 @@ app.post('/api/v1/navigate', (req, res) =>
           walkSteps: walk.steps?.length ?? 0,
           indoorSteps: indoor.stops?.length ?? 0,
           outdoorSteps: drive.steps?.length ?? 0,
-          phases: ['drive', 'walk', 'indoor'],
-          summary:
-            'Drive to parking → walk to building entrance → navigate inside to the unit.',
+          phases: [
+            ...((drive.steps?.length ?? 0) > 0 ? ['drive'] : []),
+            ...((walk.steps?.length ?? 0) > 0 ? ['walk'] : []),
+            'indoor',
+          ],
+          summary: viaParking
+            ? 'Drive to parking → walk to building entrance → navigate inside to the unit.'
+            : 'Point-to-point: start → entrance → unit (no parking).',
           steps: journeySteps,
         },
         indoor: {

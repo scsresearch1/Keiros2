@@ -286,6 +286,23 @@ button:disabled {
   gap: 0.85rem;
 }
 
+.demo-via-parking {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.82rem;
+  color: var(--muted);
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+
+.demo-via-parking input {
+  width: 1rem;
+  height: 1rem;
+  accent-color: var(--accent);
+}
+
 .demo-mode {
   display: flex;
   align-items: center;
@@ -1125,22 +1142,32 @@ select:disabled {
 
 .demo-phase-strip {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
   gap: 0.5rem;
   margin-bottom: 0.85rem;
 }
 
-.demo-phase-strip > span {
+.demo-phase-strip > span,
+.demo-phase-strip > button {
   text-align: center;
   padding: 0.55rem 0.4rem;
   border-radius: 10px;
   border: 1px solid var(--line);
+  font: inherit;
   font-size: 0.82rem;
   color: var(--muted);
   background: rgba(7, 18, 42, 0.55);
+  box-shadow: none;
+  cursor: pointer;
 }
 
-.demo-phase-strip > span.is-active {
+.demo-phase-strip > button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.demo-phase-strip > span.is-active,
+.demo-phase-strip > button.is-active {
   color: var(--ink);
   font-weight: 600;
 }
@@ -1158,6 +1185,18 @@ select:disabled {
 .demo-phase-strip > .phase-inside.is-active {
   border-color: #22c55e;
   background: rgba(34, 197, 94, 0.15);
+}
+
+.demo-indoor-jump {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 0 0 0.85rem;
+  padding: 0.75rem 0.9rem;
+  border-radius: 12px;
+  border: 1px solid rgba(34, 197, 94, 0.35);
+  background: rgba(34, 197, 94, 0.1);
 }
 
 .demo-step-card.is-drive {

@@ -63,18 +63,20 @@ export function AutocompleteField({
     return () => document.removeEventListener('mousedown', onDoc)
   }, [])
 
+  const LIST_LIMIT = 200
+
   const filtered = useMemo(() => {
-    const ranked = options
+    const browsing =
+      !normalize(text) || (selected && normalize(text) === normalize(selected.label))
+    if (browsing) {
+      return options.slice(0, LIST_LIMIT)
+    }
+    return options
       .map((option) => ({ option, score: scoreOption(option, text) }))
       .filter((row) => row.score > 0)
       .sort((a, b) => b.score - a.score || a.option.label.localeCompare(b.option.label))
-      .slice(0, 12)
+      .slice(0, LIST_LIMIT)
       .map((row) => row.option)
-    // If the field is empty / matches selected, show a useful short list
-    if (!normalize(text) || (selected && normalize(text) === normalize(selected.label))) {
-      return options.slice(0, 12)
-    }
-    return ranked
   }, [options, text, selected])
 
   useEffect(() => {
@@ -146,19 +148,26 @@ export function AutocompleteField({
       {open && !disabled ? (
         <ul id={listId} className="demo-ac__list" role="listbox">
           {filtered.length ? (
-            filtered.map((option, index) => (
-              <li key={option.id} role="option" aria-selected={option.id === value}>
-                <button
-                  type="button"
-                  className={index === activeIndex || option.id === value ? 'is-active' : ''}
-                  onMouseEnter={() => setActiveIndex(index)}
-                  onClick={() => pick(option)}
-                >
-                  <strong>{option.label}</strong>
-                  {option.hint ? <span>{option.hint}</span> : null}
-                </button>
-              </li>
-            ))
+            <>
+              {filtered.map((option, index) => (
+                <li key={option.id} role="option" aria-selected={option.id === value}>
+                  <button
+                    type="button"
+                    className={index === activeIndex || option.id === value ? 'is-active' : ''}
+                    onMouseEnter={() => setActiveIndex(index)}
+                    onClick={() => pick(option)}
+                  >
+                    <strong>{option.label}</strong>
+                    {option.hint ? <span>{option.hint}</span> : null}
+                  </button>
+                </li>
+              ))}
+              {!normalize(text) && options.length > filtered.length ? (
+                <li className="demo-ac__empty">
+                  Showing {filtered.length} of {options.length} — type to narrow
+                </li>
+              ) : null}
+            </>
           ) : (
             <li className="demo-ac__empty">{emptyText}</li>
           )}
