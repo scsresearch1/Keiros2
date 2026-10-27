@@ -394,6 +394,14 @@ export async function attachLotToResult(result: NavigateResult): Promise<Navigat
     latitude: result.entrance?.latitude ?? result.destination.latitude,
     longitude: result.entrance?.longitude ?? result.destination.longitude,
   }
+  // Server already decided walk-from-origin / on-site — do not invent a parking approach.
+  if (
+    /already on site|walk to entrance|start here/i.test(parking.label || '') ||
+    result.outdoor?.provider === 'on-site' ||
+    !(result.outdoor?.steps?.length)
+  ) {
+    return result
+  }
   let base = result
 
   // Replace building-cutting chords with OSM road/path geometry (Google Maps–style).
@@ -550,21 +558,215 @@ export async function attachLotToResult(result: NavigateResult): Promise<Navigat
   }
 }
 
+const AT_ENTRANCE_M = 100
+const WALK_FROM_HERE_M = 700
+
 /** Keep walk and indoor legs. Replace the drive when the API still used the simulated start. */
 export async function withLiveDrive(
   result: NavigateResult,
   origin: LatLng,
   options?: { label?: string; startMode?: 'live' | 'custom' },
 ): Promise<NavigateResult> {
+  const entrance = {
+    latitude: result.entrance?.latitude ?? result.destination.latitude,
+    longitude: result.entrance?.longitude ?? result.destination.longitude,
+  }
+  const toEntrance = meters(origin, entrance)
+  const startMode = options?.startMode ?? 'live'
+  const coordLabel = `${origin.latitude.toFixed(5)}, ${origin.longitude.toFixed(5)}`
+  const label =
+    options?.label?.trim() ||
+    (startMode === 'custom' ? `Chosen start (${coordLabel})` : `Current location (${coordLabel})`)
+
+  // Already on site or nearby — never send the user to parking and walk back.
+  if (toEntrance <= WALK_FROM_HERE_M) {
+    const indoorSteps = result.journey.steps.filter((step) => step.phase === 'indoor')
+    let walkSteps: JourneyStep[] = []
+    let walkGeom: [number, number][] = [[origin.longitude, origin.latitude]]
+    let walkDistance = Math.round(toEntrance)
+    if (toEntrance <= AT_ENTRANCE_M) {
+      walkSteps = [
+        {
+          id: 'wlk-0',
+          phase: 'walk',
+          index: 0,
+          instruction: "You're already at the entrance — continue inside",
+          latitude: entrance.latitude,
+          longitude: entrance.longitude,
+          distanceM: 0,
+          durationSec: 0,
+          geometry: [[entrance.longitude, entrance.latitude]],
+        },
+      ]
+      walkDistance = 0
+      walkGeom = [[entrance.longitude, entrance.latitude]]
+    } else {
+      try {
+        const foot = await fetchWalkAlongRoads(origin, entrance)
+        walkSteps = foot.steps
+        walkDistance = foot.distanceM
+        walkGeom = foot.geometry.coordinates
+      } catch {
+        walkSteps = [
+          {
+            id: 'wlk-0',
+            phase: 'walk',
+            index: 0,
+            instruction: 'Walk to the building entrance',
+            latitude: origin.latitude,
+            longitude: origin.longitude,
+            distanceM: walkDistance,
+            durationSec: Math.round(walkDistance / 1.35),
+            geometry: [
+              [origin.longitude, origin.latitude],
+              [entrance.longitude, entrance.latitude],
+            ],
+          },
+        ]
+        walkGeom = walkSteps[0].geometry ?? walkGeom
+      }
+    }
+    const steps = [
+      ...walkSteps.map((step, index) => ({ ...step, index, phase: 'walk' as const })),
+      ...indoorSteps.map((step, index) => ({
+        ...step,
+        index: walkSteps.length + index,
+      })),
+    ]
+    return {
+      ...result,
+      origin: {
+        latitude: origin.latitude,
+        longitude: origin.longitude,
+        label,
+        offsetMiles: Math.round(milesBetween(origin, entrance) * 10) / 10,
+        startMode,
+      },
+      parking: {
+        latitude: origin.latitude,
+        longitude: origin.longitude,
+        label: toEntrance <= AT_ENTRANCE_M ? 'Already on site' : 'Start here — walk to entrance',
+        offsetMeters: walkDistance,
+      },
+      outdoor: {
+        ...result.outdoor,
+        provider: 'on-site',
+        distanceM: 0,
+        distanceMiles: 0,
+        durationMinutes: 0,
+        geometry: { type: 'LineString', coordinates: [[origin.longitude, origin.latitude]] },
+        steps: [],
+        traffic: {
+          level: 'None',
+          congestionIndex: 0,
+          averageSpeedMph: 0,
+          updatedAt: new Date().toISOString(),
+          note:
+            toEntrance <= AT_ENTRANCE_M
+              ? 'You are already at the building — skip driving to parking.'
+              : 'Close enough to walk — no drive to parking.',
+          segments: [],
+        },
+      },
+      walk: {
+        provider: 'on-site walk',
+        distanceM: walkDistance,
+        distanceMiles: Math.round((walkDistance / 1609.344) * 10) / 10,
+        durationMinutes: Math.round((walkDistance / 1.35 / 60) * 10) / 10,
+        geometry: { type: 'LineString', coordinates: walkGeom },
+        steps: walkSteps,
+      },
+      journey: {
+        ...result.journey,
+        totalSteps: steps.length,
+        driveSteps: 0,
+        outdoorSteps: 0,
+        walkSteps: walkSteps.length,
+        steps,
+        summary:
+          toEntrance <= AT_ENTRANCE_M
+            ? 'Already at the entrance — continue inside.'
+            : 'Walk to the entrance, then continue inside.',
+      },
+    }
+  }
+
   if (serverUsedOrigin(result, origin)) return attachLotToResult(result)
   const keepServerOnFailure = result.origin.startMode !== 'demo'
-  const startMode = options?.startMode ?? 'live'
   const parking = result.parking ?? {
     latitude: result.destination.latitude,
     longitude: result.destination.longitude,
     label: 'Parking',
     offsetMeters: 0,
   }
+
+  // Parking farther away than the entrance → walk instead of a out-and-back detour.
+  if (meters(origin, parking) > meters(origin, entrance) + 80 && toEntrance <= 1200) {
+    try {
+      const foot = await fetchWalkAlongRoads(origin, entrance)
+      const indoorSteps = result.journey.steps.filter((step) => step.phase === 'indoor')
+      const steps = [
+        ...foot.steps.map((step, index) => ({ ...step, index, phase: 'walk' as const })),
+        ...indoorSteps.map((step, index) => ({
+          ...step,
+          index: foot.steps.length + index,
+        })),
+      ]
+      return {
+        ...result,
+        origin: {
+          latitude: origin.latitude,
+          longitude: origin.longitude,
+          label,
+          offsetMiles: Math.round(milesBetween(origin, entrance) * 10) / 10,
+          startMode,
+        },
+        parking: {
+          latitude: origin.latitude,
+          longitude: origin.longitude,
+          label: 'Start here — walk to entrance',
+          offsetMeters: foot.distanceM,
+        },
+        outdoor: {
+          ...result.outdoor,
+          provider: 'on-site',
+          distanceM: 0,
+          distanceMiles: 0,
+          durationMinutes: 0,
+          geometry: { type: 'LineString', coordinates: [[origin.longitude, origin.latitude]] },
+          steps: [],
+          traffic: {
+            level: 'None',
+            congestionIndex: 0,
+            averageSpeedMph: 0,
+            updatedAt: new Date().toISOString(),
+            note: 'Nearest parking was farther than the entrance — walking instead.',
+            segments: [],
+          },
+        },
+        walk: {
+          provider: foot.provider,
+          distanceM: foot.distanceM,
+          distanceMiles: Math.round((foot.distanceM / 1609.344) * 10) / 10,
+          durationMinutes: foot.durationMinutes,
+          geometry: foot.geometry,
+          steps: foot.steps,
+        },
+        journey: {
+          ...result.journey,
+          totalSteps: steps.length,
+          driveSteps: 0,
+          outdoorSteps: 0,
+          walkSteps: foot.steps.length,
+          steps,
+          summary: 'Walk to the entrance, then continue inside.',
+        },
+      }
+    } catch {
+      /* fall through to normal drive */
+    }
+  }
+
   let drive: Awaited<ReturnType<typeof fetchDrive>>
   try {
     drive = await fetchDrive(origin, parking)
@@ -583,10 +785,6 @@ export async function withLiveDrive(
     })),
   ]
   const miles = Math.round(milesBetween(origin, parking) * 10) / 10
-  const coordLabel = `${origin.latitude.toFixed(5)}, ${origin.longitude.toFixed(5)}`
-  const label =
-    options?.label?.trim() ||
-    (startMode === 'custom' ? `Chosen start (${coordLabel})` : `Current location (${coordLabel})`)
   return attachLotToResult({
     ...result,
     origin: {

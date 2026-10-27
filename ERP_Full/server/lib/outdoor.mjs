@@ -755,13 +755,168 @@ export async function alignDriveWithParking(drive, walk, spot) {
   }
 }
 
-/** Nearest reachable parking, then road-snapped drive + walk (never cut through buildings). */
+/** Empty drive leg when the traveler is already on site. */
+function emptyDrive(origin, note) {
+  const lat = origin.latitude
+  const lng = origin.longitude
+  return {
+    provider: 'on-site',
+    profile: 'driving',
+    distanceM: 0,
+    distanceMiles: 0,
+    durationMinutes: 0,
+    geometry: { type: 'LineString', coordinates: [[lng, lat]] },
+    steps: [],
+    traffic: {
+      level: 'None',
+      congestionIndex: 0,
+      averageSpeedMph: 0,
+      updatedAt: new Date().toISOString(),
+      note: note || 'Already near the building — no drive needed.',
+      segments: [],
+    },
+  }
+}
+
+function atEntranceWalk(entrance) {
+  return {
+    provider: 'on-site',
+    profile: 'foot',
+    distanceM: 0,
+    distanceMiles: 0,
+    durationMinutes: 0,
+    geometry: {
+      type: 'LineString',
+      coordinates: [[entrance.longitude, entrance.latitude]],
+    },
+    steps: [
+      {
+        id: 'wlk-0',
+        phase: 'walk',
+        index: 0,
+        instruction: "You're already at the entrance — continue inside",
+        roadName: null,
+        distanceM: 0,
+        durationSec: 0,
+        speedMph: 3,
+        trafficLevel: null,
+        congestionIndex: null,
+        latitude: entrance.latitude,
+        longitude: entrance.longitude,
+        geometry: [[entrance.longitude, entrance.latitude]],
+      },
+    ],
+    traffic: {
+      level: 'Pedestrian',
+      congestionIndex: 0,
+      averageSpeedMph: 3,
+      updatedAt: new Date().toISOString(),
+      note: 'Start is already at the building entrance.',
+      segments: [],
+    },
+  }
+}
+
+/** Within this distance of the door → skip outdoor entirely. */
+const AT_ENTRANCE_M = 100
+/** Within this distance → walk from here; do not send the user to parking and back. */
+const WALK_FROM_HERE_M = 700
+
+/**
+ * Arrival plan:
+ * - Already at entrance → no drive / no parking loop
+ * - Nearby → walk from current position to entrance (road-snapped)
+ * - Far away → drive to nearest parking, then walk
+ */
 export async function chooseArrival(entrance, origin) {
+  const toEntrance = metersBetween(origin, entrance)
+
+  if (toEntrance <= AT_ENTRANCE_M) {
+    return {
+      parking: {
+        latitude: origin.latitude,
+        longitude: origin.longitude,
+        label: 'Already on site',
+        offsetMeters: Math.round(toEntrance),
+        mode: 'on-site',
+      },
+      drive: emptyDrive(origin, 'You are already at the building — skip driving to parking.'),
+      walk: atEntranceWalk(entrance),
+      arrivalMode: 'at-entrance',
+    }
+  }
+
+  if (toEntrance <= WALK_FROM_HERE_M) {
+    let walk = await fetchOsrm('foot', origin, entrance, {
+      phase: 'walk',
+      idPrefix: 'wlk',
+      departLabel: 'Walk to the building entrance',
+      arriveLabel: 'Arrive at building entrance — continue inside',
+    })
+    if (!isRoadSnapped(walk)) {
+      const viaRoads = await fetchOsrm('driving', origin, entrance, {
+        phase: 'walk',
+        idPrefix: 'wlk',
+        departLabel: 'Walk to the building entrance',
+        arriveLabel: 'Arrive at building entrance — continue inside',
+      })
+      if (isRoadSnapped(viaRoads)) walk = { ...viaRoads, profile: 'foot' }
+    }
+    // Still refuse a parking detour if it would send the user farther away.
+    return {
+      parking: {
+        latitude: origin.latitude,
+        longitude: origin.longitude,
+        label: 'Start here — walk to entrance',
+        offsetMeters: Math.round(walk.distanceM || toEntrance),
+        mode: 'walk-from-origin',
+      },
+      drive: emptyDrive(origin, 'Close enough to walk — no drive to parking.'),
+      walk,
+      arrivalMode: 'walk-from-origin',
+    }
+  }
+
   const spot = await selectParking(entrance, origin)
   const [drive, walk] = await Promise.all([
     fetchDriveRoute(origin, spot),
     fetchWalkRoute(spot, entrance),
   ])
+
+  // If driving to parking then walking is worse than walking straight from here, walk instead.
+  const parkThenWalkM = (drive.distanceM || 0) + (walk.distanceM || 0)
+  if (toEntrance < parkThenWalkM * 0.55 && toEntrance < 1200) {
+    let direct = await fetchOsrm('foot', origin, entrance, {
+      phase: 'walk',
+      idPrefix: 'wlk',
+      departLabel: 'Walk to the building entrance',
+      arriveLabel: 'Arrive at building entrance — continue inside',
+    })
+    if (!isRoadSnapped(direct)) {
+      const viaRoads = await fetchOsrm('driving', origin, entrance, {
+        phase: 'walk',
+        idPrefix: 'wlk',
+        departLabel: 'Walk to the building entrance',
+        arriveLabel: 'Arrive at building entrance — continue inside',
+      })
+      if (isRoadSnapped(viaRoads)) direct = { ...viaRoads, profile: 'foot' }
+    }
+    if (isRoadSnapped(direct) && (direct.distanceM || toEntrance) < parkThenWalkM) {
+      return {
+        parking: {
+          latitude: origin.latitude,
+          longitude: origin.longitude,
+          label: 'Start here — walk to entrance',
+          offsetMeters: Math.round(direct.distanceM || toEntrance),
+          mode: 'walk-from-origin',
+        },
+        drive: emptyDrive(origin, 'Walking is shorter than driving to parking and back.'),
+        walk: direct,
+        arrivalMode: 'walk-from-origin',
+      }
+    }
+  }
+
   let aligned = await alignDriveWithParking(drive, walk, spot)
 
   // If walk geometry does not start at the parking pin, re-route on OSM roads — do NOT draw a straight line.
@@ -793,7 +948,6 @@ export async function chooseArrival(entrance, origin) {
     } else if (isRoadSnapped(walk)) {
       aligned = { drive: aligned.drive, walk }
     } else {
-      // Prefer a longer OSM car-network path over a building-cutting chord.
       const viaRoads = await fetchOsrm('driving', spot, entrance, {
         phase: 'walk',
         idPrefix: 'wlk',
@@ -813,9 +967,11 @@ export async function chooseArrival(entrance, origin) {
       longitude: spot.longitude,
       label: spot.label || 'Nearest parking',
       offsetMeters: Math.round(aligned.walk?.distanceM || metersBetween(spot, entrance)),
+      mode: 'drive-park-walk',
     },
     drive: aligned.drive,
     walk: aligned.walk,
+    arrivalMode: 'drive-park-walk',
   }
 }
 

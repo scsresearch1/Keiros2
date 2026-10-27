@@ -442,8 +442,14 @@ app.post('/api/v1/navigate', (req, res) =>
       chooseArrival(entrancePoint, origin),
       fetchWeather(destination.latitude, destination.longitude),
     ])
-    const { parking, drive, walk } = arrival
+    const { parking, drive, walk, arrivalMode } = arrival
     const originMiles = Math.round(milesBetween(origin, parking) * 10) / 10
+    const outdoorNote =
+      arrivalMode === 'at-entrance'
+        ? 'You are already at the entrance — continue indoors.'
+        : arrivalMode === 'walk-from-origin'
+          ? 'Close enough to walk from your start to the entrance (no parking detour).'
+          : 'Drive ends at parking. Walk from parking to entrance, then continue indoors.'
 
     const outdoor = {
       ...drive,
@@ -455,7 +461,8 @@ app.post('/api/v1/navigate', (req, res) =>
         label: entry.name || 'Building entrance',
         type: entry.type || 'Entry',
       },
-      note: 'Drive ends at parking. Walk from parking to entrance, then continue indoors.',
+      note: outdoorNote,
+      arrivalMode: arrivalMode || 'drive-park-walk',
     }
 
     const buildingUnits = locations.filter((l) => l.buildingId === building.id)
