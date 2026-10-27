@@ -114,7 +114,7 @@ export function FieldMappingPage({ onNavigate }: PageProps) {
   const [statusFilter, setStatusFilter] = useState('All')
   const [query, setQuery] = useState('')
   const [selected, setSelected] = useState('')
-  const [creating, setCreating] = useState(false)
+  const [formMode, setFormMode] = useState<'closed' | 'create' | 'edit'>('closed')
   const [reassigning, setReassigning] = useState(false)
   const [notice, setNotice] = useState('')
   const [form, setForm] = useState({
@@ -127,6 +127,7 @@ export function FieldMappingPage({ onNavigate }: PageProps) {
 
   const formPropertyName = form.propertyName
   const formMapper = form.mapper
+  const editing = formMode === 'edit'
 
   const shown = queue.filter(
     (item) =>
@@ -139,6 +140,35 @@ export function FieldMappingPage({ onNavigate }: PageProps) {
     const prop = entityMap.sitePropertyByName[formPropertyName]
     return prop ? entityMap.floorsForPropertyId(prop.id) : []
   }, [entityMap, formPropertyName])
+
+  function resetForm() {
+    setForm({
+      propertyName: '',
+      floorLabel: '',
+      mapper: '',
+      priority: 2,
+      dueDate: '2026-09-20',
+    })
+  }
+
+  function openCreate() {
+    resetForm()
+    setFormMode('create')
+    setReassigning(false)
+  }
+
+  function openEdit(item: MappingQueueItem) {
+    setSelected(item.id)
+    setForm({
+      propertyName: item.propertyName,
+      floorLabel: item.floorLabel,
+      mapper: item.mapper,
+      priority: item.priority,
+      dueDate: item.dueDate,
+    })
+    setFormMode('edit')
+    setReassigning(false)
+  }
 
   function setStatus(id: string, status: MappingQueueStatus) {
     const item = queue.find((row) => row.id === id)
@@ -166,6 +196,33 @@ export function FieldMappingPage({ onNavigate }: PageProps) {
       flash(setNotice, 'Select a valid property, floor, and mapper.')
       return
     }
+    if (editing && job) {
+      const item: MappingQueueItem = {
+        ...job,
+        propertyId: prop.id,
+        propertyName: prop.name,
+        floorId: floor.id,
+        floorLabel: floor.label,
+        mapperUserId: mapperUser?.id ?? null,
+        mapper: formMapper,
+        priority: form.priority,
+        dueDate: form.dueDate,
+      }
+      setFormMode('closed')
+      void persist(
+        upsert('mappingQueue', item).then(() =>
+          logAudit({
+            actorUserId: null,
+            actor: 'ERP User',
+            action: 'Mapping assignment updated',
+            target: `${item.propertyName} · ${item.floorLabel}`,
+          }),
+        ),
+        setNotice,
+        'Assignment updated.',
+      )
+      return
+    }
     const id = nextId('mq', queue)
     const item: MappingQueueItem = {
       id,
@@ -180,7 +237,7 @@ export function FieldMappingPage({ onNavigate }: PageProps) {
       status: 'Queued',
     }
     setSelected(id)
-    setCreating(false)
+    setFormMode('closed')
     void persist(
       upsert('mappingQueue', item).then(() =>
         logAudit({
@@ -219,14 +276,15 @@ export function FieldMappingPage({ onNavigate }: PageProps) {
         title="Field Mapping"
         subtitle="Assign floors, track capture, clear blockers."
         actions={
-          <button type="button" className="k-btn k-btn--primary" onClick={() => setCreating(true)}>
+          <button type="button" className="k-btn k-btn--primary" onClick={openCreate}>
             New assignment
           </button>
         }
       />
       <HelpNote title="Field mapping">
-        Queue work by property and floor. Start capture when a mapper is on site; block if access or
-        data is missing; complete when coordinates are ready for review.
+        Queue work by property and floor. Create or edit assignments anytime — change property, floor,
+        mapper, priority, or due date. Start capture when a mapper is on site; block if access or data
+        is missing; complete when coordinates are ready for review.
       </HelpNote>
       <KpiRow
         items={[
@@ -255,8 +313,8 @@ export function FieldMappingPage({ onNavigate }: PageProps) {
         </button>
       </Toolbar>
 
-      {creating ? (
-        <Panel title="New assignment">
+      {formMode !== 'closed' ? (
+        <Panel title={editing ? 'Edit assignment' : 'New assignment'}>
           <form onSubmit={saveAssignment}>
             <FormGrid>
               <Field label="Property">
@@ -318,9 +376,9 @@ export function FieldMappingPage({ onNavigate }: PageProps) {
             </FormGrid>
             <ActionBar>
               <button type="submit" className="k-btn k-btn--primary">
-                Create
+                {editing ? 'Save changes' : 'Create'}
               </button>
-              <button type="button" className="k-btn k-btn--ghost" onClick={() => setCreating(false)}>
+              <button type="button" className="k-btn k-btn--ghost" onClick={() => setFormMode('closed')}>
                 Cancel
               </button>
             </ActionBar>
@@ -342,9 +400,14 @@ export function FieldMappingPage({ onNavigate }: PageProps) {
                   item.mapper,
                   `P${item.priority}`,
                   <Status key={item.id} value={item.status} />,
-                  <button key={`v-${item.id}`} type="button" className="k-link-btn" onClick={() => setSelected(item.id)}>
-                    View
-                  </button>,
+                  <span key={`acts-${item.id}`} className="k-inline-actions">
+                    <button type="button" className="k-link-btn" onClick={() => setSelected(item.id)}>
+                      View
+                    </button>
+                    <button type="button" className="k-link-btn" onClick={() => openEdit(item)}>
+                      Edit
+                    </button>
+                  </span>,
                 ])}
               />
             )}
@@ -394,13 +457,16 @@ export function FieldMappingPage({ onNavigate }: PageProps) {
                   </Field>
                 ) : null}
                 <ActionBar>
+                  <button type="button" className="k-btn k-btn--primary" onClick={() => openEdit(job)}>
+                    Edit mapping
+                  </button>
                   {job.status === 'Queued' || job.status === 'Blocked' ? (
-                    <button type="button" className="k-btn k-btn--primary" onClick={() => setStatus(job.id, 'In Progress')}>
+                    <button type="button" className="k-btn k-btn--ghost" onClick={() => setStatus(job.id, 'In Progress')}>
                       Open capture
                     </button>
                   ) : null}
                   {job.status === 'In Progress' ? (
-                    <button type="button" className="k-btn k-btn--primary" onClick={() => setStatus(job.id, 'Complete')}>
+                    <button type="button" className="k-btn k-btn--ghost" onClick={() => setStatus(job.id, 'Complete')}>
                       Mark complete
                     </button>
                   ) : null}

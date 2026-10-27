@@ -182,6 +182,103 @@ button:disabled {
   align-items: end;
 }
 
+.demo-ac {
+  position: relative;
+  display: grid;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.demo-ac.is-disabled {
+  opacity: 0.55;
+}
+
+.demo-ac__box {
+  position: relative;
+  display: grid;
+}
+
+.demo-ac__box input {
+  width: 100%;
+  padding-right: 2rem;
+}
+
+.demo-ac__clear {
+  position: absolute;
+  top: 50%;
+  right: 0.35rem;
+  transform: translateY(-50%);
+  width: 1.6rem;
+  height: 1.6rem;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  box-shadow: none;
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.demo-ac__clear:hover {
+  color: var(--ink);
+  background: rgba(148, 163, 184, 0.16);
+}
+
+.demo-ac__list {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% + 0.25rem);
+  left: 0;
+  right: 0;
+  margin: 0;
+  padding: 0.35rem;
+  list-style: none;
+  max-height: 240px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #07122a;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.45);
+}
+
+.demo-ac__list button {
+  width: 100%;
+  display: grid;
+  gap: 0.1rem;
+  text-align: left;
+  padding: 0.55rem 0.65rem;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink);
+  box-shadow: none;
+  cursor: pointer;
+}
+
+.demo-ac__list button strong {
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.demo-ac__list button span {
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.demo-ac__list button.is-active,
+.demo-ac__list button:hover {
+  background: rgba(56, 189, 248, 0.14);
+}
+
+.demo-ac__empty {
+  padding: 0.65rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
 .demo-controls__go {
   display: flex;
   align-items: center;

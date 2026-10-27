@@ -227,6 +227,14 @@
   background: rgba(217, 119, 6, 0.18);
 }
 
+.k-table tbody tr.k-row-selected td {
+  background: rgba(37, 99, 235, 0.1);
+}
+
+.k-table tbody tr.k-row-selected td:first-child {
+  box-shadow: inset 3px 0 0 #2563eb;
+}
+
 .k-badge {
   display: inline-flex;
   align-items: center;

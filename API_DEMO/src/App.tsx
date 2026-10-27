@@ -14,6 +14,7 @@ import { Indoor3D } from './components/Indoor3D'
 import { IndoorFloorMap } from './components/IndoorFloorMap'
 import { StartLocationPanel } from './components/StartLocationPanel'
 import { NavGuidanceBanner } from './components/NavGuidanceBanner'
+import { AutocompleteField, type AutocompleteOption } from './components/AutocompleteField'
 import { unlockVoiceFromGesture, useDirectionVoice } from './voiceGuide'
 import { attachLotToResult, withLiveDrive } from './liveDrive'
 import {
@@ -122,6 +123,90 @@ export default function App() {
     if (!hierarchy || !floorId) return []
     return hierarchy.units.filter((u) => u.floorId === floorId)
   }, [hierarchy, floorId])
+
+  const complexOptions = useMemo<AutocompleteOption[]>(() => {
+    if (!hierarchy) return []
+    return hierarchy.complexes.map((c) => ({
+      id: c.id,
+      label: c.name,
+      hint: [c.city, c.address].filter(Boolean).join(' · ') || undefined,
+      searchText: `${c.name} ${c.city ?? ''} ${c.address ?? ''}`,
+    }))
+  }, [hierarchy])
+
+  const buildingOptions = useMemo<AutocompleteOption[]>(() => {
+    return buildings.map((b) => ({
+      id: b.id,
+      label: b.name,
+      hint: b.complexName || undefined,
+      searchText: `${b.name} ${b.complexName ?? ''}`,
+    }))
+  }, [buildings])
+
+  const floorOptions = useMemo<AutocompleteOption[]>(() => {
+    return floors.map((f) => ({
+      id: f.id,
+      label: `${f.label} (L${f.level})`,
+      hint: f.buildingName || undefined,
+      searchText: `${f.label} L${f.level} ${f.buildingName}`,
+    }))
+  }, [floors])
+
+  /** Unit search is global so typing a room can fill Complex → Building → Floor. */
+  const unitOptions = useMemo<AutocompleteOption[]>(() => {
+    if (!hierarchy) return []
+    const ordered = floorId
+      ? [...hierarchy.units].sort(
+          (a, b) => Number(b.floorId === floorId) - Number(a.floorId === floorId),
+        )
+      : hierarchy.units
+    return ordered.map((u) => ({
+      id: u.id,
+      label: `${u.name} · ${u.type}`,
+      hint: [u.complexName, u.buildingName, u.floorLabel].filter(Boolean).join(' · ') || undefined,
+      searchText: `${u.name} ${u.type} ${u.code} ${u.buildingName} ${u.floorLabel} ${u.complexName ?? ''}`,
+    }))
+  }, [hierarchy, floorId])
+
+  function selectComplex(id: string) {
+    setComplexId(id)
+    setBuildingId('')
+    setFloorId('')
+    setUnitId('')
+    setResult(null)
+  }
+
+  function selectBuilding(id: string) {
+    setBuildingId(id)
+    setFloorId('')
+    setUnitId('')
+    setResult(null)
+  }
+
+  function selectFloor(id: string) {
+    setFloorId(id)
+    setUnitId('')
+    setResult(null)
+  }
+
+  function selectUnit(id: string) {
+    if (!id || !hierarchy) {
+      setUnitId('')
+      setResult(null)
+      return
+    }
+    const unit = hierarchy.units.find((u) => u.id === id)
+    if (!unit) {
+      setUnitId('')
+      setResult(null)
+      return
+    }
+    if (unit.complexId) setComplexId(unit.complexId)
+    setBuildingId(unit.buildingId)
+    setFloorId(unit.floorId)
+    setUnitId(unit.id)
+    setResult(null)
+  }
 
   function selectionReady() {
     return Boolean(apiKey && complexId && buildingId && floorId && unitId)
@@ -404,7 +489,9 @@ export default function App() {
   const indoorStep = active?.phase === 'indoor' ? (active.indoorIndex ?? 0) : 0
   const showOutdoorMap = phase === 'drive' || phase === 'walk'
   const canNavigate = Boolean(complexId && buildingId && floorId && unitId)
-  const selectedUnit = units.find((unit) => unit.id === unitId) ?? null
+  const selectedUnit =
+    (hierarchy?.units.find((unit) => unit.id === unitId) ?? null) ||
+    (units.find((unit) => unit.id === unitId) ?? null)
   const unitFocus =
     selectedUnit &&
     Number.isFinite(selectedUnit.latitude) &&
@@ -532,83 +619,39 @@ export default function App() {
         <section className="demo-step demo-step--dest">
           <p className="demo-step__title">2 · Destination</p>
           <div className="demo-dest">
-            <label>
-              Complex
-              <select
-                value={complexId}
-                onChange={(e) => {
-                  setComplexId(e.target.value)
-                  setBuildingId('')
-                  setFloorId('')
-                  setUnitId('')
-                  setResult(null)
-                }}
-              >
-                <option value="">Select</option>
-                {hierarchy.complexes.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label>
-              Building
-              <select
-                value={buildingId}
-                disabled={!complexId}
-                onChange={(e) => {
-                  setBuildingId(e.target.value)
-                  setFloorId('')
-                  setUnitId('')
-                  setResult(null)
-                }}
-              >
-                <option value="">Select</option>
-                {buildings.map((b) => (
-                  <option key={b.id} value={b.id}>
-                    {b.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label>
-              Floor
-              <select
-                value={floorId}
-                disabled={!buildingId}
-                onChange={(e) => {
-                  setFloorId(e.target.value)
-                  setUnitId('')
-                  setResult(null)
-                }}
-              >
-                <option value="">Select</option>
-                {floors.map((f) => (
-                  <option key={f.id} value={f.id}>
-                    {f.label} (L{f.level})
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label>
-              Unit
-              <select
-                value={unitId}
-                disabled={!floorId}
-                onChange={(e) => {
-                  setUnitId(e.target.value)
-                  setResult(null)
-                }}
-              >
-                <option value="">Select</option>
-                {units.map((u) => (
-                  <option key={u.id} value={u.id}>
-                    {u.name} · {u.type}
-                  </option>
-                ))}
-              </select>
-            </label>
+            <AutocompleteField
+              label="Complex"
+              value={complexId}
+              options={complexOptions}
+              placeholder="Search complex…"
+              onChange={selectComplex}
+            />
+            <AutocompleteField
+              label="Building"
+              value={buildingId}
+              options={buildingOptions}
+              placeholder={complexId ? 'Search building…' : 'Pick a complex first'}
+              disabled={!complexId}
+              emptyText={complexId ? 'No buildings match' : 'Select a complex first'}
+              onChange={selectBuilding}
+            />
+            <AutocompleteField
+              label="Floor"
+              value={floorId}
+              options={floorOptions}
+              placeholder={buildingId ? 'Search floor…' : 'Pick a building first'}
+              disabled={!buildingId}
+              emptyText={buildingId ? 'No floors match' : 'Select a building first'}
+              onChange={selectFloor}
+            />
+            <AutocompleteField
+              label="Unit"
+              value={unitId}
+              options={unitOptions}
+              placeholder="Search unit, aisle, room…"
+              emptyText="No units match"
+              onChange={selectUnit}
+            />
             <div className="demo-controls__go">
               <button type="submit" disabled={loading || locating || !canNavigate}>
                 {loading ? 'Calling API…' : 'Navigate'}
