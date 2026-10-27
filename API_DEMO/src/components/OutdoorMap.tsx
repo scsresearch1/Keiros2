@@ -187,29 +187,44 @@ export function OutdoorMap({
     }
 
     const legendHtml = `
-      <div class="demo-leaflet-card">
-        <strong>Route legend</strong><br/>
-        <span style="color:${trafficColor('Light')}">━━</span> Drive (to parking)<br/>
-        <span style="color:${WALK_COLOR}">- - -</span> Walk (parking → entrance)<br/>
-        <span style="color:${LIVE_BLUE}">●</span> You (live) ·
-        <span style="color:${PARKING_COLOR}">●</span> Parking ·
-        <span style="color:${ENTRANCE_COLOR}">●</span> Entrance
+      <div class="demo-leaflet-card" data-card="legend">
+        <button type="button" class="demo-leaflet-card__head" aria-expanded="true">
+          <strong>Route legend</strong>
+          <span class="demo-leaflet-card__chev" aria-hidden="true"></span>
+        </button>
+        <div class="demo-leaflet-card__body">
+          <span style="color:${trafficColor('Light')}">━━</span> Drive (to parking)<br/>
+          <span style="color:${WALK_COLOR}">- - -</span> Walk (parking → entrance)<br/>
+          <span style="color:${LIVE_BLUE}">●</span> You (live) ·
+          <span style="color:${PARKING_COLOR}">●</span> Parking ·
+          <span style="color:${ENTRANCE_COLOR}">●</span> Entrance
+        </div>
       </div>`
     const weatherHtml = `
-      <div class="demo-leaflet-card">
-        <strong>Weather · live</strong><br/>
-        ${weather.summary ?? '—'} · ${weather.temperatureF != null ? `${weather.temperatureF}°F` : '—'}
-        ${weather.feelsLikeF != null ? ` (feels ${weather.feelsLikeF}°F)` : ''}<br/>
-        Humidity ${weather.humidityPct ?? '—'}% · Wind ${weather.windMph ?? '—'} mph<br/>
-        <span class="muted">${weather.provider}${weather.fetchedAt ? ` · ${weather.fetchedAt}` : ''}</span>
+      <div class="demo-leaflet-card" data-card="weather">
+        <button type="button" class="demo-leaflet-card__head" aria-expanded="true">
+          <strong>Weather · live</strong>
+          <span class="demo-leaflet-card__chev" aria-hidden="true"></span>
+        </button>
+        <div class="demo-leaflet-card__body">
+          ${weather.summary ?? '—'} · ${weather.temperatureF != null ? `${weather.temperatureF}°F` : '—'}
+          ${weather.feelsLikeF != null ? ` (feels ${weather.feelsLikeF}°F)` : ''}<br/>
+          Humidity ${weather.humidityPct ?? '—'}% · Wind ${weather.windMph ?? '—'} mph<br/>
+          <span class="muted">${weather.provider}${weather.fetchedAt ? ` · ${weather.fetchedAt}` : ''}</span>
+        </div>
       </div>`
     const trafficHtml = `
-      <div class="demo-leaflet-card">
-        <strong>Traffic · drive leg</strong><br/>
-        Overall: <b style="color:${trafficColor(traffic.level)}">${traffic.level}</b>
-        · index ${traffic.congestionIndex}
-        ${traffic.averageSpeedMph != null ? ` · avg ${traffic.averageSpeedMph} mph` : ''}<br/>
-        <span class="muted">${traffic.note}</span>
+      <div class="demo-leaflet-card" data-card="traffic">
+        <button type="button" class="demo-leaflet-card__head" aria-expanded="true">
+          <strong>Traffic · drive leg</strong>
+          <span class="demo-leaflet-card__chev" aria-hidden="true"></span>
+        </button>
+        <div class="demo-leaflet-card__body">
+          Overall: <b style="color:${trafficColor(traffic.level)}">${traffic.level}</b>
+          · index ${traffic.congestionIndex}
+          ${traffic.averageSpeedMph != null ? ` · avg ${traffic.averageSpeedMph} mph` : ''}<br/>
+          <span class="muted">${traffic.note}</span>
+        </div>
       </div>`
 
     const Overlay = L.Control.extend({
@@ -217,6 +232,30 @@ export function OutdoorMap({
         const div = L.DomUtil.create('div', 'demo-map-overlay')
         div.innerHTML = legendHtml + weatherHtml + trafficHtml
         L.DomEvent.disableClickPropagation(div)
+        L.DomEvent.disableScrollPropagation(div)
+        div.querySelectorAll('.demo-leaflet-card__head').forEach((btn) => {
+          const head = btn as HTMLButtonElement
+          const card = head.closest('.demo-leaflet-card')
+          if (!card) return
+          const key = card.getAttribute('data-card') || 'card'
+          const storageKey = `keiros_map_card_${key}`
+          const collapsed = localStorage.getItem(storageKey) === '1'
+          if (collapsed) {
+            card.classList.add('is-collapsed')
+            head.setAttribute('aria-expanded', 'false')
+          }
+          L.DomEvent.on(head, 'click', (ev) => {
+            L.DomEvent.stop(ev)
+            const next = !card.classList.contains('is-collapsed')
+            card.classList.toggle('is-collapsed', next)
+            head.setAttribute('aria-expanded', next ? 'false' : 'true')
+            try {
+              localStorage.setItem(storageKey, next ? '1' : '0')
+            } catch {
+              /* ignore quota */
+            }
+          })
+        })
         return div
       },
     })

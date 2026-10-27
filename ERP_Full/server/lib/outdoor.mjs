@@ -170,116 +170,159 @@ function pickRoute(routes, profile) {
   })[0]
 }
 
-async function fetchOsrm(profile, origin, destination, stepOpts) {
+/** Public OSM road routers (same data Google-style turn-by-turn is built from). Never invent cross-building lines. */
+function osrmEndpointCandidates(profile) {
+  const envBase = String(process.env.OSRM_BASE_URL || '').replace(/\/$/, '')
+  const list = []
+  if (envBase) list.push(`${envBase}/route/v1/${profile}`)
+  if (profile === 'driving' || profile === 'car') {
+    list.push(
+      'https://router.project-osrm.org/route/v1/driving',
+      'https://routing.openstreetmap.de/routed-car/route/v1/driving',
+    )
+  } else {
+    list.push(
+      'https://router.project-osrm.org/route/v1/foot',
+      'https://routing.openstreetmap.de/routed-foot/route/v1/foot',
+      // Last resort: car network still follows roads (better than cutting through buildings)
+      'https://router.project-osrm.org/route/v1/driving',
+      'https://routing.openstreetmap.de/routed-car/route/v1/driving',
+    )
+  }
+  return [...new Set(list)]
+}
+
+function packageOsrmRoute(route, profile, stepOpts, providerLabel) {
+  const distanceM = route.distance
+  const durationS = route.duration
+  const steps = extractSteps(route, stepOpts)
+  const summary = overallTraffic(steps, distanceM, durationS)
+  return {
+    provider: providerLabel,
+    profile,
+    distanceM: Math.round(distanceM),
+    distanceMiles: Math.round((distanceM / 1609.344) * 10) / 10,
+    durationMinutes: Math.round((durationS / 60) * 10) / 10,
+    geometry: route.geometry,
+    steps,
+    traffic:
+      profile === 'driving' || profile === 'car'
+        ? {
+            ...summary,
+            updatedAt: new Date().toISOString(),
+            note: 'Road-snapped route from OpenStreetMap (OSRM). Each segment is compared with a typical speed for its length.',
+            segments: steps.map((s) => ({
+              id: s.id,
+              trafficLevel: s.trafficLevel,
+              speedMph: s.speedMph,
+              distanceM: s.distanceM,
+            })),
+          }
+        : {
+            level: 'Pedestrian',
+            congestionIndex: 0,
+            averageSpeedMph: summary.averageSpeedMph,
+            updatedAt: new Date().toISOString(),
+            note: 'Pedestrian path snapped to OSM roads/paths from parking to the entrance.',
+            segments: [],
+          },
+  }
+}
+
+async function fetchOsrmOnce(baseUrl, profile, origin, destination, stepOpts) {
   const lon1 = origin.longitude
   const lat1 = origin.latitude
   const lon2 = destination.longitude
   const lat2 = destination.latitude
   const url =
-    `https://router.project-osrm.org/route/v1/${profile}/${lon1},${lat1};${lon2},${lat2}` +
-    `?overview=full&geometries=geojson&steps=true&annotations=duration,distance&alternatives=3`
+    `${baseUrl}/${lon1},${lat1};${lon2},${lat2}` +
+    `?overview=full&geometries=geojson&steps=true&annotations=duration,distance&alternatives=3&continue_straight=true`
+  const res = await fetch(url, {
+    headers: { 'User-Agent': 'KeirosNavigation/1.0', Accept: 'application/json' },
+    signal: AbortSignal.timeout(18000),
+  })
+  if (!res.ok) throw new Error(`OSRM ${res.status}`)
+  const json = await res.json()
+  const routes = json.routes || []
+  const route = pickRoute(routes, profile === 'car' ? 'driving' : profile)
+  if (!route?.geometry?.coordinates?.length) throw new Error(json.message || 'No OSRM route')
+  const host = baseUrl.replace(/^https?:\/\//, '').split('/')[0]
+  return packageOsrmRoute(route, profile, stepOpts, `OSRM ${profile} · ${host}`)
+}
 
-  try {
-    const res = await fetch(url, {
-      headers: { 'User-Agent': 'KeirosNavigation/1.0', Accept: 'application/json' },
-      signal: AbortSignal.timeout(15000),
-    })
-    if (!res.ok) throw new Error(`OSRM ${res.status}`)
-    const json = await res.json()
-    const routes = json.routes || []
-    const route = pickRoute(routes, profile)
-    if (!route) throw new Error(json.message || 'No OSRM route')
-    const distanceM = route.distance
-    const durationS = route.duration
-    const steps = extractSteps(route, stepOpts)
-    const summary = overallTraffic(steps, distanceM, durationS)
-
-    return {
-      provider: `OSRM ${profile}`,
-      profile,
-      distanceM: Math.round(distanceM),
-      distanceMiles: Math.round((distanceM / 1609.344) * 10) / 10,
-      durationMinutes: Math.round((durationS / 60) * 10) / 10,
-      geometry: route.geometry,
-      steps,
-      traffic:
-        profile === 'driving'
-          ? {
-              ...summary,
-              updatedAt: new Date().toISOString(),
-              note: 'Each segment is compared with a typical speed for its length. Lower speeds raise the index. Refresh recalculates the drive.',
-              segments: steps.map((s) => ({
-                id: s.id,
-                trafficLevel: s.trafficLevel,
-                speedMph: s.speedMph,
-                distanceM: s.distanceM,
-              })),
-            }
-          : {
-              level: 'Pedestrian',
-              congestionIndex: 0,
-              averageSpeedMph: summary.averageSpeedMph,
-              updatedAt: new Date().toISOString(),
-              note: 'Walking segment from parking to building entrance (vehicles cannot drive to the door).',
-              segments: [],
-            },
-    }
-  } catch (err) {
-    const coords = straightLineCoords(origin, destination)
-    const approxM = Math.round(milesBetween(origin, destination) * 1609.344)
-    const durationS = profile === 'foot' ? approxM / 1.35 : approxM / 13.4
-    const phase = stepOpts.phase
-    const steps = [
-      {
-        id: `${stepOpts.idPrefix}-0`,
-        phase,
-        index: 0,
-        instruction: stepOpts.departLabel || 'Start',
-        roadName: null,
-        distanceM: Math.round(approxM / 2),
-        durationSec: Math.round(durationS / 2),
-        speedMph: profile === 'foot' ? 3 : 30,
-        trafficLevel: profile === 'foot' ? null : 'Unknown',
-        congestionIndex: profile === 'foot' ? null : 0,
-        latitude: origin.latitude,
-        longitude: origin.longitude,
-        geometry: coords.slice(0, Math.ceil(coords.length / 2)),
-      },
-      {
-        id: `${stepOpts.idPrefix}-1`,
-        phase,
-        index: 1,
-        instruction: stepOpts.arriveLabel || 'Arrive',
-        roadName: null,
-        distanceM: Math.round(approxM / 2),
-        durationSec: Math.round(durationS / 2),
-        speedMph: profile === 'foot' ? 3 : 30,
-        trafficLevel: profile === 'foot' ? null : 'Unknown',
-        congestionIndex: profile === 'foot' ? null : 0,
-        latitude: destination.latitude,
-        longitude: destination.longitude,
-        geometry: coords.slice(Math.floor(coords.length / 2)),
-      },
-    ]
-    return {
-      provider: 'geodesic-fallback',
-      profile,
-      distanceM: approxM,
-      distanceMiles: Math.round((approxM / 1609.344) * 10) / 10,
-      durationMinutes: Math.round((durationS / 60) * 10) / 10,
-      geometry: { type: 'LineString', coordinates: coords },
-      steps,
-      traffic: {
-        level: profile === 'foot' ? 'Pedestrian' : 'Unknown',
-        congestionIndex: 0,
-        averageSpeedMph: profile === 'foot' ? 3 : 30,
-        updatedAt: new Date().toISOString(),
-        note: `Routing fallback (${err instanceof Error ? err.message : 'error'}).`,
-        segments: [],
-      },
-      warning: String(err instanceof Error ? err.message : err),
+async function fetchOsrm(profile, origin, destination, stepOpts) {
+  const errors = []
+  for (const base of osrmEndpointCandidates(profile)) {
+    try {
+      return await fetchOsrmOnce(base, profile, origin, destination, stepOpts)
+    } catch (err) {
+      errors.push(`${base}: ${err instanceof Error ? err.message : String(err)}`)
     }
   }
+
+  // Absolute last resort only — mark clearly; callers should prefer rejecting over drawing this.
+  const coords = straightLineCoords(origin, destination)
+  const approxM = Math.round(milesBetween(origin, destination) * 1609.344)
+  const durationS = profile === 'foot' ? approxM / 1.35 : approxM / 13.4
+  const phase = stepOpts.phase
+  const steps = [
+    {
+      id: `${stepOpts.idPrefix}-0`,
+      phase,
+      index: 0,
+      instruction: stepOpts.departLabel || 'Start',
+      roadName: null,
+      distanceM: Math.round(approxM / 2),
+      durationSec: Math.round(durationS / 2),
+      speedMph: profile === 'foot' ? 3 : 30,
+      trafficLevel: profile === 'foot' ? null : 'Unknown',
+      congestionIndex: profile === 'foot' ? null : 0,
+      latitude: origin.latitude,
+      longitude: origin.longitude,
+      geometry: coords.slice(0, Math.ceil(coords.length / 2)),
+    },
+    {
+      id: `${stepOpts.idPrefix}-1`,
+      phase,
+      index: 1,
+      instruction: stepOpts.arriveLabel || 'Arrive',
+      roadName: null,
+      distanceM: Math.round(approxM / 2),
+      durationSec: Math.round(durationS / 2),
+      speedMph: profile === 'foot' ? 3 : 30,
+      trafficLevel: profile === 'foot' ? null : 'Unknown',
+      congestionIndex: profile === 'foot' ? null : 0,
+      latitude: destination.latitude,
+      longitude: destination.longitude,
+      geometry: coords.slice(Math.floor(coords.length / 2)),
+    },
+  ]
+  return {
+    provider: 'geodesic-fallback',
+    profile,
+    distanceM: approxM,
+    distanceMiles: Math.round((approxM / 1609.344) * 10) / 10,
+    durationMinutes: Math.round((durationS / 60) * 10) / 10,
+    geometry: { type: 'LineString', coordinates: coords },
+    steps,
+    traffic: {
+      level: profile === 'foot' ? 'Pedestrian' : 'Unknown',
+      congestionIndex: 0,
+      averageSpeedMph: profile === 'foot' ? 3 : 30,
+      updatedAt: new Date().toISOString(),
+      note: `Road routers unavailable (${errors.slice(0, 2).join('; ')}). Straight line is NOT for navigation.`,
+      segments: [],
+    },
+    warning: errors.join(' | '),
+    isStraightLine: true,
+  }
+}
+
+function isRoadSnapped(route) {
+  if (!route || route.isStraightLine) return false
+  if (/fallback|nearest parking walk/i.test(route.provider || '')) return false
+  const n = route.geometry?.coordinates?.length || 0
+  return n > 2
 }
 
 function metersBetween(a, b) {
@@ -712,7 +755,7 @@ export async function alignDriveWithParking(drive, walk, spot) {
   }
 }
 
-/** Nearest reachable parking, then the fastest drive and shortest walk. */
+/** Nearest reachable parking, then road-snapped drive + walk (never cut through buildings). */
 export async function chooseArrival(entrance, origin) {
   const spot = await selectParking(entrance, origin)
   const [drive, walk] = await Promise.all([
@@ -720,19 +763,50 @@ export async function chooseArrival(entrance, origin) {
     fetchWalkRoute(spot, entrance),
   ])
   let aligned = await alignDriveWithParking(drive, walk, spot)
-  if (!walkStartsBeside(aligned.walk, spot)) {
+
+  // If walk geometry does not start at the parking pin, re-route on OSM roads — do NOT draw a straight line.
+  if (!walkStartsBeside(aligned.walk, spot) || !isRoadSnapped(aligned.walk)) {
     const end = routeEndpoint(aligned.drive)
-    if (end && metersBetween(end, spot) > 40 && metersBetween(end, spot) <= 180) {
-      aligned = {
-        drive: appendLotDrive(aligned.drive, [
-          [end.longitude, end.latitude],
-          [spot.longitude, spot.latitude],
-        ]),
-        walk: aligned.walk,
+    if (end && metersBetween(end, spot) > 40 && metersBetween(end, spot) <= 220) {
+      try {
+        const lot = await fetchOsrm('foot', end, spot, {
+          phase: 'walk',
+          idPrefix: 'lot',
+          departLabel: 'Drive into the nearest parking and leave the car',
+          arriveLabel: 'Drive into the nearest parking and leave the car',
+        })
+        if (isRoadSnapped(lot) && lot.distanceM >= 20 && lot.distanceM <= 700) {
+          aligned = {
+            drive: appendLotDrive(aligned.drive, lot.geometry.coordinates),
+            walk: aligned.walk,
+          }
+        }
+      } catch {
+        /* keep drive as-is */
       }
     }
-    aligned = { drive: aligned.drive, walk: directWalk(spot, entrance) }
+    const foot = await fetchWalkRoute(spot, entrance)
+    if (isRoadSnapped(foot)) {
+      aligned = { drive: aligned.drive, walk: foot }
+    } else if (isRoadSnapped(aligned.walk)) {
+      /* keep existing road walk */
+    } else if (isRoadSnapped(walk)) {
+      aligned = { drive: aligned.drive, walk }
+    } else {
+      // Prefer a longer OSM car-network path over a building-cutting chord.
+      const viaRoads = await fetchOsrm('driving', spot, entrance, {
+        phase: 'walk',
+        idPrefix: 'wlk',
+        departLabel: 'Leave parking and walk toward the building entrance',
+        arriveLabel: 'Arrive at building entrance — continue inside',
+      })
+      aligned = {
+        drive: aligned.drive,
+        walk: isRoadSnapped(viaRoads) ? { ...viaRoads, profile: 'foot' } : foot,
+      }
+    }
   }
+
   return {
     parking: {
       latitude: spot.latitude,

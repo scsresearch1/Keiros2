@@ -8,6 +8,10 @@ export type SpeakStep = {
 
 const STORAGE = 'keiros-voice'
 
+let sessionUnlocked = false
+let pendingText: string | null = null
+let resumeTimer: number | null = null
+
 export function voicePreferenceOn() {
   try {
     return localStorage.getItem(STORAGE) !== 'off'
@@ -24,12 +28,56 @@ export function rememberVoice(on: boolean) {
   }
 }
 
+export function isVoiceUnlocked() {
+  return sessionUnlocked
+}
+
 export function primeVoice() {
   if (typeof window === 'undefined' || !window.speechSynthesis) return
   window.speechSynthesis.getVoices()
+  try {
+    window.speechSynthesis.resume()
+  } catch {
+    /* ignore */
+  }
+}
+
+/**
+ * Must run inside a click/tap handler. Mobile Safari/Chrome block speech until then.
+ */
+export function unlockVoiceFromGesture() {
+  if (typeof window === 'undefined' || !window.speechSynthesis) return false
+  const synth = window.speechSynthesis
+  try {
+    synth.resume()
+  } catch {
+    /* ignore */
+  }
+  // Silent (near-silent) utterance unlocks the audio session on iOS/Android.
+  const unlock = new SpeechSynthesisUtterance(' ')
+  unlock.volume = 0.01
+  unlock.rate = 1.2
+  unlock.lang = 'en-US'
+  try {
+    synth.cancel()
+    synth.speak(unlock)
+  } catch {
+    /* ignore */
+  }
+  sessionUnlocked = true
+  if (pendingText) {
+    const text = pendingText
+    pendingText = null
+    window.setTimeout(() => speakDirection(text, { force: true }), 120)
+  }
+  return true
 }
 
 export function stopVoice() {
+  if (resumeTimer != null) {
+    window.clearInterval(resumeTimer)
+    resumeTimer = null
+  }
   window.speechSynthesis?.cancel()
 }
 
@@ -43,21 +91,79 @@ export function spokenCue(current: SpeakStep, upcoming?: SpeakStep | null) {
   return finish(now)
 }
 
-export function speakDirection(text: string) {
+export function speakDirection(text: string, opts?: { force?: boolean }) {
   if (typeof window === 'undefined' || !window.speechSynthesis) return
+  const trimmed = text.trim()
+  if (!trimmed) return
+
+  // Without a prior tap, queue the line until unlockVoiceFromGesture runs.
+  if (!sessionUnlocked && !opts?.force) {
+    pendingText = trimmed
+    return
+  }
+
   const synth = window.speechSynthesis
-  const utterance = new SpeechSynthesisUtterance(text)
+  try {
+    synth.resume()
+  } catch {
+    /* ignore */
+  }
+
+  const utterance = new SpeechSynthesisUtterance(trimmed)
   utterance.rate = 0.92
   utterance.pitch = 1.04
-  utterance.lang = 'en-US'
+  utterance.lang = preferredLang()
+  utterance.volume = 1
   const voice = chooseVoice()
   if (voice) utterance.voice = voice
+
+  if (resumeTimer != null) {
+    window.clearInterval(resumeTimer)
+    resumeTimer = null
+  }
+
+  // iOS Safari often pauses mid-utterance unless resume() is poked.
+  resumeTimer = window.setInterval(() => {
+    if (!synth.speaking) {
+      if (resumeTimer != null) window.clearInterval(resumeTimer)
+      resumeTimer = null
+      return
+    }
+    try {
+      synth.resume()
+    } catch {
+      /* ignore */
+    }
+  }, 8000)
+
+  utterance.onend = () => {
+    if (resumeTimer != null) {
+      window.clearInterval(resumeTimer)
+      resumeTimer = null
+    }
+  }
+  utterance.onerror = () => {
+    if (resumeTimer != null) {
+      window.clearInterval(resumeTimer)
+      resumeTimer = null
+    }
+  }
+
   synth.cancel()
-  synth.speak(utterance)
+  // Brief delay after cancel helps iOS actually start the next utterance.
+  window.setTimeout(() => {
+    try {
+      synth.speak(utterance)
+      synth.resume()
+    } catch {
+      /* ignore */
+    }
+  }, 60)
 }
 
 export function useDirectionVoice(current: SpeakStep | null, upcoming: SpeakStep | null) {
   const [on, setOn] = useState(voicePreferenceOn)
+  const [unlocked, setUnlocked] = useState(sessionUnlocked)
   const upcomingRef = useRef(upcoming)
   const currentRef = useRef(current)
   upcomingRef.current = upcoming
@@ -70,15 +176,19 @@ export function useDirectionVoice(current: SpeakStep | null, upcoming: SpeakStep
     if (!synth) return
     const refresh = () => chooseVoice()
     synth.addEventListener('voiceschanged', refresh)
+    // Warm voices list (async on many phones)
+    window.setTimeout(() => synth.getVoices(), 250)
     return () => synth.removeEventListener('voiceschanged', refresh)
   }, [])
 
   useEffect(() => {
     if (!supported) return
+    if (sessionUnlocked) setUnlocked(true)
     if (!on || !current) {
       stopVoice()
       return
     }
+    // Auto-speak only after this browser session was unlocked by a tap (e.g. Navigate).
     speakDirection(spokenCue(current, upcomingRef.current))
     return () => stopVoice()
   }, [current?.id, on, supported])
@@ -87,6 +197,17 @@ export function useDirectionVoice(current: SpeakStep | null, upcoming: SpeakStep
     setOn((value) => {
       const next = !value
       rememberVoice(next)
+      if (next) {
+        unlockVoiceFromGesture()
+        setUnlocked(true)
+        const step = currentRef.current
+        if (step) {
+          speakDirection(spokenCue(step, upcomingRef.current), { force: true })
+        }
+      } else {
+        stopVoice()
+        pendingText = null
+      }
       return next
     })
   }
@@ -94,21 +215,52 @@ export function useDirectionVoice(current: SpeakStep | null, upcoming: SpeakStep
   function replay() {
     const step = currentRef.current
     if (!on || !step) return
-    speakDirection(spokenCue(step, upcomingRef.current))
+    unlockVoiceFromGesture()
+    setUnlocked(true)
+    speakDirection(spokenCue(step, upcomingRef.current), { force: true })
   }
 
-  return { on, supported, toggle, replay }
+  /** Call from Navigate / other primary buttons so the first cue can play. */
+  function unlockFromUi() {
+    unlockVoiceFromGesture()
+    setUnlocked(true)
+  }
+
+  return { on, supported, unlocked, toggle, replay, unlockFromUi }
+}
+
+function preferredLang() {
+  const nav = typeof navigator !== 'undefined' ? navigator.language : 'en-US'
+  if (/^en/i.test(nav)) return nav
+  return 'en-US'
 }
 
 function chooseVoice() {
   const voices = window.speechSynthesis?.getVoices?.() ?? []
-  const english = voices.filter((voice) => /^en([-_]|$)/i.test(voice.lang))
-  const ranked = [/samantha/i, /google uk english female/i, /google us english/i, /aria/i, /jenny/i, /natural/i, /zira/i]
+  if (!voices.length) return null
+  const lang = preferredLang().slice(0, 2).toLowerCase()
+  const english = voices.filter((voice) => voice.lang.toLowerCase().startsWith(lang) || /^en/i.test(voice.lang))
+  const pool = english.length ? english : voices
+  // Prefer on-device voices — remote voices often fail silently on phones.
+  const local = pool.filter((voice) => (voice as SpeechSynthesisVoice & { localService?: boolean }).localService !== false)
+  const candidates = local.length ? local : pool
+  const ranked = [
+    /samantha/i,
+    /google us english/i,
+    /google uk english female/i,
+    /enhanced/i,
+    /premium/i,
+    /aria/i,
+    /jenny/i,
+    /natural/i,
+    /siri/i,
+    /zira/i,
+  ]
   for (const pattern of ranked) {
-    const hit = english.find((voice) => pattern.test(voice.name) && !/male|david/i.test(voice.name))
+    const hit = candidates.find((voice) => pattern.test(voice.name) && !/male|david|daniel/i.test(voice.name))
     if (hit) return hit
   }
-  return english.find((voice) => !/david|male/i.test(voice.name)) ?? english[0] ?? null
+  return candidates.find((voice) => !/david|male|daniel/i.test(voice.name)) ?? candidates[0] ?? null
 }
 
 function soften(instruction: string) {

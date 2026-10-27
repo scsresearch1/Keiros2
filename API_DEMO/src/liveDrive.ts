@@ -90,18 +90,95 @@ function stepsFromRoute(route: OsrmRoute): JourneyStep[] {
   })
 }
 
+const DRIVING_BASES = [
+  'https://router.project-osrm.org/route/v1/driving',
+  'https://routing.openstreetmap.de/routed-car/route/v1/driving',
+]
+const FOOT_BASES = [
+  'https://router.project-osrm.org/route/v1/foot',
+  'https://routing.openstreetmap.de/routed-foot/route/v1/foot',
+  ...DRIVING_BASES,
+]
+
+async function fetchOsrmRoute(bases: string[], origin: LatLng, destination: LatLng) {
+  let lastErr: Error | null = null
+  for (const base of bases) {
+    try {
+      const url =
+        `${base}/` +
+        `${origin.longitude},${origin.latitude};${destination.longitude},${destination.latitude}` +
+        `?overview=full&geometries=geojson&steps=true&alternatives=3&continue_straight=true`
+      const res = await fetch(url)
+      if (!res.ok) throw new Error(`OSRM ${res.status}`)
+      const json = (await res.json()) as { routes?: OsrmRoute[]; message?: string }
+      const route = [...(json.routes ?? [])].sort(
+        (a, b) => a.duration - b.duration || a.distance - b.distance,
+      )[0]
+      if (!route?.geometry?.coordinates?.length) throw new Error(json.message || 'No route')
+      return route
+    } catch (err) {
+      lastErr = err instanceof Error ? err : new Error(String(err))
+    }
+  }
+  throw lastErr ?? new Error('No road route')
+}
+
+function isStraightWalk(result: NavigateResult) {
+  const provider = result.walk?.provider || ''
+  if (/fallback|nearest parking walk/i.test(provider)) return true
+  const coords = result.walk?.geometry?.coordinates ?? []
+  if (coords.length <= 2) return true
+  const walkSteps = result.journey.steps.filter((s) => s.phase === 'walk')
+  const flat = walkSteps.flatMap((s) => s.geometry ?? [])
+  return flat.length > 0 && flat.length <= 2
+}
+
+function walkStepsFromRoute(route: OsrmRoute): JourneyStep[] {
+  const raw = route.legs?.[0]?.steps ?? []
+  if (!raw.length) {
+    return [
+      {
+        id: 'wlk-0',
+        phase: 'walk',
+        index: 0,
+        instruction: 'Leave the car and walk to the entrance',
+        latitude: route.geometry.coordinates[0]?.[1] ?? 0,
+        longitude: route.geometry.coordinates[0]?.[0] ?? 0,
+        distanceM: Math.round(route.distance),
+        durationSec: Math.round(route.duration),
+        geometry: route.geometry.coordinates,
+      },
+    ]
+  }
+  return raw.map((step, index) => {
+    const [lng, lat] = step.maneuver.location
+    let instruction = step.name ? `Walk via ${step.name}` : 'Continue walking'
+    if (step.maneuver.type === 'depart') instruction = 'Leave the car and walk to the entrance'
+    if (step.maneuver.type === 'arrive') instruction = 'Arrive at building entrance — continue inside'
+    else if (step.maneuver.modifier) {
+      instruction = `${step.maneuver.type.replaceAll('_', ' ')} ${step.maneuver.modifier}${step.name ? ` onto ${step.name}` : ''}`
+    }
+    return {
+      id: `wlk-${index}`,
+      phase: 'walk' as const,
+      index,
+      title: `Walk · Step ${index + 1}`,
+      instruction,
+      roadName: step.name || null,
+      distanceM: Math.round(step.distance),
+      durationSec: Math.round(step.duration),
+      speedMph: 3,
+      trafficLevel: null,
+      congestionIndex: null,
+      latitude: lat,
+      longitude: lng,
+      geometry: step.geometry?.coordinates ?? [],
+    }
+  })
+}
+
 async function fetchDrive(origin: LatLng, parking: LatLng) {
-  const url =
-    `https://router.project-osrm.org/route/v1/driving/` +
-    `${origin.longitude},${origin.latitude};${parking.longitude},${parking.latitude}` +
-    `?overview=full&geometries=geojson&steps=true&alternatives=3`
-  const res = await fetch(url)
-  if (!res.ok) throw new Error(`Could not route from the starting location (OSRM ${res.status})`)
-  const json = (await res.json()) as { routes?: OsrmRoute[] }
-  const route = [...(json.routes ?? [])].sort(
-    (a, b) => a.duration - b.duration || a.distance - b.distance,
-  )[0]
-  if (!route) throw new Error('No driving route from the starting location')
+  const route = await fetchOsrmRoute(DRIVING_BASES, origin, parking)
   const steps = stepsFromRoute(route)
   const distanceM = Math.round(route.distance)
   const durationS = route.duration
@@ -120,14 +197,14 @@ async function fetchDrive(origin: LatLng, parking: LatLng) {
     steps,
     distanceM,
     durationMinutes: Math.round((durationS / 60) * 10) / 10,
-      geometry: { type: 'LineString', coordinates: route.geometry.coordinates },
-    provider: 'OSRM driving',
+    geometry: { type: 'LineString' as const, coordinates: route.geometry.coordinates },
+    provider: 'OSRM driving (road-snapped)',
     traffic: {
       level,
       congestionIndex: Math.round(congestion * 100) / 100,
       averageSpeedMph: Math.round(avgMph * 10) / 10,
       updatedAt: new Date().toISOString(),
-      note: 'Each segment is compared with a typical speed for its length. Lower speeds raise the index.',
+      note: 'Road-snapped OpenStreetMap drive. Segment index is delay versus a typical speed.',
       segments: steps.map((step) => ({
         id: step.id,
         trafficLevel: step.trafficLevel ?? 'Unknown',
@@ -135,6 +212,19 @@ async function fetchDrive(origin: LatLng, parking: LatLng) {
         distanceM: step.distanceM ?? 0,
       })),
     },
+  }
+}
+
+async function fetchWalkAlongRoads(parking: LatLng, entrance: LatLng) {
+  const route = await fetchOsrmRoute(FOOT_BASES, parking, entrance)
+  const steps = walkStepsFromRoute(route)
+  const distanceM = Math.round(route.distance)
+  return {
+    steps,
+    distanceM,
+    durationMinutes: Math.round((route.duration / 60) * 10) / 10,
+    geometry: { type: 'LineString' as const, coordinates: route.geometry.coordinates },
+    provider: 'OSRM foot (road-snapped)',
   }
 }
 
@@ -300,17 +390,70 @@ async function fetchLotApproach(from: LatLng, spot: LatLng) {
 export async function attachLotToResult(result: NavigateResult): Promise<NavigateResult> {
   const parking = result.parking
   if (!parking) return result
-  const driveSteps = result.journey.steps.filter((step) => step.phase === 'drive' || step.phase === 'outdoor')
-  const walkSteps = result.journey.steps.filter((step) => step.phase === 'walk')
-  const indoorSteps = result.journey.steps.filter((step) => step.phase === 'indoor')
-  const driveCoords = result.outdoor.geometry?.coordinates?.length
-    ? result.outdoor.geometry.coordinates
+  const entrance = {
+    latitude: result.entrance?.latitude ?? result.destination.latitude,
+    longitude: result.entrance?.longitude ?? result.destination.longitude,
+  }
+  let base = result
+
+  // Replace building-cutting chords with OSM road/path geometry (Google Maps–style).
+  if (isStraightWalk(base)) {
+    try {
+      const foot = await fetchWalkAlongRoads(parking, entrance)
+      const driveSteps0 = base.journey.steps.filter((s) => s.phase === 'drive' || s.phase === 'outdoor')
+      const indoor0 = base.journey.steps.filter((s) => s.phase === 'indoor')
+      const rebuilt = [
+        ...driveSteps0,
+        ...foot.steps.map((step, index) => ({
+          ...step,
+          index: driveSteps0.length + index,
+          phase: 'walk' as const,
+        })),
+        ...indoor0.map((step, index) => ({
+          ...step,
+          index: driveSteps0.length + foot.steps.length + index,
+        })),
+      ]
+      base = {
+        ...base,
+        walk: {
+          ...(base.walk ?? {
+            distanceMiles: 0,
+            durationMinutes: 0,
+            steps: [],
+            geometry: { type: 'LineString', coordinates: [] },
+          }),
+          provider: foot.provider,
+          distanceM: foot.distanceM,
+          distanceMiles: Math.round((foot.distanceM / 1609.344) * 10) / 10,
+          durationMinutes: foot.durationMinutes,
+          geometry: foot.geometry,
+          steps: foot.steps,
+        },
+        parking: { ...parking, offsetMeters: foot.distanceM },
+        journey: {
+          ...base.journey,
+          totalSteps: rebuilt.length,
+          walkSteps: foot.steps.length,
+          steps: rebuilt,
+        },
+      }
+    } catch {
+      /* keep server walk if routers are down */
+    }
+  }
+
+  const driveSteps = base.journey.steps.filter((step) => step.phase === 'drive' || step.phase === 'outdoor')
+  const walkSteps = base.journey.steps.filter((step) => step.phase === 'walk')
+  const indoorSteps = base.journey.steps.filter((step) => step.phase === 'indoor')
+  const driveCoords = base.outdoor.geometry?.coordinates?.length
+    ? base.outdoor.geometry.coordinates
     : driveSteps.flatMap((step) => step.geometry ?? [])
   let nextDrive = driveSteps
   let nextCoords = driveCoords
   let nextWalk = walkSteps
   let addedMeters = 0
-  const pulled = pullDriveIntoLot(driveSteps, driveCoords, walkSteps, result.walk?.geometry?.coordinates, parking)
+  const pulled = pullDriveIntoLot(driveSteps, driveCoords, walkSteps, base.walk?.geometry?.coordinates, parking)
   nextDrive = pulled.driveSteps
   nextCoords = pulled.driveCoords
   nextWalk = pulled.walkSteps
@@ -318,7 +461,7 @@ export async function attachLotToResult(result: NavigateResult): Promise<Navigat
   if (addedMeters === 0 && !nextDrive.some((step) => /drive into the nearest parking/i.test(step.instruction))) {
     const end = driveEnd(nextCoords)
     const approach = end ? await fetchLotApproach(end, parking) : null
-    if (approach && end) {
+    if (approach && end && approach.length > 2) {
       const approachM = lineMeters(approach)
       const softened = nextDrive.map((step, index) =>
         index === nextDrive.length - 1 && /park|leave the vehicle|arrive/i.test(step.instruction)
@@ -351,14 +494,17 @@ export async function attachLotToResult(result: NavigateResult): Promise<Navigat
   }
   const parkedAt = driveEnd(nextCoords)
   if (parkedAt && meters(parkedAt, parking) <= 45) {
-    const line = walkLine(nextWalk, result.walk?.geometry?.coordinates)
+    const line = walkLine(nextWalk, base.walk?.geometry?.coordinates)
     if (line.length > 1 && meters({ latitude: line[0][1], longitude: line[0][0] }, parking) > 45) {
       const trimmed = pullDriveIntoLot([], [line[0]], nextWalk, line, parking)
       if (trimmed.walkSteps.length) nextWalk = trimmed.walkSteps
     }
   }
   const walkChanged = nextWalk.some((step, index) => step.instruction !== walkSteps[index]?.instruction)
-  if (addedMeters === 0 && nextWalk.length === walkSteps.length && !walkChanged) return result
+  const walkProviderChanged = base.walk?.provider !== result.walk?.provider
+  if (addedMeters === 0 && nextWalk.length === walkSteps.length && !walkChanged && !walkProviderChanged) {
+    return base
+  }
   const steps = [
     ...nextDrive,
     ...nextWalk.map((step, index) => ({ ...step, index: nextDrive.length + index, phase: 'walk' as const })),
@@ -367,22 +513,22 @@ export async function attachLotToResult(result: NavigateResult): Promise<Navigat
       index: nextDrive.length + nextWalk.length + index,
     })),
   ]
-  const distanceM = Math.round((result.outdoor.distanceM || 0) + addedMeters)
+  const distanceM = Math.round((base.outdoor.distanceM || 0) + addedMeters)
   const walkDistance = nextWalk.reduce((sum, step) => sum + (step.distanceM ?? 0), 0)
   return {
-    ...result,
+    ...base,
     parking: { ...parking, offsetMeters: Math.round(walkDistance) },
     outdoor: {
-      ...result.outdoor,
+      ...base.outdoor,
       distanceM,
       distanceMiles: Math.round((distanceM / 1609.344) * 10) / 10,
-      durationMinutes: Math.round(((result.outdoor.durationMinutes || 0) + addedMeters / 4.5 / 60) * 10) / 10,
+      durationMinutes: Math.round(((base.outdoor.durationMinutes || 0) + addedMeters / 4.5 / 60) * 10) / 10,
       geometry: { type: 'LineString', coordinates: nextCoords },
       steps: nextDrive,
     },
-    walk: result.walk
+    walk: base.walk
       ? {
-          ...result.walk,
+          ...base.walk,
           distanceM: Math.round(walkDistance),
           distanceMiles: Math.round((walkDistance / 1609.344) * 10) / 10,
           durationMinutes: Math.round((walkDistance / 1.35 / 60) * 10) / 10,
@@ -392,9 +538,9 @@ export async function attachLotToResult(result: NavigateResult): Promise<Navigat
           },
           steps: nextWalk,
         }
-      : result.walk,
+      : base.walk,
     journey: {
-      ...result.journey,
+      ...base.journey,
       totalSteps: steps.length,
       driveSteps: nextDrive.length,
       walkSteps: nextWalk.length,

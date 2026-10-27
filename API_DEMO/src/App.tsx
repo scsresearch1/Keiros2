@@ -13,7 +13,7 @@ import { OutdoorMap } from './components/OutdoorMap'
 import { Indoor3D } from './components/Indoor3D'
 import { IndoorFloorMap } from './components/IndoorFloorMap'
 import { StartLocationPanel } from './components/StartLocationPanel'
-import { primeVoice, useDirectionVoice } from './voiceGuide'
+import { unlockVoiceFromGesture, useDirectionVoice } from './voiceGuide'
 import { attachLotToResult, withLiveDrive } from './liveDrive'
 import { matchLiveStep, useGeolocationWatch } from './liveNavigation'
 import type { StartPoint } from './startLocation'
@@ -148,7 +148,7 @@ export default function App() {
             label: origin.label,
             startMode: mode === 'custom' ? 'custom' : 'live',
           })
-        : nav
+        : await attachLotToResult(nav)
       setResult(routed)
       setJourneyIndex(0)
       setLiveNav(true)
@@ -191,7 +191,8 @@ export default function App() {
 
   async function runNavigate(e: FormEvent) {
     e.preventDefault()
-    primeVoice()
+    // Phones require a tap before speechSynthesis will play.
+    unlockVoiceFromGesture()
     if (!startReady) {
       setError('Choose a starting position first.')
       return
@@ -712,8 +713,16 @@ export default function App() {
                         Hear again
                       </button>
                     </div>
-                  ) : null}
+                  ) : (
+                    <span className="demo-hint">Voice not supported in this browser</span>
+                  )}
                 </div>
+                {voice.supported && voice.on && !voice.unlocked ? (
+                  <p className="demo-hint demo-hint--voice">
+                    On phones, tap <strong>Voice on</strong> or <strong>Hear again</strong> once to allow spoken
+                    directions (browser audio lock).
+                  </p>
+                ) : null}
                 <p>{active.instruction}</p>
                 <p className="demo-hint">
                   {active.phase === 'drive' || active.phase === 'outdoor' ? (
