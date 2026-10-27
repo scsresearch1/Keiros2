@@ -152,21 +152,43 @@ export default function App() {
     }))
   }, [floors])
 
-  /** Unit search is global so typing a room can fill Complex → Building → Floor. */
+  /** Unit list is scoped to the selected floor (cascade). */
   const unitOptions = useMemo<AutocompleteOption[]>(() => {
-    if (!hierarchy) return []
-    const ordered = floorId
-      ? [...hierarchy.units].sort(
-          (a, b) => Number(b.floorId === floorId) - Number(a.floorId === floorId),
-        )
-      : hierarchy.units
-    return ordered.map((u) => ({
+    return units.map((u) => ({
       id: u.id,
       label: `${u.name} · ${u.type}`,
-      hint: [u.complexName, u.buildingName, u.floorLabel].filter(Boolean).join(' · ') || undefined,
-      searchText: `${u.name} ${u.type} ${u.code} ${u.buildingName} ${u.floorLabel} ${u.complexName ?? ''}`,
+      hint: u.type || undefined,
+      searchText: `${u.name} ${u.type} ${u.code}`,
     }))
-  }, [hierarchy, floorId])
+  }, [units])
+
+  /** When a parent is chosen and only one child exists, auto-select that child. */
+  useEffect(() => {
+    if (!complexId || buildingId) return
+    if (buildings.length === 1) {
+      setBuildingId(buildings[0].id)
+      setFloorId('')
+      setUnitId('')
+      setResult(null)
+    }
+  }, [complexId, buildingId, buildings])
+
+  useEffect(() => {
+    if (!buildingId || floorId) return
+    if (floors.length === 1) {
+      setFloorId(floors[0].id)
+      setUnitId('')
+      setResult(null)
+    }
+  }, [buildingId, floorId, floors])
+
+  useEffect(() => {
+    if (!floorId || unitId) return
+    if (units.length === 1) {
+      setUnitId(units[0].id)
+      setResult(null)
+    }
+  }, [floorId, unitId, units])
 
   function selectComplex(id: string) {
     setComplexId(id)
@@ -190,21 +212,7 @@ export default function App() {
   }
 
   function selectUnit(id: string) {
-    if (!id || !hierarchy) {
-      setUnitId('')
-      setResult(null)
-      return
-    }
-    const unit = hierarchy.units.find((u) => u.id === id)
-    if (!unit) {
-      setUnitId('')
-      setResult(null)
-      return
-    }
-    if (unit.complexId) setComplexId(unit.complexId)
-    setBuildingId(unit.buildingId)
-    setFloorId(unit.floorId)
-    setUnitId(unit.id)
+    setUnitId(id)
     setResult(null)
   }
 
@@ -648,8 +656,9 @@ export default function App() {
               label="Unit"
               value={unitId}
               options={unitOptions}
-              placeholder="Search unit, aisle, room…"
-              emptyText="No units match"
+              placeholder={floorId ? 'Search unit, aisle, room…' : 'Pick a floor first'}
+              disabled={!floorId}
+              emptyText={floorId ? 'No units on this floor' : 'Select a floor first'}
               onChange={selectUnit}
             />
             <div className="demo-controls__go">
