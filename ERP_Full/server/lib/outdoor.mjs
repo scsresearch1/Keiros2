@@ -1,4 +1,5 @@
 /** Outdoor routing: Drive → Parking → Walk to entrance. Weather via Open-Meteo. */
+import { buildIndoorSteps } from './indoor.mjs'
 
 const MILES_START = 20
 /** Typical curb / garage distance from building entrance (cannot drive to the door). */
@@ -1165,50 +1166,15 @@ export function buildJourneySteps(drive, walk, indoor, destinationLabel) {
     ...s,
     phase: 'drive',
     index: i,
-    title: `Drive · Step ${i + 1}`,
+    title: s.title || `Drive · Step ${i + 1}`,
   }))
   const walkSteps = (walk.steps || []).map((s, i) => ({
     ...s,
     phase: 'walk',
     index: driveSteps.length + i,
-    title: `Walk · Step ${i + 1}`,
+    title: s.title || `Walk · Step ${i + 1}`,
   }))
-  const indoorStops = indoor.stops || []
-  const base = driveSteps.length + walkSteps.length
-  const indoorSteps = indoorStops.map((stop, i) => {
-    const prev = indoorStops[i - 1]
-    let instruction = `Go to ${stop.name} (${stop.floorLabel})`
-    if (i === 0) instruction = `Enter building at ${stop.name} (${stop.floorLabel}) — indoor navigation`
-    else if (prev && prev.floorId !== stop.floorId) {
-      instruction = `Take vertical access to ${stop.floorLabel}, then to ${stop.name}`
-    } else if (i === indoorStops.length - 1) {
-      instruction = `Arrive at ${stop.name} · ${destinationLabel}`
-    }
-    return {
-      id: `in-${i}`,
-      phase: 'indoor',
-      index: base + i,
-      indoorIndex: i,
-      instruction,
-      title: `Inside · Step ${i + 1}`,
-      distanceM: prev
-        ? Math.round(
-            Math.hypot(
-              (stop.latitude - prev.latitude) * 111320,
-              (stop.longitude - prev.longitude) * 111320 * Math.cos((stop.latitude * Math.PI) / 180),
-            ),
-          )
-        : 0,
-      durationSec: null,
-      latitude: stop.latitude,
-      longitude: stop.longitude,
-      floorLabel: stop.floorLabel,
-      floorId: stop.floorId,
-      stopId: stop.id,
-      stopName: stop.name,
-      stopType: stop.type,
-    }
-  })
+  const indoorSteps = buildIndoorSteps(indoor, destinationLabel, driveSteps.length + walkSteps.length)
   return [...driveSteps, ...walkSteps, ...indoorSteps]
 }
 

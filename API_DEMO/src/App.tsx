@@ -13,9 +13,15 @@ import { OutdoorMap } from './components/OutdoorMap'
 import { Indoor3D } from './components/Indoor3D'
 import { IndoorFloorMap } from './components/IndoorFloorMap'
 import { StartLocationPanel } from './components/StartLocationPanel'
+import { NavGuidanceBanner } from './components/NavGuidanceBanner'
 import { unlockVoiceFromGesture, useDirectionVoice } from './voiceGuide'
 import { attachLotToResult, withLiveDrive } from './liveDrive'
-import { matchLiveStep, useGeolocationWatch } from './liveNavigation'
+import {
+  matchLiveProgress,
+  useGeolocationWatch,
+  type LiveProgress,
+} from './liveNavigation'
+import { rerouteFromLiveFix } from './smartReroute'
 import type { StartPoint } from './startLocation'
 
 const DEMO_KEY = 'keiros_live_ot_demo_map_nav_2026'
@@ -62,7 +68,11 @@ export default function App() {
   const [indoorView, setIndoorView] = useState<'floor' | 'building'>('floor')
   /** Google Maps–style live GPS follow. Next/Previous stay available as optional manual control. */
   const [liveNav, setLiveNav] = useState(true)
+  const [liveProgress, setLiveProgress] = useState<LiveProgress | null>(null)
+  const [recalculating, setRecalculating] = useState(false)
   const manualHoldUntil = useRef(0)
+  const rerouteLockUntil = useRef(0)
+  const lastOffRouteAt = useRef(0)
 
   useEffect(() => {
     void fetchHealth()
@@ -152,7 +162,10 @@ export default function App() {
       setResult(routed)
       setJourneyIndex(0)
       setLiveNav(true)
+      setLiveProgress(null)
+      setRecalculating(false)
       manualHoldUntil.current = 0
+      rerouteLockUntil.current = 0
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Navigate failed')
     } finally {
@@ -296,13 +309,42 @@ export default function App() {
   const { fix: liveFix, error: liveGpsError, watching: liveWatching } = useGeolocationWatch(liveWatchOn)
 
   useEffect(() => {
-    if (!liveWatchOn || !liveFix || !result) return
+    if (!liveWatchOn || !liveFix || !result) {
+      setLiveProgress(null)
+      return
+    }
+    const progress = matchLiveProgress(result.journey.steps, liveFix, journeyIndex)
+    setLiveProgress(progress)
     if (Date.now() < manualHoldUntil.current) return
-    const matched = matchLiveStep(result.journey.steps, liveFix, journeyIndex)
-    if (matched.stepIndex !== journeyIndex && matched.distanceToRouteM < 120) {
-      setJourneyIndex(matched.stepIndex)
+    if (progress.stepIndex !== journeyIndex && progress.distanceToRouteM < 120) {
+      setJourneyIndex(progress.stepIndex)
+    }
+
+    // Off-route → recalculate like Google Maps (throttle)
+    const now = Date.now()
+    if (
+      progress.offRoute &&
+      now > rerouteLockUntil.current &&
+      now - lastOffRouteAt.current > 2500
+    ) {
+      lastOffRouteAt.current = now
+      rerouteLockUntil.current = now + 12000
+      setRecalculating(true)
+      void rerouteFromLiveFix(result, liveFix)
+        .then((next) => {
+          if (!next) return
+          setResult(next)
+          setJourneyIndex(0)
+          manualHoldUntil.current = 0
+        })
+        .finally(() => setRecalculating(false))
     }
   }, [liveWatchOn, liveFix, result, journeyIndex])
+
+  useEffect(() => {
+    const step = result?.journey.steps[journeyIndex]
+    if (step?.phase === 'indoor') setIndoorView('floor')
+  }, [result, journeyIndex])
 
   function bumpJourney(delta: number) {
     manualHoldUntil.current = Date.now() + 10000
@@ -653,10 +695,29 @@ export default function App() {
           </section>
 
           <div className="demo-phase-strip" aria-label="Journey phases">
-            <span className={phase === 'drive' ? 'is-active phase-drive' : 'phase-drive'}>1 · Drive to parking</span>
-            <span className={phase === 'walk' ? 'is-active phase-walk' : 'phase-walk'}>2 · Walk to entrance</span>
-            <span className={phase === 'indoor' ? 'is-active phase-inside' : 'phase-inside'}>3 · Inside building</span>
+            {result.outdoor.provider === 'on-site' || !(result.outdoor.steps?.length) ? (
+              <>
+                <span className={phase === 'walk' ? 'is-active phase-walk' : 'phase-walk'}>1 · Walk to entrance</span>
+                <span className={phase === 'indoor' ? 'is-active phase-inside' : 'phase-inside'}>2 · Inside building</span>
+              </>
+            ) : (
+              <>
+                <span className={phase === 'drive' ? 'is-active phase-drive' : 'phase-drive'}>1 · Drive to parking</span>
+                <span className={phase === 'walk' ? 'is-active phase-walk' : 'phase-walk'}>2 · Walk to entrance</span>
+                <span className={phase === 'indoor' ? 'is-active phase-inside' : 'phase-inside'}>3 · Inside building</span>
+              </>
+            )}
           </div>
+
+          {active && (showOutdoorMap || phase === 'indoor') ? (
+            <NavGuidanceBanner
+              active={active}
+              upcoming={steps[journeyIndex + 1] ?? null}
+              progress={liveNav && showOutdoorMap ? liveProgress : null}
+              recalculating={recalculating}
+              live={liveNav && showOutdoorMap && Boolean(liveFix)}
+            />
+          ) : null}
 
           <div className="demo-journey">
             <div className="demo-live-bar">
@@ -670,13 +731,17 @@ export default function App() {
                 {liveNav ? 'Live navigation on' : 'Live navigation off'}
               </button>
               <span className="demo-hint">
-                {liveNav
-                  ? liveWatching && liveFix
-                    ? `Tracking you · ±${Math.round(liveFix.accuracy)} m · map follows as you move`
-                    : liveGpsError
-                      ? liveGpsError
-                      : 'Waiting for GPS… allow location on this device'
-                  : 'Turn on for Google Maps–style follow. Next stays optional.'}
+                {recalculating
+                  ? 'Recalculating route from your position…'
+                  : liveNav
+                    ? liveWatching && liveFix
+                      ? liveProgress?.offRoute
+                        ? 'Off the planned path — finding a better route…'
+                        : `Tracking you · ±${Math.round(liveFix.accuracy)} m · ETA updates as you move`
+                      : liveGpsError
+                        ? liveGpsError
+                        : 'Waiting for GPS… allow location on this device'
+                    : 'Turn on for Google Maps–style follow, ETA, and auto-reroute. Next stays optional.'}
               </span>
             </div>
             <div className="demo-steps">
@@ -776,7 +841,17 @@ export default function App() {
                 activeStep={active}
                 weather={result.weather}
                 traffic={result.outdoor.traffic}
-                liveFix={liveNav ? liveFix : null}
+                liveFix={
+                  liveNav && liveFix
+                    ? liveProgress?.snapped && !liveProgress.offRoute
+                      ? {
+                          ...liveFix,
+                          latitude: liveProgress.snapped.latitude,
+                          longitude: liveProgress.snapped.longitude,
+                        }
+                      : liveFix
+                    : null
+                }
                 followLive={liveNav}
               />
             ) : (
@@ -789,7 +864,9 @@ export default function App() {
             <div className="demo-indoor-wrap">
               <div className="demo-indoor-head">
                 <p className="demo-indoor-banner">
-                  {indoorView === 'floor' ? 'Inside building — floor map' : 'Inside building — 3D view'}
+                  {indoorView === 'floor'
+                    ? 'Inside — follow the blue path on this floor'
+                    : 'Inside — 3D building overview'}
                 </p>
                 <div className="demo-indoor-toggle" role="tablist" aria-label="Indoor map">
                   <button
@@ -811,6 +888,19 @@ export default function App() {
                     3D building
                   </button>
                 </div>
+              </div>
+              <div className="demo-indoor-actions">
+                <button
+                  type="button"
+                  className="demo-indoor-next"
+                  disabled={journeyIndex >= steps.length - 1}
+                  onClick={() => bumpJourney(1)}
+                >
+                  {journeyIndex >= steps.length - 1 ? 'Arrived' : 'Next indoor step'}
+                </button>
+                <span className="demo-hint">
+                  Path uses corridors, elevators/stairs, and turn-by-turn cues.
+                </span>
               </div>
               {indoorView === 'floor' ? (
                 <IndoorFloorMap map3d={result.map3d} activeStep={indoorStep} instruction={active?.instruction} />

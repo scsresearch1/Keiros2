@@ -131,15 +131,25 @@ export function IndoorFloorMap({ map3d, activeStep, instruction, onSelectFloor, 
               </g>
             ))}
             {scene.path ? (
-              <path
-                d={scene.path}
-                fill="none"
-                stroke="#2c4a73"
-                strokeWidth={5}
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeDasharray="1.2 9"
-              />
+              <>
+                <path
+                  d={scene.path}
+                  fill="none"
+                  stroke="#93c5fd"
+                  strokeWidth={10}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  opacity={0.55}
+                />
+                <path
+                  d={scene.path}
+                  fill="none"
+                  stroke="#1a73e8"
+                  strokeWidth={5}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </>
             ) : null}
             {walker ? (
               <g transform={`translate(${walker.x} ${walker.y}) rotate(${(walker.heading * 180) / Math.PI})`}>
