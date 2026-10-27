@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import {
   fetchHealth,
   fetchHierarchy,
@@ -15,6 +15,7 @@ import { IndoorFloorMap } from './components/IndoorFloorMap'
 import { StartLocationPanel } from './components/StartLocationPanel'
 import { primeVoice, useDirectionVoice } from './voiceGuide'
 import { attachLotToResult, withLiveDrive } from './liveDrive'
+import { matchLiveStep, useGeolocationWatch } from './liveNavigation'
 import type { StartPoint } from './startLocation'
 
 const DEMO_KEY = 'keiros_live_ot_demo_map_nav_2026'
@@ -51,13 +52,17 @@ export default function App() {
   const [journeyIndex, setJourneyIndex] = useState(0)
   const [refreshing, setRefreshing] = useState(false)
   const [startMode, setStartMode] = useState<StartMode>('demo')
-  const [startReady, setStartReady] = useState(false)
+  /** Demo Mode is the default start — destination can be chosen immediately. */
+  const [startReady, setStartReady] = useState(true)
   const [liveSelected, setLiveSelected] = useState(false)
   const [customOrigin, setCustomOrigin] = useState<StartPoint | null>(null)
   const [pickerOpen, setPickerOpen] = useState(false)
   const [liveOrigin, setLiveOrigin] = useState<{ latitude: number; longitude: number } | null>(null)
   const [locating, setLocating] = useState(false)
   const [indoorView, setIndoorView] = useState<'floor' | 'building'>('floor')
+  /** Google Maps–style live GPS follow. Next/Previous stay available as optional manual control. */
+  const [liveNav, setLiveNav] = useState(true)
+  const manualHoldUntil = useRef(0)
 
   useEffect(() => {
     void fetchHealth()
@@ -117,7 +122,7 @@ export default function App() {
     origin?: { latitude: number; longitude: number; label?: string },
   ) {
     if (!selectionReady()) {
-      setError('Choose a starting position, then select complex, building, floor, and unit.')
+      setError('Select complex, building, floor, and unit.')
       return
     }
     setLoading(true)
@@ -146,6 +151,8 @@ export default function App() {
         : nav
       setResult(routed)
       setJourneyIndex(0)
+      setLiveNav(true)
+      manualHoldUntil.current = 0
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Navigate failed')
     } finally {
@@ -250,7 +257,7 @@ export default function App() {
     setUnitId('')
     setKeyInput(DEMO_KEY)
     setStartMode('demo')
-    setStartReady(false)
+    setStartReady(true)
     setLiveSelected(false)
     setCustomOrigin(null)
     setPickerOpen(false)
@@ -278,6 +285,37 @@ export default function App() {
     : null
   const voice = useDirectionVoice(voiceCurrent, voiceSteps[journeyIndex + 1] ?? null)
 
+  const outdoorActive =
+    Boolean(result) &&
+    (voiceSteps[journeyIndex]?.phase === 'drive' ||
+      voiceSteps[journeyIndex]?.phase === 'walk' ||
+      voiceSteps[journeyIndex]?.phase === 'outdoor')
+
+  const liveWatchOn = Boolean(result && liveNav && outdoorActive)
+  const { fix: liveFix, error: liveGpsError, watching: liveWatching } = useGeolocationWatch(liveWatchOn)
+
+  useEffect(() => {
+    if (!liveWatchOn || !liveFix || !result) return
+    if (Date.now() < manualHoldUntil.current) return
+    const matched = matchLiveStep(result.journey.steps, liveFix, journeyIndex)
+    if (matched.stepIndex !== journeyIndex && matched.distanceToRouteM < 120) {
+      setJourneyIndex(matched.stepIndex)
+    }
+  }, [liveWatchOn, liveFix, result, journeyIndex])
+
+  function bumpJourney(delta: number) {
+    manualHoldUntil.current = Date.now() + 10000
+    setJourneyIndex((i) => {
+      const max = Math.max(0, (result?.journey.steps.length ?? 1) - 1)
+      return Math.min(max, Math.max(0, i + delta))
+    })
+  }
+
+  function jumpJourney(index: number) {
+    manualHoldUntil.current = Date.now() + 10000
+    setJourneyIndex(index)
+  }
+
   if (!apiKey || !hierarchy) {
     return (
       <div className="demo-shell demo-shell--gate">
@@ -285,8 +323,8 @@ export default function App() {
           <p className="demo-brand">Keiros</p>
           <h1>Map Navigation API Demo</h1>
           <p className="demo-lede">
-            Client-only app. Enter an ERP API key, choose a starting position, then pick Complex → Building →
-            Floor → Unit. Activity appears live in ERP under API Logs & API Navigation Live.
+            Client-only app. Enter an ERP API key, pick Complex → Building → Floor → Unit, and choose Demo
+            Mode, Live, or a custom start. Activity appears live in ERP under API Logs & API Navigation Live.
           </p>
           <form onSubmit={unlock} className="demo-gate__form">
             <label>
@@ -431,13 +469,11 @@ export default function App() {
               </button>
             )}
             <span className="demo-hint">
-              {startReady && startMode === 'custom'
-                ? 'This point is the drive start. Then choose the destination.'
-                : startReady && startMode === 'live'
-                  ? 'Using this device as the start. Then choose the destination.'
-                  : startReady
-                    ? 'Using the simulated start. Then choose the destination.'
-                    : 'Choose Demo Mode, Live, or set a point. The destination opens after this.'}
+              {startMode === 'custom' && startReady
+                ? 'Custom map point is the drive start.'
+                : startMode === 'live' && startReady
+                  ? 'Using this device as the start.'
+                  : 'Demo Mode uses a simulated start. Switch to Live or set a point anytime.'}
             </span>
           </div>
           {pickerOpen ? (
@@ -450,14 +486,13 @@ export default function App() {
             />
           ) : null}
         </section>
-        <section className={`demo-step demo-step--dest${startReady ? '' : ' is-locked'}`}>
+        <section className="demo-step demo-step--dest">
           <p className="demo-step__title">2 · Destination</p>
           <div className="demo-dest">
             <label>
               Complex
               <select
                 value={complexId}
-                disabled={!startReady}
                 onChange={(e) => {
                   setComplexId(e.target.value)
                   setBuildingId('')
@@ -478,7 +513,7 @@ export default function App() {
               Building
               <select
                 value={buildingId}
-                disabled={!startReady || !complexId}
+                disabled={!complexId}
                 onChange={(e) => {
                   setBuildingId(e.target.value)
                   setFloorId('')
@@ -498,7 +533,7 @@ export default function App() {
               Floor
               <select
                 value={floorId}
-                disabled={!startReady || !buildingId}
+                disabled={!buildingId}
                 onChange={(e) => {
                   setFloorId(e.target.value)
                   setUnitId('')
@@ -517,7 +552,7 @@ export default function App() {
               Unit
               <select
                 value={unitId}
-                disabled={!startReady || !floorId}
+                disabled={!floorId}
                 onChange={(e) => {
                   setUnitId(e.target.value)
                   setResult(null)
@@ -532,12 +567,11 @@ export default function App() {
               </select>
             </label>
             <div className="demo-controls__go">
-              <button type="submit" disabled={!startReady || loading || locating || !canNavigate}>
+              <button type="submit" disabled={loading || locating || !canNavigate}>
                 {loading ? 'Calling API…' : 'Navigate'}
               </button>
             </div>
           </div>
-          {startReady ? null : <p className="demo-hint">Starting position comes first.</p>}
         </section>
       </form>
       {error ? <p className="demo-error">{error}</p> : null}
@@ -624,28 +658,49 @@ export default function App() {
           </div>
 
           <div className="demo-journey">
-            <div className="demo-steps">
+            <div className="demo-live-bar">
               <button
                 type="button"
-                disabled={journeyIndex <= 0}
-                onClick={() => setJourneyIndex((i) => Math.max(0, i - 1))}
+                className={`demo-live-toggle${liveNav ? ' is-on' : ''}`}
+                aria-pressed={liveNav}
+                onClick={() => setLiveNav((v) => !v)}
               >
+                <span className="demo-live-toggle__pulse" aria-hidden />
+                {liveNav ? 'Live navigation on' : 'Live navigation off'}
+              </button>
+              <span className="demo-hint">
+                {liveNav
+                  ? liveWatching && liveFix
+                    ? `Tracking you · ±${Math.round(liveFix.accuracy)} m · map follows as you move`
+                    : liveGpsError
+                      ? liveGpsError
+                      : 'Waiting for GPS… allow location on this device'
+                  : 'Turn on for Google Maps–style follow. Next stays optional.'}
+              </span>
+            </div>
+            <div className="demo-steps">
+              <button type="button" disabled={journeyIndex <= 0} onClick={() => bumpJourney(-1)}>
                 Previous
               </button>
               <span>
                 Step {journeyIndex + 1} / {steps.length}
                 {active ? ` · ${phaseLabel(active.phase)}` : ''}
+                {liveNav ? ' · auto' : ''}
               </span>
               <button
                 type="button"
                 disabled={journeyIndex >= steps.length - 1}
-                onClick={() => setJourneyIndex((i) => Math.min(steps.length - 1, i + 1))}
+                onClick={() => bumpJourney(1)}
               >
                 Next
               </button>
             </div>
+            <p className="demo-hint demo-hint--tight">
+              Next / Previous are optional — use them to preview steps. Live navigation advances as you
+              walk or drive.
+            </p>
             {active ? (
-              <div className={`demo-step-card is-${active.phase === 'outdoor' ? 'drive' : active.phase}`}>
+              <div className={`demo-step-card is-${active.phase === 'outdoor' ? 'drive' : active.phase}${liveNav && liveFix ? ' is-live-nav' : ''}`}>
                 <div className="demo-voice">
                   <strong>{active.title ?? `Step ${journeyIndex + 1}`}</strong>
                   {voice.supported ? (
@@ -690,7 +745,7 @@ export default function App() {
                   <button
                     type="button"
                     className={i === journeyIndex ? 'is-active' : ''}
-                    onClick={() => setJourneyIndex(i)}
+                    onClick={() => jumpJourney(i)}
                   >
                     <span className="demo-step-list__n">{i + 1}</span>
                     <span>
@@ -712,6 +767,8 @@ export default function App() {
                 activeStep={active}
                 weather={result.weather}
                 traffic={result.outdoor.traffic}
+                liveFix={liveNav ? liveFix : null}
+                followLive={liveNav}
               />
             ) : (
               <p className="demo-placeholder">
@@ -756,7 +813,7 @@ export default function App() {
         </>
       ) : (
         <p className="demo-placeholder">
-          Choose a starting position, then Complex → Building → Floor → Unit, then press Navigate.
+          Select Complex → Building → Floor → Unit, then press Navigate. Demo Mode is already the start.
         </p>
       )}
     </div>

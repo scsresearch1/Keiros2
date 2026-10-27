@@ -1,12 +1,18 @@
 import { useEffect, useMemo, useRef } from 'react'
 import L from 'leaflet'
 import type { JourneyStep, NavigateResult } from '../api'
+import type { LiveFix } from '../liveNavigation'
+import { bearingDeg } from '../liveNavigation'
 
 type Props = {
   result: NavigateResult
   activeStep: JourneyStep | null
   weather: NavigateResult['weather']
   traffic: NavigateResult['outdoor']['traffic']
+  /** Device GPS while live navigation is on */
+  liveFix?: LiveFix | null
+  /** Keep camera on the live puck (Google Maps–style) */
+  followLive?: boolean
 }
 
 function escapeHtml(value: string) {
@@ -28,11 +34,40 @@ function trafficColor(level?: string | null) {
 const WALK_COLOR = '#38bdf8'
 const PARKING_COLOR = '#a78bfa'
 const ENTRANCE_COLOR = '#fbbf24'
+const LIVE_BLUE = '#1a73e8'
 
-export function OutdoorMap({ result, activeStep, weather, traffic }: Props) {
+function livePuckIcon(heading: number | null) {
+  const rot = heading != null && Number.isFinite(heading) ? heading : 0
+  const showCone = heading != null && Number.isFinite(heading)
+  const html = `
+    <div class="demo-live-puck" style="transform:rotate(${rot}deg)">
+      ${showCone ? '<span class="demo-live-puck__cone"></span>' : ''}
+      <span class="demo-live-puck__dot"></span>
+    </div>`
+  return L.divIcon({
+    className: 'demo-live-puck-wrap',
+    html,
+    iconSize: [48, 48],
+    iconAnchor: [24, 24],
+  })
+}
+
+export function OutdoorMap({
+  result,
+  activeStep,
+  weather,
+  traffic,
+  liveFix = null,
+  followLive = false,
+}: Props) {
   const ref = useRef<HTMLDivElement>(null)
   const mapRef = useRef<L.Map | null>(null)
   const markerRef = useRef<L.CircleMarker | null>(null)
+  const liveMarkerRef = useRef<L.Marker | null>(null)
+  const accuracyRef = useRef<L.Circle | null>(null)
+  const lastLiveRef = useRef<LiveFix | null>(null)
+  const userPanningRef = useRef(false)
+  const panTimerRef = useRef<number | null>(null)
 
   const parking = result.parking ?? {
     latitude: result.destination.latitude,
@@ -122,8 +157,8 @@ export function OutdoorMap({ result, activeStep, weather, traffic }: Props) {
         const latlngs = geom.map(([lng, lat]) => [lat, lng] as [number, number])
         L.polyline(latlngs, {
           color: trafficColor(step.trafficLevel),
-          weight: 5,
-          opacity: 0.9,
+          weight: 6,
+          opacity: 0.92,
         }).addTo(map)
         bounds.push(...latlngs)
       }
@@ -156,9 +191,9 @@ export function OutdoorMap({ result, activeStep, weather, traffic }: Props) {
         <strong>Route legend</strong><br/>
         <span style="color:${trafficColor('Light')}">━━</span> Drive (to parking)<br/>
         <span style="color:${WALK_COLOR}">- - -</span> Walk (parking → entrance)<br/>
+        <span style="color:${LIVE_BLUE}">●</span> You (live) ·
         <span style="color:${PARKING_COLOR}">●</span> Parking ·
-        <span style="color:${ENTRANCE_COLOR}">●</span> Entrance ·
-        Inside = 3D view
+        <span style="color:${ENTRANCE_COLOR}">●</span> Entrance
       </div>`
     const weatherHtml = `
       <div class="demo-leaflet-card">
@@ -187,38 +222,60 @@ export function OutdoorMap({ result, activeStep, weather, traffic }: Props) {
     })
     map.addControl(new Overlay({ position: 'topright' }))
 
+    map.on('dragstart', () => {
+      userPanningRef.current = true
+      if (panTimerRef.current) window.clearTimeout(panTimerRef.current)
+    })
+    map.on('dragend', () => {
+      if (panTimerRef.current) window.clearTimeout(panTimerRef.current)
+      panTimerRef.current = window.setTimeout(() => {
+        userPanningRef.current = false
+      }, 8000)
+    })
+
     if (bounds.length) map.fitBounds(L.latLngBounds(bounds).pad(0.12))
     mapRef.current = map
 
     return () => {
+      if (panTimerRef.current) window.clearTimeout(panTimerRef.current)
       map.remove()
       mapRef.current = null
       markerRef.current = null
+      liveMarkerRef.current = null
+      accuracyRef.current = null
+      lastLiveRef.current = null
     }
   }, [result, parking, entrance, driveSteps, walkSteps, weather, traffic])
 
+  // Manual step highlight (optional Next / Previous) — skip camera when following live GPS
   useEffect(() => {
     const map = mapRef.current
     if (!map || !activeStep) return
     if (activeStep.phase === 'indoor') return
+
     if (markerRef.current) {
       markerRef.current.remove()
       markerRef.current = null
     }
+
     const fill =
       activeStep.phase === 'walk' ? WALK_COLOR : trafficColor(activeStep.trafficLevel) || '#22c55e'
     markerRef.current = L.circleMarker([activeStep.latitude, activeStep.longitude], {
-      radius: 11,
+      radius: 9,
       color: '#fff',
       fillColor: fill,
-      fillOpacity: 1,
+      fillOpacity: 0.95,
       weight: 2,
+      opacity: followLive && liveFix ? 0.55 : 1,
     })
       .bindPopup(
         `<strong>${activeStep.phase === 'walk' ? 'Walk' : 'Drive'}</strong><br/>${escapeHtml(activeStep.instruction)}`,
       )
       .addTo(map)
-      .openPopup()
+
+    if (followLive && liveFix) return
+
+    markerRef.current.openPopup()
     map.panTo([activeStep.latitude, activeStep.longitude], { animate: true })
     if (activeStep.geometry && activeStep.geometry.length > 1) {
       const latlngs = activeStep.geometry.map(([lng, lat]) => [lat, lng] as [number, number])
@@ -226,7 +283,82 @@ export function OutdoorMap({ result, activeStep, weather, traffic }: Props) {
     } else if (activeStep.phase === 'walk') {
       map.setZoom(17)
     }
-  }, [activeStep])
+  }, [activeStep, followLive, liveFix])
 
-  return <div className="demo-map" ref={ref} aria-label="Drive and walk navigation map" />
+  // Live GPS puck + follow camera
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map) return
+
+    if (!liveFix) {
+      liveMarkerRef.current?.remove()
+      liveMarkerRef.current = null
+      accuracyRef.current?.remove()
+      accuracyRef.current = null
+      lastLiveRef.current = null
+      return
+    }
+
+    let heading = liveFix.heading
+    const prev = lastLiveRef.current
+    if ((heading == null || !Number.isFinite(heading)) && prev) {
+      const moved = Math.hypot(liveFix.latitude - prev.latitude, liveFix.longitude - prev.longitude)
+      if (moved > 0.00002) {
+        heading = bearingDeg(prev.latitude, prev.longitude, liveFix.latitude, liveFix.longitude)
+      }
+    }
+    lastLiveRef.current = liveFix
+
+    const latlng: L.LatLngExpression = [liveFix.latitude, liveFix.longitude]
+    const icon = livePuckIcon(heading)
+
+    if (!liveMarkerRef.current) {
+      liveMarkerRef.current = L.marker(latlng, { icon, zIndexOffset: 1000 }).addTo(map)
+    } else {
+      liveMarkerRef.current.setLatLng(latlng)
+      liveMarkerRef.current.setIcon(icon)
+    }
+
+    if (!accuracyRef.current) {
+      accuracyRef.current = L.circle(latlng, {
+        radius: Math.max(8, liveFix.accuracy || 20),
+        color: LIVE_BLUE,
+        weight: 1,
+        fillColor: LIVE_BLUE,
+        fillOpacity: 0.12,
+      }).addTo(map)
+    } else {
+      accuracyRef.current.setLatLng(latlng)
+      accuracyRef.current.setRadius(Math.max(8, liveFix.accuracy || 20))
+    }
+
+    if (followLive && !userPanningRef.current) {
+      const targetZoom = liveFix.speed != null && liveFix.speed > 8 ? 16 : 17
+      if (map.getZoom() < 15) map.setZoom(targetZoom)
+      map.panTo(latlng, { animate: true, duration: 0.35 })
+    }
+  }, [liveFix, followLive])
+
+  return (
+    <div className={`demo-map-shell${followLive && liveFix ? ' is-live' : ''}`}>
+      <div className="demo-map" ref={ref} aria-label="Drive and walk navigation map" />
+      {followLive && liveFix ? (
+        <button
+          type="button"
+          className="demo-recenter"
+          aria-label="Recenter on my location"
+          onClick={() => {
+            userPanningRef.current = false
+            const map = mapRef.current
+            if (!map || !liveFix) return
+            map.setView([liveFix.latitude, liveFix.longitude], Math.max(map.getZoom(), 16), {
+              animate: true,
+            })
+          }}
+        >
+          <span className="demo-recenter__dot" />
+        </button>
+      ) : null}
+    </div>
+  )
 }
