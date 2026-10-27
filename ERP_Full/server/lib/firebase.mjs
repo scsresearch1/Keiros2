@@ -17,41 +17,67 @@ if (process.env.FIRESTORE_PREFER_REST === 'true') {
   process.env.FIRESTORE_PREFER_REST = 'true'
 }
 
-/** When Firestore is quota-limited, serve ERP seed data + in-memory writes. */
+/** When true, never call Firestore (explicit ops mode). */
 const FORCE_LOCAL = String(process.env.FIRESTORE_LOCAL_FALLBACK || '').toLowerCase() === 'true'
+/** How long to serve cache/seed after a quota error before retrying Firestore. */
+const QUOTA_COOLDOWN_MS = Number(process.env.FIRESTORE_QUOTA_COOLDOWN_MS || 60_000)
+
 let useLocalFallback = FORCE_LOCAL
+let fallbackUntil = 0
+let firestoreWarmed = false
 const memory = new Map() // collection -> Map(id -> row)
+const fromFirestore = new Set() // collections last filled from Firestore
 
 let app
 let warnedFallback = false
 
 function noteFallback(reason) {
-  if (!useLocalFallback) {
-    useLocalFallback = true
-    console.warn(`[firebase] switching to local seed fallback: ${reason}`)
-  } else if (!warnedFallback) {
+  useLocalFallback = true
+  fallbackUntil = Date.now() + QUOTA_COOLDOWN_MS
+  if (!warnedFallback) {
     warnedFallback = true
-    console.warn(`[firebase] using local seed fallback (${reason})`)
+    console.warn(`[firebase] temporary local fallback: ${reason} (retry Firestore after ${QUOTA_COOLDOWN_MS}ms)`)
+  } else {
+    console.warn(`[firebase] fallback still active: ${reason}`)
+  }
+}
+
+function clearFallback() {
+  if (useLocalFallback && !FORCE_LOCAL) {
+    useLocalFallback = false
+    warnedFallback = false
+    console.info('[firebase] restored Firestore reads')
   }
 }
 
 function isQuotaError(err) {
   const msg = err instanceof Error ? err.message : String(err)
   const code = err?.code
-  return code === 8 || /quota exceeded/i.test(msg)
+  return code === 8 || /quota exceeded|resource.?exhausted/i.test(msg)
+}
+
+function seedStore(collection) {
+  const rows = localSeedRows(collection)
+  const map = new Map()
+  for (const row of rows) {
+    const id = String(row.id ?? '')
+    if (id) map.set(id, row)
+  }
+  memory.set(collection, map)
+  fromFirestore.delete(collection)
+  return map
 }
 
 function memStore(collection) {
-  if (!memory.has(collection)) {
-    const rows = localSeedRows(collection)
-    const map = new Map()
-    for (const row of rows) {
-      const id = String(row.id ?? '')
-      if (id) map.set(id, row)
-    }
-    memory.set(collection, map)
-  }
+  if (!memory.has(collection)) return seedStore(collection)
   return memory.get(collection)
+}
+
+function cachedRows(collection) {
+  if (memory.has(collection) && fromFirestore.has(collection)) {
+    return [...memory.get(collection).values()]
+  }
+  return [...memStore(collection).values()]
 }
 
 export function getAdmin() {
@@ -93,18 +119,32 @@ export function getDb() {
 }
 
 export function isUsingLocalFallback() {
-  return useLocalFallback
+  return FORCE_LOCAL || (useLocalFallback && Date.now() < fallbackUntil)
+}
+
+export function dataSourceLabel() {
+  if (FORCE_LOCAL) return 'local-seed'
+  if (useLocalFallback && Date.now() < fallbackUntil) {
+    return firestoreWarmed ? 'firestore-cache' : 'local-seed'
+  }
+  return firestoreWarmed ? 'firestore' : 'firestore'
 }
 
 export async function loadCollection(name) {
-  if (useLocalFallback) {
+  if (FORCE_LOCAL) {
     return [...memStore(name).values()]
+  }
+
+  const now = Date.now()
+  const cooling = useLocalFallback && now < fallbackUntil
+  if (cooling) {
+    return cachedRows(name)
   }
 
   const db = getDb()
   if (!db) {
     noteFallback('no firestore client')
-    return [...memStore(name).values()]
+    return cachedRows(name)
   }
 
   try {
@@ -114,15 +154,17 @@ export async function loadCollection(name) {
       const { _seededAt, _updatedAt, ...rest } = data
       return { ...rest, id: String(rest.id ?? d.id) }
     })
-    // warm memory cache for seamless fallback later
     const map = new Map()
     for (const row of rows) map.set(String(row.id), row)
     memory.set(name, map)
+    fromFirestore.add(name)
+    firestoreWarmed = true
+    clearFallback()
     return rows
   } catch (err) {
     if (isQuotaError(err)) {
       noteFallback(`quota exceeded reading ${name}`)
-      return [...memStore(name).values()]
+      return cachedRows(name)
     }
     throw err
   }
@@ -134,10 +176,12 @@ export async function upsert(collection, id, data) {
     if (v === undefined) delete payload[k]
   }
 
-  // always mirror in memory
   memStore(collection).set(String(id), { ...payload })
+  if (fromFirestore.has(collection) || firestoreWarmed) {
+    fromFirestore.add(collection)
+  }
 
-  if (useLocalFallback) {
+  if (FORCE_LOCAL || (useLocalFallback && Date.now() < fallbackUntil)) {
     return payload
   }
 
@@ -149,6 +193,7 @@ export async function upsert(collection, id, data) {
 
   try {
     await db.collection(collection).doc(id).set(payload, { merge: true })
+    clearFallback()
   } catch (err) {
     if (isQuotaError(err)) {
       noteFallback(`quota exceeded writing ${collection}`)

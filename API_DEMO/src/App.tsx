@@ -48,6 +48,7 @@ export default function App() {
   const [apiKey, setApiKey] = useState(() => localStorage.getItem(KEY_STORAGE) || '')
   const [keyInput, setKeyInput] = useState(apiKey || DEMO_KEY)
   const [apiOk, setApiOk] = useState<boolean | null>(null)
+  const [dataMode, setDataMode] = useState<string | null>(null)
   const [hierarchy, setHierarchy] = useState<Hierarchy | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -79,8 +80,14 @@ export default function App() {
 
   useEffect(() => {
     void fetchHealth()
-      .then(() => setApiOk(true))
-      .catch(() => setApiOk(false))
+      .then((h) => {
+        setApiOk(true)
+        setDataMode(h.dataMode ?? null)
+      })
+      .catch(() => {
+        setApiOk(false)
+        setDataMode(null)
+      })
   }, [])
 
   async function unlock(e: FormEvent) {
@@ -93,6 +100,8 @@ export default function App() {
     setLoading(true)
     setError('')
     try {
+      const health = await fetchHealth().catch(() => null)
+      if (health?.dataMode) setDataMode(health.dataMode)
       const h = await fetchHierarchy(key)
       setHierarchy(h)
       setApiKey(key)
@@ -102,6 +111,11 @@ export default function App() {
       setFloorId('')
       setUnitId('')
       setResult(null)
+      if (health?.dataMode === 'local-seed') {
+        setError(
+          'API is on local-seed (not Firestore). Cameron Crossing and live sites are missing until the API reconnects to Firebase — restart the Render API service.',
+        )
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to authenticate')
       setHierarchy(null)
@@ -557,6 +571,16 @@ export default function App() {
           Change API key
         </button>
       </header>
+      {dataMode === 'local-seed' ? (
+        <p className="demo-error">
+          API data mode is <code>local-seed</code> — live Firebase sites (e.g. Cameron Crossing) will not appear.
+          Restart the Render API (<code>keiros-erp-api</code>) so it reconnects to Firestore.
+        </p>
+      ) : dataMode ? (
+        <p className="demo-hint">
+          Data source: <code>{dataMode}</code> · {hierarchy?.complexes.length ?? 0} complexes loaded
+        </p>
+      ) : null}
 
       <form className="demo-controls" onSubmit={runNavigate}>
         <section className="demo-step">

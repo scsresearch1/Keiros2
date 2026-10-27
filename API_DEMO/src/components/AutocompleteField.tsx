@@ -28,10 +28,12 @@ function scoreOption(option: AutocompleteOption, query: string) {
   if (hay === q) return 100
   if (hay.startsWith(q)) return 80
   if (hay.includes(` ${q}`)) return 60
-  if (hay.includes(q)) return 40
-  // token match
+  if (hay.includes(q)) return 50
+  // Prefix of any word: "came" → "Cameron Crossing"
+  const words = hay.split(' ').filter(Boolean)
+  if (words.some((w) => w.startsWith(q))) return 45
   const tokens = q.split(' ').filter(Boolean)
-  if (tokens.length && tokens.every((t) => hay.includes(t))) return 30
+  if (tokens.length && tokens.every((t) => hay.includes(t) || words.some((w) => w.startsWith(t)))) return 30
   return 0
 }
 

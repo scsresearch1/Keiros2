@@ -4,7 +4,7 @@ import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { existsSync } from 'node:fs'
 import dotenv from 'dotenv'
-import { loadCollection, upsert, isUsingLocalFallback } from './lib/firebase.mjs'
+import { loadCollection, upsert, isUsingLocalFallback, dataSourceLabel } from './lib/firebase.mjs'
 import { authenticateApiKey, extractApiKey, requireScope } from './lib/auth.mjs'
 import { buildIndoorJourney, serializeStop } from './lib/indoor.mjs'
 import {
@@ -164,12 +164,14 @@ async function withAuth(req, res, neededScope, handler) {
 }
 
 app.get('/api/health', (_req, res) => {
+  const mode = typeof dataSourceLabel === 'function' ? dataSourceLabel() : isUsingLocalFallback() ? 'local-seed' : 'firestore'
   res.json({
     ok: true,
     service: 'keiros-erp-api',
     time: stamp(),
     startOffsetMiles: MILES_START,
-    dataMode: isUsingLocalFallback() ? 'local-seed' : 'firestore',
+    dataMode: mode,
+    firestoreLive: mode === 'firestore' || mode === 'firestore-cache',
   })
 })
 
@@ -346,6 +348,20 @@ app.get('/api/v1/hierarchy', (req, res) =>
       if (!b.complexId) continue
       buildingsByComplex.set(b.complexId, (buildingsByComplex.get(b.complexId) || 0) + 1)
     }
+    // Also credit complexes referenced by unit.complexName when ids drifted.
+    for (const u of units) {
+      if (u.complexId) continue
+      const named = complexes.find(
+        (c) =>
+          String(c.name || '')
+            .trim()
+            .toLowerCase() ===
+          String(u.complexName || '')
+            .trim()
+            .toLowerCase(),
+      )
+      if (named) unitCountByComplex.set(named.id, (unitCountByComplex.get(named.id) || 0) + 1)
+    }
     const bestByName = new Map()
     for (const c of complexes) {
       const key = String(c.name || '')
@@ -356,9 +372,16 @@ app.get('/api/v1/hierarchy', (req, res) =>
       if (!prev || score > prev.score) bestByName.set(key, { id: c.id, score })
     }
     const keepComplexIds = new Set([...bestByName.values()].map((row) => row.id))
+    // Never drop a complex that still has buildings or units.
+    for (const c of complexes) {
+      if ((buildingsByComplex.get(c.id) || 0) > 0 || (unitCountByComplex.get(c.id) || 0) > 0) {
+        keepComplexIds.add(c.id)
+      }
+    }
 
     return {
       body: {
+        dataMode: typeof dataSourceLabel === 'function' ? dataSourceLabel() : undefined,
         complexes: complexes
           .filter((c) => keepComplexIds.has(c.id))
           .map((c) => ({

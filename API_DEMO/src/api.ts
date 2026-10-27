@@ -198,7 +198,12 @@ async function parse<T>(res: Response): Promise<T> {
 
 export async function fetchHealth() {
   const res = await fetch(`${API_BASE}/api/health`)
-  return parse<{ ok: boolean; service: string }>(res)
+  return parse<{
+    ok: boolean
+    service: string
+    dataMode?: string
+    firestoreLive?: boolean
+  }>(res)
 }
 
 export async function fetchHierarchy(apiKey: string) {
