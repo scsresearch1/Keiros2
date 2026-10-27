@@ -83,8 +83,15 @@ export type NavigateResult = {
     label: string
     offsetMiles: number
     startMode?: 'demo' | 'live' | 'custom'
+    viaParking?: boolean
   }
-  parking?: { latitude: number; longitude: number; label: string; offsetMeters: number }
+  parking?: {
+    latitude: number
+    longitude: number
+    label: string
+    offsetMeters: number
+    mode?: string
+  }
   entrance?: { latitude: number; longitude: number; label: string; type?: string }
   destination: { latitude: number; longitude: number; label: string; address?: string }
   outdoor: {
@@ -95,6 +102,8 @@ export type NavigateResult = {
     geometry: { type: string; coordinates: [number, number][] }
     steps?: JourneyStep[]
     note?: string
+    arrivalMode?: string
+    profile?: string
     walk?: NavigateResult['walk']
     parking?: NavigateResult['parking']
     entrance?: NavigateResult['entrance']

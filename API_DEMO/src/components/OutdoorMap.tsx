@@ -80,6 +80,11 @@ export function OutdoorMap({
     longitude: result.destination.longitude,
     label: 'Building entrance',
   }
+  const isPointToPoint =
+    parking.mode === 'point-to-point' ||
+    result.outdoor.arrivalMode === 'point-to-point' ||
+    result.outdoor.arrivalMode === 'walk-from-origin' ||
+    result.outdoor.arrivalMode === 'at-entrance'
 
   const driveSteps = useMemo(
     () => result.journey.steps.filter((s) => s.phase === 'drive' || s.phase === 'outdoor'),
@@ -98,7 +103,7 @@ export function OutdoorMap({
     }
 
     const map = L.map(ref.current, { zoomControl: true }).setView(
-      [parking.latitude, parking.longitude],
+      [result.origin.latitude, result.origin.longitude],
       14,
     )
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -108,28 +113,111 @@ export function OutdoorMap({
 
     const bounds: L.LatLngExpression[] = []
 
-    L.circleMarker([result.origin.latitude, result.origin.longitude], {
-      radius: 7,
-      color: '#38bdf8',
-      fillColor: '#0ea5e9',
-      fillOpacity: 0.9,
-    })
-      .bindPopup(`<strong>Drive start</strong><br/>${escapeHtml(result.origin.label)}`)
-      .addTo(map)
-    bounds.push([result.origin.latitude, result.origin.longitude])
+    const pushLine = (
+      coordinates: [number, number][] | undefined | null,
+      style: L.PolylineOptions,
+    ) => {
+      if (!coordinates || coordinates.length < 2) return
+      const latlngs = coordinates.map(([lng, lat]) => [lat, lng] as [number, number])
+      L.polyline(latlngs, style).addTo(map)
+      bounds.push(...latlngs)
+    }
 
-    L.circleMarker([parking.latitude, parking.longitude], {
-      radius: 10,
+    // Continuous full-route lines first (point-to-point). Step fragments alone leave gaps.
+    const outdoorCoords = result.outdoor?.geometry?.coordinates
+    const walkCoords = result.walk?.geometry?.coordinates
+    const outdoorIsReal =
+      Array.isArray(outdoorCoords) &&
+      outdoorCoords.length > 1 &&
+      !(
+        outdoorCoords.length <= 2 &&
+        outdoorCoords.every(
+          ([lng, lat]) =>
+            Math.abs(lng - result.origin.longitude) < 1e-7 &&
+            Math.abs(lat - result.origin.latitude) < 1e-7,
+        )
+      )
+
+    if (outdoorIsReal) {
+      pushLine(outdoorCoords, {
+        color: '#22c55e',
+        weight: 7,
+        opacity: 0.88,
+        lineJoin: 'round',
+        lineCap: 'round',
+      })
+    }
+
+    const walkIsSameAsOutdoor =
+      outdoorIsReal &&
+      Array.isArray(walkCoords) &&
+      walkCoords.length > 1 &&
+      outdoorCoords!.length === walkCoords.length &&
+      outdoorCoords![0][0] === walkCoords[0][0] &&
+      outdoorCoords![0][1] === walkCoords[0][1] &&
+      outdoorCoords![outdoorCoords!.length - 1][0] === walkCoords[walkCoords.length - 1][0] &&
+      outdoorCoords![outdoorCoords!.length - 1][1] === walkCoords[walkCoords.length - 1][1]
+
+    if (Array.isArray(walkCoords) && walkCoords.length > 1 && !walkIsSameAsOutdoor) {
+      pushLine(walkCoords, {
+        color: WALK_COLOR,
+        weight: isPointToPoint && !outdoorIsReal ? 7 : 6,
+        opacity: 0.95,
+        dashArray: isPointToPoint && !outdoorIsReal ? undefined : '10 8',
+        lineJoin: 'round',
+        lineCap: 'round',
+      })
+    }
+
+    // Traffic-colored overlays on drive steps (optional detail on top of full line)
+    for (const step of driveSteps) {
+      const geom = step.geometry
+      if (geom && geom.length > 1) {
+        pushLine(geom, {
+          color: trafficColor(step.trafficLevel),
+          weight: 4,
+          opacity: outdoorIsReal ? 0.75 : 0.92,
+        })
+      }
+    }
+
+    for (const step of walkSteps) {
+      const geom = step.geometry
+      if (geom && geom.length > 1 && (!walkCoords || walkCoords.length < 2)) {
+        pushLine(geom, {
+          color: WALK_COLOR,
+          weight: 5,
+          opacity: 0.95,
+          dashArray: '10 8',
+        })
+      }
+    }
+
+    L.circleMarker([result.origin.latitude, result.origin.longitude], {
+      radius: 8,
       color: '#fff',
-      fillColor: PARKING_COLOR,
+      fillColor: '#0ea5e9',
       fillOpacity: 1,
       weight: 2,
     })
-      .bindPopup(
-        `<strong>Nearest parking</strong><br/>${escapeHtml(parking.label)}<br/>${parking.offsetMeters} m walk to the entrance — leave the car here`,
-      )
+      .bindPopup(`<strong>Start</strong><br/>${escapeHtml(result.origin.label)}`)
       .addTo(map)
-    bounds.push([parking.latitude, parking.longitude])
+    bounds.push([result.origin.latitude, result.origin.longitude])
+
+    if (!isPointToPoint) {
+      L.circleMarker([parking.latitude, parking.longitude], {
+        radius: 10,
+        color: '#fff',
+        fillColor: PARKING_COLOR,
+        fillOpacity: 1,
+        weight: 2,
+      })
+        .bindPopup(
+          `<strong>Nearest parking</strong><br/>${escapeHtml(parking.label)}<br/>${parking.offsetMeters} m walk to the entrance — leave the car here`,
+        )
+        .addTo(map)
+      bounds.push([parking.latitude, parking.longitude])
+    }
 
     L.circleMarker([entrance.latitude, entrance.longitude], {
       radius: 9,
@@ -138,53 +226,24 @@ export function OutdoorMap({
       fillOpacity: 1,
       weight: 2,
     })
-      .bindPopup(`<strong>Building entrance</strong><br/>${entrance.label}<br/>End of walk · start indoor`)
+      .bindPopup(
+        isPointToPoint
+          ? `<strong>Entrance</strong><br/>${escapeHtml(entrance.label)}<br/>End of outdoor · start indoor`
+          : `<strong>Building entrance</strong><br/>${escapeHtml(entrance.label)}<br/>End of walk · start indoor`,
+      )
       .addTo(map)
     bounds.push([entrance.latitude, entrance.longitude])
 
     L.circleMarker([result.destination.latitude, result.destination.longitude], {
-      radius: 7,
-      color: '#f59e0b',
-      fillColor: '#fbbf24',
-      fillOpacity: 0.85,
+      radius: 8,
+      color: '#fff',
+      fillColor: '#f59e0b',
+      fillOpacity: 1,
+      weight: 2,
     })
-      .bindPopup(`<strong>Unit (indoor)</strong><br/>${result.destination.label}`)
+      .bindPopup(`<strong>Unit (indoor)</strong><br/>${escapeHtml(result.destination.label)}`)
       .addTo(map)
-
-    for (const step of driveSteps) {
-      const geom = step.geometry
-      if (geom && geom.length > 1) {
-        const latlngs = geom.map(([lng, lat]) => [lat, lng] as [number, number])
-        L.polyline(latlngs, {
-          color: trafficColor(step.trafficLevel),
-          weight: 6,
-          opacity: 0.92,
-        }).addTo(map)
-        bounds.push(...latlngs)
-      }
-    }
-
-    for (const step of walkSteps) {
-      const geom = step.geometry
-      if (geom && geom.length > 1) {
-        const latlngs = geom.map(([lng, lat]) => [lat, lng] as [number, number])
-        L.polyline(latlngs, {
-          color: WALK_COLOR,
-          weight: 5,
-          opacity: 0.95,
-          dashArray: '10 8',
-        }).addTo(map)
-        bounds.push(...latlngs)
-      }
-    }
-
-    if (walkSteps.length === 0 && result.walk?.geometry?.coordinates?.length) {
-      const latlngs = result.walk.geometry.coordinates.map(
-        ([lng, lat]) => [lat, lng] as [number, number],
-      )
-      L.polyline(latlngs, { color: WALK_COLOR, weight: 5, dashArray: '10 8', opacity: 0.95 }).addTo(map)
-      bounds.push(...latlngs)
-    }
+    bounds.push([result.destination.latitude, result.destination.longitude])
 
     const legendHtml = `
       <div class="demo-leaflet-card" data-card="legend">
@@ -193,11 +252,17 @@ export function OutdoorMap({
           <span class="demo-leaflet-card__chev" aria-hidden="true"></span>
         </button>
         <div class="demo-leaflet-card__body">
-          <span style="color:${trafficColor('Light')}">━━</span> Drive (to parking)<br/>
-          <span style="color:${WALK_COLOR}">- - -</span> Walk (parking → entrance)<br/>
+          ${
+            isPointToPoint
+              ? `<span style="color:#22c55e">━━</span> Point-to-point (start → entrance)<br/>
+          <span style="color:${WALK_COLOR}">━━</span> Walk leg<br/>`
+              : `<span style="color:${trafficColor('Light')}">━━</span> Drive (to parking)<br/>
+          <span style="color:${WALK_COLOR}">- - -</span> Walk (parking → entrance)<br/>`
+          }
           <span style="color:${LIVE_BLUE}">●</span> You (live) ·
-          <span style="color:${PARKING_COLOR}">●</span> Parking ·
-          <span style="color:${ENTRANCE_COLOR}">●</span> Entrance
+          ${isPointToPoint ? '' : `<span style="color:${PARKING_COLOR}">●</span> Parking ·`}
+          <span style="color:${ENTRANCE_COLOR}">●</span> Entrance ·
+          <span style="color:#f59e0b">●</span> Unit
         </div>
       </div>`
     const weatherHtml = `
@@ -315,13 +380,11 @@ export function OutdoorMap({
     if (followLive && liveFix) return
 
     markerRef.current.openPopup()
+    // Pan to the step — avoid fitting a tiny segment (hides the full point-to-point line).
     map.panTo([activeStep.latitude, activeStep.longitude], { animate: true })
-    if (activeStep.geometry && activeStep.geometry.length > 1) {
-      const latlngs = activeStep.geometry.map(([lng, lat]) => [lat, lng] as [number, number])
-      map.fitBounds(L.latLngBounds(latlngs).pad(0.4), { maxZoom: activeStep.phase === 'walk' ? 17 : 14 })
-    } else if (activeStep.phase === 'walk') {
-      map.setZoom(17)
-    }
+    const z = map.getZoom()
+    if (activeStep.phase === 'walk' && z < 15) map.setZoom(16)
+    else if (z < 13) map.setZoom(14)
   }, [activeStep, followLive, liveFix])
 
   // Live GPS puck + follow camera

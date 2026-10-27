@@ -570,6 +570,23 @@ app.post('/api/v1/navigate', (req, res) =>
       note: outdoorNote,
       arrivalMode: arrivalMode || (viaParking ? 'drive-park-walk' : 'point-to-point'),
     }
+    // Point-to-point walk-only: empty drive has a 1-point geometry — surface the walk line
+    // as outdoor.geometry so the map always has a continuous start → entrance path.
+    const driveGeomLen = outdoor.geometry?.coordinates?.length ?? 0
+    const walkGeomLen = walk?.geometry?.coordinates?.length ?? 0
+    if (
+      (!viaParking || arrivalMode === 'walk-from-origin' || arrivalMode === 'point-to-point') &&
+      walkGeomLen > 1 &&
+      (driveGeomLen <= 1 || (drive.distanceM ?? 0) <= 0)
+    ) {
+      outdoor.geometry = walk.geometry
+      outdoor.distanceM = walk.distanceM
+      outdoor.distanceMiles = walk.distanceMiles
+      outdoor.durationMinutes = walk.durationMinutes
+      outdoor.provider = walk.provider || outdoor.provider
+      outdoor.profile = walk.profile || 'foot'
+      if (walk.traffic) outdoor.traffic = walk.traffic
+    }
 
     const buildingUnits = locations.filter((l) => l.buildingId === building.id)
     const buildingFloors = floors.filter((f) => f.buildingId === building.id)

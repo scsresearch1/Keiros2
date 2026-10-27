@@ -821,7 +821,8 @@ function atEntranceWalk(entrance) {
 /** Within this distance of the door → skip outdoor entirely. */
 const AT_ENTRANCE_M = 100
 /** Within this distance → walk from here; do not send the user to parking and back. */
-const WALK_FROM_HERE_M = 700
+/** Demo start is ~0.45 mi (~725 m); keep point-to-point on foot for campus-scale trips. */
+const WALK_FROM_HERE_M = 900
 
 /**
  * Arrival plan:
