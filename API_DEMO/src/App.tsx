@@ -1017,31 +1017,24 @@ export default function App() {
           </div>
 
           {showOutdoorMap ? (
-            result.parking && result.entrance ? (
-              <OutdoorMap
-                result={result}
-                activeStep={active}
-                weather={result.weather}
-                traffic={result.outdoor.traffic}
-                liveFix={
-                  liveNav && liveFix
-                    ? liveProgress?.snapped && !liveProgress.offRoute
-                      ? {
-                          ...liveFix,
-                          latitude: liveProgress.snapped.latitude,
-                          longitude: liveProgress.snapped.longitude,
-                        }
-                      : liveFix
-                    : null
-                }
-                followLive={liveNav}
-              />
-            ) : (
-              <p className="demo-placeholder">
-                Map needs the updated API (drive → parking → walk → inside). Restart{' '}
-                <code>ERP_Full/server</code> and Navigate again.
-              </p>
-            )
+            <OutdoorMap
+              result={result}
+              activeStep={active}
+              weather={result.weather}
+              traffic={result.outdoor.traffic}
+              liveFix={
+                liveNav && liveFix
+                  ? liveProgress?.snapped && !liveProgress.offRoute
+                    ? {
+                        ...liveFix,
+                        latitude: liveProgress.snapped.latitude,
+                        longitude: liveProgress.snapped.longitude,
+                      }
+                    : liveFix
+                  : null
+              }
+              followLive={liveNav}
+            />
           ) : (
             <div className="demo-indoor-wrap">
               <div className="demo-indoor-head">

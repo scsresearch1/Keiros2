@@ -13,7 +13,9 @@
 
 [build.environment]
   NODE_VERSION = "22"
+  VITE_GOOGLE_MAPS_API_KEY = "AIzaSyCnQijsiKFJtL39zOTCQfGUQ_Bkju5hWiY"
 
 # Environment variables (Netlify UI) — set AFTER Render URL exists, then redeploy:
 #   VITE_API_BASE=https://YOUR-SERVICE.onrender.com
 #   (no trailing slash)
+# VITE_GOOGLE_MAPS_API_KEY can also be set in the Netlify UI (overrides toml if present).

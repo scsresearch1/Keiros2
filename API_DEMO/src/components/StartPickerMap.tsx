@@ -1,5 +1,5 @@
-import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react'
-import L from 'leaflet'
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
+import { latLngLiteral, loadGoogleMaps } from '../googleMaps'
 
 export type MapFocus = {
   latitude: number
@@ -22,25 +22,19 @@ function round6(value: number) {
   return Math.round(value * 1e6) / 1e6
 }
 
-const pinIcon = L.divIcon({
-  className: 'start-pin-icon',
-  html: '<span></span>',
-  iconSize: [26, 26],
-  iconAnchor: [13, 13],
-})
-
 export const StartPickerMap = forwardRef<StartPickerMapHandle, Props>(function StartPickerMap(
   { latitude, longitude, focus, onPick },
   ref,
 ) {
   const hostRef = useRef<HTMLDivElement>(null)
-  const mapRef = useRef<L.Map | null>(null)
-  const markerRef = useRef<L.Marker | null>(null)
-  const unitRef = useRef<L.CircleMarker | null>(null)
+  const mapRef = useRef<google.maps.Map | null>(null)
+  const markerRef = useRef<google.maps.Marker | null>(null)
+  const unitRef = useRef<google.maps.Marker | null>(null)
   const onPickRef = useRef(onPick)
   const skipFlyRef = useRef(false)
   const pointRef = useRef({ latitude, longitude })
   const focusRef = useRef(focus)
+  const [error, setError] = useState('')
 
   onPickRef.current = onPick
   pointRef.current = { latitude, longitude }
@@ -52,106 +46,142 @@ export const StartPickerMap = forwardRef<StartPickerMapHandle, Props>(function S
       const point = pointRef.current
       const target = focusRef.current
       if (!map || point.latitude == null || point.longitude == null || !target) return
-      map.fitBounds(
-        L.latLngBounds(
-          [point.latitude, point.longitude],
-          [target.latitude, target.longitude],
-        ).pad(0.25),
-        { maxZoom: 15 },
-      )
+      const bounds = new google.maps.LatLngBounds()
+      bounds.extend(latLngLiteral(point.latitude, point.longitude))
+      bounds.extend(latLngLiteral(target.latitude, target.longitude))
+      map.fitBounds(bounds, 48)
     },
   }))
 
   useEffect(() => {
     const host = hostRef.current
     if (!host) return
-    const initial = pointRef.current
-    const target = focusRef.current
-    const center: L.LatLngExpression =
-      initial.latitude != null && initial.longitude != null
-        ? [initial.latitude, initial.longitude]
-        : target
-          ? [target.latitude, target.longitude]
-          : [20, 0]
-    const zoom = initial.latitude != null || target ? 14 : 2
-    const map = L.map(host, { zoomControl: true }).setView(center, zoom)
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      attribution: '&copy; OpenStreetMap',
-      maxZoom: 19,
-    }).addTo(map)
-    map.on('click', (event) => {
-      skipFlyRef.current = true
-      onPickRef.current(round6(event.latlng.lat), round6(event.latlng.lng))
-      if (map.getZoom() < 13) map.flyTo(event.latlng, 14, { duration: 0.4 })
-    })
-    mapRef.current = map
-    const frameId = requestAnimationFrame(() => map.invalidateSize())
-    const timer = window.setTimeout(() => map.invalidateSize(), 200)
+    let cancelled = false
+    let clickListener: google.maps.MapsEventListener | null = null
+
+    loadGoogleMaps()
+      .then(() => {
+        if (cancelled || !hostRef.current) return
+        const initial = pointRef.current
+        const target = focusRef.current
+        const center =
+          initial.latitude != null && initial.longitude != null
+            ? latLngLiteral(initial.latitude, initial.longitude)
+            : target
+              ? latLngLiteral(target.latitude, target.longitude)
+              : latLngLiteral(20, 0)
+        const zoom = initial.latitude != null || target ? 14 : 2
+        const map = new google.maps.Map(hostRef.current, {
+          center,
+          zoom,
+          mapTypeControl: false,
+          streetViewControl: false,
+          fullscreenControl: false,
+          clickableIcons: false,
+          gestureHandling: 'greedy',
+        })
+        mapRef.current = map
+        setError('')
+        clickListener = map.addListener('click', (event: google.maps.MapMouseEvent) => {
+          if (!event.latLng) return
+          skipFlyRef.current = true
+          onPickRef.current(round6(event.latLng.lat()), round6(event.latLng.lng()))
+          if ((map.getZoom() ?? 0) < 13) map.setZoom(14)
+          map.panTo(event.latLng)
+        })
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : 'Google Maps failed to load')
+      })
+
     return () => {
-      cancelAnimationFrame(frameId)
-      window.clearTimeout(timer)
-      map.remove()
-      mapRef.current = null
+      cancelled = true
+      clickListener?.remove()
+      markerRef.current?.setMap(null)
+      unitRef.current?.setMap(null)
       markerRef.current = null
       unitRef.current = null
+      mapRef.current = null
     }
   }, [])
 
   useEffect(() => {
     const map = mapRef.current
     if (!map) return
-    if (unitRef.current) {
-      unitRef.current.remove()
-      unitRef.current = null
-    }
+    unitRef.current?.setMap(null)
+    unitRef.current = null
     if (!focus) return
-    unitRef.current = L.circleMarker([focus.latitude, focus.longitude], {
-      radius: 7,
-      color: '#f59e0b',
-      fillColor: '#fbbf24',
-      fillOpacity: 0.95,
-      weight: 2,
+    unitRef.current = new google.maps.Marker({
+      map,
+      position: latLngLiteral(focus.latitude, focus.longitude),
+      title: focus.label,
+      icon: {
+        path: google.maps.SymbolPath.CIRCLE,
+        scale: 8,
+        fillColor: '#fbbf24',
+        fillOpacity: 0.95,
+        strokeColor: '#f59e0b',
+        strokeWeight: 2,
+      },
     })
-      .bindTooltip(focus.label, { direction: 'top' })
-      .addTo(map)
-    if (pointRef.current.latitude == null) map.setView([focus.latitude, focus.longitude], 14)
+    if (pointRef.current.latitude == null) {
+      map.setCenter(latLngLiteral(focus.latitude, focus.longitude))
+      map.setZoom(14)
+    }
   }, [focus])
 
   useEffect(() => {
     const map = mapRef.current
     if (!map || latitude == null || longitude == null) return
+    const pos = latLngLiteral(latitude, longitude)
     if (!markerRef.current) {
-      const marker = L.marker([latitude, longitude], {
-        icon: pinIcon,
+      const marker = new google.maps.Marker({
+        map,
+        position: pos,
         draggable: true,
-        autoPan: true,
-        zIndexOffset: 600,
+        title: 'Start',
+        zIndex: 600,
+        label: {
+          text: 'S',
+          color: '#fff',
+          fontWeight: '700',
+        },
       })
-      marker.on('dragend', () => {
-        const ll = marker.getLatLng()
+      marker.addListener('dragend', () => {
+        const ll = marker.getPosition()
+        if (!ll) return
         skipFlyRef.current = true
-        onPickRef.current(round6(ll.lat), round6(ll.lng))
+        onPickRef.current(round6(ll.lat()), round6(ll.lng()))
       })
-      marker.bindTooltip('Start', { permanent: true, direction: 'top', offset: [0, -8] })
-      marker.addTo(map)
       markerRef.current = marker
     } else {
-      const current = markerRef.current.getLatLng()
-      if (Math.abs(current.lat - latitude) > 1e-7 || Math.abs(current.lng - longitude) > 1e-7) {
-        markerRef.current.setLatLng([latitude, longitude])
+      const current = markerRef.current.getPosition()
+      if (
+        !current ||
+        Math.abs(current.lat() - latitude) > 1e-7 ||
+        Math.abs(current.lng() - longitude) > 1e-7
+      ) {
+        markerRef.current.setPosition(pos)
       }
     }
     if (skipFlyRef.current) {
       skipFlyRef.current = false
       return
     }
-    map.flyTo([latitude, longitude], Math.max(map.getZoom(), 14), { duration: 0.45 })
+    map.panTo(pos)
+    map.setZoom(Math.max(map.getZoom() ?? 14, 14))
   }, [latitude, longitude])
 
   return (
     <div className="demo-start-mapwrap">
-      <div ref={hostRef} className="demo-start-map" aria-label="Map for choosing the starting point" />
-      <p className="demo-start__map-hint">Click the map or drag the pin. That point is the drive start.</p>
+      <div ref={hostRef} className="demo-start-map" aria-label="Google Map for choosing the starting point" />
+      {error ? (
+        <p className="demo-map-error" role="alert">
+          {error}
+        </p>
+      ) : (
+        <p className="demo-start__map-hint">Click the map or drag the pin. That point is the drive start.</p>
+      )}
     </div>
   )
 })

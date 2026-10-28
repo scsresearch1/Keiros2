@@ -589,6 +589,60 @@ button:disabled {
   overflow: hidden;
 }
 
+.demo-map-overlay {
+  position: absolute;
+  top: 0.65rem;
+  right: 0.65rem;
+  z-index: 5;
+  pointer-events: auto;
+}
+
+.demo-map-error {
+  position: absolute;
+  left: 0.75rem;
+  right: 0.75rem;
+  bottom: 0.75rem;
+  z-index: 6;
+  margin: 0;
+  padding: 0.65rem 0.75rem;
+  border-radius: 10px;
+  border: 1px solid rgba(248, 113, 113, 0.55);
+  background: rgba(7, 18, 42, 0.94);
+  color: #fecaca;
+  font-size: 0.85rem;
+  line-height: 1.35;
+}
+
+.gmap-pin {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 36px;
+  height: 44px;
+  transform: translateY(2px);
+}
+
+.gmap-pin__dot {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--pin, #1a73e8);
+  color: #fff;
+  font: 700 12px/1 system-ui, sans-serif;
+  border: 2px solid #fff;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+
+.gmap-pin__stem {
+  width: 3px;
+  height: 12px;
+  margin-top: -2px;
+  border-radius: 2px;
+  background: var(--pin, #1a73e8);
+}
+
 .demo-map-shell.is-live .demo-map {
   height: min(72vh, 720px);
   border-color: rgba(26, 115, 232, 0.45);
@@ -1073,6 +1127,7 @@ button:disabled {
   display: grid;
   gap: 0.4rem;
   max-width: 260px;
+  /* position/top/right set with .demo-map-shell rules above */
 }
 
 .demo-leaflet-card {
