@@ -2,6 +2,46 @@ import { googleMapsApiKey, latLngLiteral } from './googleMaps'
 
 export type RouteTravelMode = 'DRIVE' | 'WALK'
 
+function asLiteral(
+  p: google.maps.LatLngLiteral | google.maps.LatLng | google.maps.LatLngAltitude | { lat: number | (() => number); lng: number | (() => number) },
+): google.maps.LatLngLiteral {
+  const latRaw = p.lat as number | (() => number)
+  const lngRaw = p.lng as number | (() => number)
+  const lat = typeof latRaw === 'function' ? latRaw.call(p) : Number(latRaw)
+  const lng = typeof lngRaw === 'function' ? lngRaw.call(p) : Number(lngRaw)
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    throw new Error(`Invalid path point: ${String(latRaw)}, ${String(lngRaw)}`)
+  }
+  return latLngLiteral(lat, lng)
+}
+
+function metersBetween(a: google.maps.LatLngLiteral, b: google.maps.LatLngLiteral) {
+  const R = 6371000
+  const toRad = (d: number) => (d * Math.PI) / 180
+  const dLat = toRad(b.lat - a.lat)
+  const dLng = toRad(b.lng - a.lng)
+  const s =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * Math.sin(dLng / 2) ** 2
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(s)))
+}
+
+/** Ensure polyline starts at origin and ends at destination (exact unit / start pins). */
+export function pinPathToEndpoints(
+  path: google.maps.LatLngLiteral[],
+  origin: google.maps.LatLngLiteral,
+  destination: google.maps.LatLngLiteral,
+  snapMeters = 8,
+): google.maps.LatLngLiteral[] {
+  if (!path.length) return [origin, destination]
+  const out = path.map((p) => ({ ...p }))
+  if (metersBetween(out[0], origin) > snapMeters) out.unshift(origin)
+  else out[0] = origin
+  if (metersBetween(out[out.length - 1], destination) > snapMeters) out.push(destination)
+  else out[out.length - 1] = destination
+  return out
+}
+
 /**
  * Road-snapped path via the new Routes library (replaces legacy DirectionsService).
  * Requires Routes API enabled on the Google Cloud key.
@@ -18,20 +58,23 @@ export async function computeRoadPath(
   }
 
   const request: google.maps.routes.ComputeRoutesRequest = {
-    origin,
-    destination,
+    // Explicit lat/lng literals — exact coordinates from navigate result
+    origin: { lat: origin.lat, lng: origin.lng },
+    destination: { lat: destination.lat, lng: destination.lng },
     travelMode: mode === 'WALK' ? 'WALKING' : 'DRIVING',
     fields: ['path', 'distanceMeters', 'durationMillis'],
+    polylineQuality: 'HIGH_QUALITY',
   }
   if (mode === 'DRIVE') {
     request.routingPreference = 'TRAFFIC_AWARE'
   }
 
   const { routes } = await RouteCtor.computeRoutes(request)
-  const path = routes?.[0]?.path
-  if (!path?.length) throw new Error('No route path returned')
+  const raw = routes?.[0]?.path
+  if (!raw?.length) throw new Error('No route path returned')
 
-  return path.map((p) => latLngLiteral(p.lat, p.lng))
+  const path = raw.map((p) => asLiteral(p))
+  return pinPathToEndpoints(path, origin, destination)
 }
 
 /** REST fallback if JS Routes library is blocked. */
@@ -55,6 +98,7 @@ export async function computeRoadPathRest(
       },
       travelMode: mode === 'WALK' ? 'WALK' : 'DRIVE',
       routingPreference: mode === 'DRIVE' ? 'TRAFFIC_AWARE' : undefined,
+      polylineQuality: 'HIGH_QUALITY',
     }),
   })
   if (!res.ok) {
@@ -66,7 +110,7 @@ export async function computeRoadPathRest(
   }
   const encoded = json.routes?.[0]?.polyline?.encodedPolyline
   if (!encoded) throw new Error('Routes API returned no polyline')
-  return decodePolyline(encoded)
+  return pinPathToEndpoints(decodePolyline(encoded), origin, destination)
 }
 
 function decodePolyline(encoded: string): google.maps.LatLngLiteral[] {
@@ -105,9 +149,21 @@ export async function fetchRoadPath(
   destination: google.maps.LatLngLiteral,
   mode: RouteTravelMode,
 ): Promise<google.maps.LatLngLiteral[]> {
+  if (!Number.isFinite(origin.lat) || !Number.isFinite(origin.lng)) {
+    throw new Error('Start coordinates are missing')
+  }
+  if (!Number.isFinite(destination.lat) || !Number.isFinite(destination.lng)) {
+    throw new Error('Destination coordinates are missing')
+  }
   try {
     return await computeRoadPath(origin, destination, mode)
-  } catch {
-    return computeRoadPathRest(origin, destination, mode)
+  } catch (first) {
+    try {
+      return await computeRoadPathRest(origin, destination, mode)
+    } catch (second) {
+      const a = first instanceof Error ? first.message : String(first)
+      const b = second instanceof Error ? second.message : String(second)
+      throw new Error(`${a} | ${b}`)
+    }
   }
 }

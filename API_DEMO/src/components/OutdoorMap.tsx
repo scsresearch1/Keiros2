@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { JourneyStep, NavigateResult } from '../api'
 import { geoJsonToLatLngs, latLngLiteral, loadGoogleMaps } from '../googleMaps'
-import { fetchRoadPath } from '../googleRoute'
+import { fetchRoadPath, pinPathToEndpoints } from '../googleRoute'
 import type { LiveFix } from '../liveNavigation'
 import { bearingDeg } from '../liveNavigation'
 
@@ -194,8 +194,19 @@ export function OutdoorMap({
     clearOverlays()
 
     const bounds = new google.maps.LatLngBounds()
-    const origin = latLngLiteral(result.origin.latitude, result.origin.longitude)
-    const destination = latLngLiteral(result.destination.latitude, result.destination.longitude)
+    // Exact navigate coordinates (unit pin for destination)
+    const origin = latLngLiteral(
+      Number(result.origin.latitude),
+      Number(result.origin.longitude),
+    )
+    const destination = latLngLiteral(
+      Number(result.destination.latitude ?? result.selection?.unit?.latitude),
+      Number(result.destination.longitude ?? result.selection?.unit?.longitude),
+    )
+    if (!Number.isFinite(origin.lat) || !Number.isFinite(origin.lng) || !Number.isFinite(destination.lat) || !Number.isFinite(destination.lng)) {
+      setMapError('Start or destination coordinates are missing from the navigate response.')
+      return
+    }
 
     track(
       new google.maps.Marker({
@@ -245,35 +256,37 @@ export function OutdoorMap({
       )
 
     function drawPath(path: google.maps.LatLngLiteral[], color: string) {
-      if (path.length < 2) return
+      const pinned = pinPathToEndpoints(path, origin, destination)
+      if (pinned.length < 2) return
       track(
         new google.maps.Polyline({
           map,
-          path,
+          path: pinned,
           strokeColor: color,
           strokeOpacity: 0.95,
           strokeWeight: 6,
           zIndex: 20,
         }),
       )
-      path.forEach((p) => bounds.extend(p))
+      pinned.forEach((p) => bounds.extend(p))
     }
 
     function drawServerRoadFallback() {
-      if (outdoorIsReal) drawPath(outdoorPath, ROUTE_BLUE)
-      const walkSame =
-        outdoorIsReal &&
-        walkPath.length > 1 &&
-        outdoorPath.length === walkPath.length &&
-        outdoorPath[0].lat === walkPath[0].lat &&
-        outdoorPath[0].lng === walkPath[0].lng
-      if (walkPath.length > 1 && !walkSame) drawPath(walkPath, WALK_COLOR)
-      if (!outdoorIsReal && !(walkPath.length > 1)) {
-        for (const step of driveSteps) {
-          const path = geoJsonToLatLngs(step.geometry)
-          if (path.length > 1) drawPath(path, trafficColor(step.trafficLevel) || ROUTE_BLUE)
-        }
+      if (outdoorIsReal) {
+        drawPath(outdoorPath, ROUTE_BLUE)
+        return
       }
+      if (walkPath.length > 1) {
+        drawPath(walkPath, WALK_COLOR)
+        return
+      }
+      const merged: google.maps.LatLngLiteral[] = []
+      for (const step of driveSteps) {
+        const path = geoJsonToLatLngs(step.geometry)
+        if (path.length > 1) merged.push(...path)
+      }
+      if (merged.length > 1) drawPath(merged, ROUTE_BLUE)
+      else drawPath([origin, destination], ROUTE_BLUE)
     }
 
     const preferWalk =
