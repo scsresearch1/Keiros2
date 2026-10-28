@@ -8,10 +8,7 @@ declare global {
 }
 
 export function googleMapsApiKey(): string {
-  return String(
-    import.meta.env.VITE_GOOGLE_MAPS_API_KEY ||
-      'AIzaSyCnQijsiKFJtL39zOTCQfGUQ_Bkju5hWiY',
-  ).trim()
+  return String(import.meta.env.VITE_GOOGLE_MAPS_API_KEY || '').trim()
 }
 
 /** Load Maps JS API once (Map, Marker, Directions, Geometry). */

@@ -13,9 +13,10 @@
 
 [build.environment]
   NODE_VERSION = "22"
+  # Browser Maps key must end up in the JS bundle — allow secrets scan to skip it.
+  SECRETS_SCAN_OMIT_KEYS = "VITE_GOOGLE_MAPS_API_KEY"
   VITE_GOOGLE_MAPS_API_KEY = "AIzaSyCnQijsiKFJtL39zOTCQfGUQ_Bkju5hWiY"
 
-# Environment variables (Netlify UI) — set AFTER Render URL exists, then redeploy:
+# Also set in Netlify UI if preferred (same name). Required for Vite build:
 #   VITE_API_BASE=https://YOUR-SERVICE.onrender.com
-#   (no trailing slash)
-# VITE_GOOGLE_MAPS_API_KEY can also be set in the Netlify UI (overrides toml if present).
+#   VITE_GOOGLE_MAPS_API_KEY=...
