@@ -785,41 +785,117 @@ export default function App() {
             </div>
           ) : null}
 
-          {active && (showOutdoorMap || phase === 'indoor') ? (
-            <NavGuidanceBanner
-              active={active}
-              upcoming={steps[journeyIndex + 1] ?? null}
-              progress={liveNav && showOutdoorMap ? liveProgress : null}
-              recalculating={recalculating}
-              live={liveNav && showOutdoorMap && Boolean(liveFix)}
+          {showOutdoorMap ? (
+            <OutdoorMap
+              result={result}
+              activeStep={active}
+              weather={result.weather}
+              traffic={result.outdoor.traffic}
+              liveFix={
+                liveNav && liveFix
+                  ? liveProgress?.snapped && !liveProgress.offRoute
+                    ? {
+                        ...liveFix,
+                        latitude: liveProgress.snapped.latitude,
+                        longitude: liveProgress.snapped.longitude,
+                      }
+                    : liveFix
+                  : null
+              }
+              followLive={liveNav}
             />
+          ) : (
+            <div className="demo-indoor-wrap">
+              <div className="demo-indoor-head">
+                <p className="demo-indoor-banner">
+                  {indoorView === 'floor'
+                    ? 'Inside — follow the path on this floor'
+                    : 'Inside — 3D building · drag to rotate, yellow path is your indoor route'}
+                </p>
+                <div className="demo-indoor-toggle" role="tablist" aria-label="Indoor map">
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={indoorView === 'floor'}
+                    className={indoorView === 'floor' ? 'is-active' : ''}
+                    onClick={() => setIndoorView('floor')}
+                  >
+                    Floor map
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={indoorView === 'building'}
+                    className={indoorView === 'building' ? 'is-active' : ''}
+                    onClick={() => setIndoorView('building')}
+                  >
+                    3D building
+                  </button>
+                </div>
+              </div>
+              <div className="demo-indoor-actions">
+                <button
+                  type="button"
+                  className="demo-indoor-next"
+                  disabled={journeyIndex >= steps.length - 1}
+                  onClick={() => bumpJourney(1)}
+                >
+                  {journeyIndex >= steps.length - 1 ? 'Arrived' : 'Next indoor step'}
+                </button>
+                <span className="demo-hint">
+                  Path uses corridors, elevators/stairs, and turn-by-turn cues.
+                </span>
+              </div>
+              {indoorView === 'floor' ? (
+                <IndoorFloorMap map3d={result.map3d} activeStep={indoorStep} instruction={active?.instruction} />
+              ) : (
+                <Indoor3D
+                  map3d={result.map3d}
+                  activeStep={indoorStep}
+                  instruction={active?.instruction}
+                  complexName={result.selection.complex?.name}
+                />
+              )}
+            </div>
+          )}
+
+          {active && (showOutdoorMap || phase === 'indoor') ? (
+            <div className="demo-map-guidance">
+              <NavGuidanceBanner
+                active={active}
+                upcoming={steps[journeyIndex + 1] ?? null}
+                progress={liveNav && showOutdoorMap ? liveProgress : null}
+                recalculating={recalculating}
+                live={liveNav && showOutdoorMap && Boolean(liveFix)}
+              />
+              <div className="demo-live-bar">
+                <button
+                  type="button"
+                  className={`demo-live-toggle${liveNav ? ' is-on' : ''}`}
+                  aria-pressed={liveNav}
+                  onClick={() => setLiveNav((v) => !v)}
+                >
+                  <span className="demo-live-toggle__pulse" aria-hidden />
+                  {liveNav ? 'Live navigation on' : 'Live navigation off'}
+                </button>
+                <span className="demo-hint">
+                  {recalculating
+                    ? 'Recalculating route from your position…'
+                    : liveNav
+                      ? liveWatching && liveFix
+                        ? liveProgress?.offRoute
+                          ? 'Off the planned path — finding a better route…'
+                          : `Tracking you · ±${Math.round(liveFix.accuracy)} m · ETA updates as you move`
+                        : liveGpsError
+                          ? liveGpsError
+                          : 'Waiting for GPS… allow location on this device'
+                      : 'Turn on for Google Maps–style follow, ETA, and auto-reroute. Next stays optional.'}
+                </span>
+              </div>
+            </div>
           ) : null}
 
           <div className="demo-journey">
-            <div className="demo-live-bar">
-              <button
-                type="button"
-                className={`demo-live-toggle${liveNav ? ' is-on' : ''}`}
-                aria-pressed={liveNav}
-                onClick={() => setLiveNav((v) => !v)}
-              >
-                <span className="demo-live-toggle__pulse" aria-hidden />
-                {liveNav ? 'Live navigation on' : 'Live navigation off'}
-              </button>
-              <span className="demo-hint">
-                {recalculating
-                  ? 'Recalculating route from your position…'
-                  : liveNav
-                    ? liveWatching && liveFix
-                      ? liveProgress?.offRoute
-                        ? 'Off the planned path — finding a better route…'
-                        : `Tracking you · ±${Math.round(liveFix.accuracy)} m · ETA updates as you move`
-                      : liveGpsError
-                        ? liveGpsError
-                        : 'Waiting for GPS… allow location on this device'
-                    : 'Turn on for Google Maps–style follow, ETA, and auto-reroute. Next stays optional.'}
-              </span>
-            </div>
             <div className="demo-steps">
               <button type="button" disabled={journeyIndex <= 0} onClick={() => bumpJourney(-1)}>
                 Previous
@@ -909,80 +985,6 @@ export default function App() {
               ))}
             </ol>
           </div>
-
-          {showOutdoorMap ? (
-            <OutdoorMap
-              result={result}
-              activeStep={active}
-              weather={result.weather}
-              traffic={result.outdoor.traffic}
-              liveFix={
-                liveNav && liveFix
-                  ? liveProgress?.snapped && !liveProgress.offRoute
-                    ? {
-                        ...liveFix,
-                        latitude: liveProgress.snapped.latitude,
-                        longitude: liveProgress.snapped.longitude,
-                      }
-                    : liveFix
-                  : null
-              }
-              followLive={liveNav}
-            />
-          ) : (
-            <div className="demo-indoor-wrap">
-              <div className="demo-indoor-head">
-                <p className="demo-indoor-banner">
-                  {indoorView === 'floor'
-                    ? 'Inside — follow the path on this floor'
-                    : 'Inside — 3D building · drag to rotate, yellow path is your indoor route'}
-                </p>
-                <div className="demo-indoor-toggle" role="tablist" aria-label="Indoor map">
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={indoorView === 'floor'}
-                    className={indoorView === 'floor' ? 'is-active' : ''}
-                    onClick={() => setIndoorView('floor')}
-                  >
-                    Floor map
-                  </button>
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={indoorView === 'building'}
-                    className={indoorView === 'building' ? 'is-active' : ''}
-                    onClick={() => setIndoorView('building')}
-                  >
-                    3D building
-                  </button>
-                </div>
-              </div>
-              <div className="demo-indoor-actions">
-                <button
-                  type="button"
-                  className="demo-indoor-next"
-                  disabled={journeyIndex >= steps.length - 1}
-                  onClick={() => bumpJourney(1)}
-                >
-                  {journeyIndex >= steps.length - 1 ? 'Arrived' : 'Next indoor step'}
-                </button>
-                <span className="demo-hint">
-                  Path uses corridors, elevators/stairs, and turn-by-turn cues.
-                </span>
-              </div>
-              {indoorView === 'floor' ? (
-                <IndoorFloorMap map3d={result.map3d} activeStep={indoorStep} instruction={active?.instruction} />
-              ) : (
-                <Indoor3D
-                  map3d={result.map3d}
-                  activeStep={indoorStep}
-                  instruction={active?.instruction}
-                  complexName={result.selection.complex?.name}
-                />
-              )}
-            </div>
-          )}
         </>
       ) : (
         <p className="demo-placeholder">

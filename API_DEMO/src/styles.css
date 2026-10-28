@@ -578,6 +578,20 @@ button:disabled {
   background: rgba(56, 189, 248, 0.12);
 }
 
+.demo-map-guidance {
+  display: grid;
+  gap: 0.65rem;
+  margin: 0.75rem 0 1rem;
+}
+
+.demo-map-guidance .demo-nav-banner {
+  margin: 0;
+}
+
+.demo-map-guidance .demo-live-bar {
+  margin: 0;
+}
+
 .demo-map-shell {
   position: relative;
 }
