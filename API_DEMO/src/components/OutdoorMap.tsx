@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { JourneyStep, NavigateResult } from '../api'
-import { geoJsonToLatLngs, latLngLiteral, loadGoogleMaps, reverseGeocodeAddress } from '../googleMaps'
+import { geoJsonToLatLngs, latLngLiteral, loadGoogleMaps } from '../googleMaps'
 import { fetchRoadPath, pinPathToEndpoints } from '../googleRoute'
 import type { LiveFix } from '../liveNavigation'
 import { bearingDeg } from '../liveNavigation'
@@ -220,14 +220,11 @@ export function OutdoorMap({
       name: string
       address?: string | null
       coords: google.maps.LatLngLiteral
-      loading?: boolean
     }) {
-      const addr = opts.loading
-        ? '<em style="opacity:.75">Looking up address…</em>'
-        : opts.address
-          ? escapeHtml(opts.address)
-          : '<em style="opacity:.75">Address unavailable</em>'
-      return `<div style="max-width:240px;font:13px/1.35 system-ui,sans-serif;color:#0f172a">
+      const addr = opts.address
+        ? escapeHtml(opts.address)
+        : '<em style="opacity:.75">No address in backend data</em>'
+      return `<div style="max-width:260px;font:13px/1.35 system-ui,sans-serif;color:#0f172a">
         <div style="font-weight:800;margin-bottom:4px">${opts.kind}</div>
         <div style="margin-bottom:6px">${escapeHtml(opts.name)}</div>
         <div style="margin-bottom:6px">${addr}</div>
@@ -235,34 +232,22 @@ export function OutdoorMap({
       </div>`
     }
 
-    async function openPinInfo(
+    function openPinInfo(
       marker: google.maps.Marker,
       kind: 'Start' | 'Destination',
       name: string,
-      knownAddress: string | undefined,
+      backendAddress: string | null | undefined,
       coords: google.maps.LatLngLiteral,
     ) {
       info.setContent(
         pinPopupHtml({
           kind,
           name,
-          address: knownAddress || null,
+          address: backendAddress,
           coords,
-          loading: !knownAddress,
         }),
       )
       info.open({ map, anchor: marker })
-      if (knownAddress) return
-      const lookedUp = await reverseGeocodeAddress(coords)
-      // Ignore if user already opened another pin
-      info.setContent(
-        pinPopupHtml({
-          kind,
-          name,
-          address: lookedUp,
-          coords,
-        }),
-      )
     }
 
     const startMarker = new google.maps.Marker({
@@ -277,12 +262,17 @@ export function OutdoorMap({
       },
     })
     track(startMarker)
+    // Address from ERP/Firestore only (complex address for the destination property)
+    const startAddress =
+      result.origin.address ||
+      result.selection?.complex?.address ||
+      null
     startMarker.addListener('click', () => {
-      void openPinInfo(
+      openPinInfo(
         startMarker,
         'Start',
         result.origin.label || 'Start',
-        undefined,
+        startAddress,
         origin,
       )
     })
@@ -292,10 +282,12 @@ export function OutdoorMap({
       result.destination.label ||
       result.selection?.unit?.name ||
       'Destination'
+    // Address from unit.physicalAddress / complex.address in navigate response
     const destAddress =
       result.destination.address ||
+      result.selection?.unit?.physicalAddress ||
       result.selection?.complex?.address ||
-      undefined
+      null
     const destMarker = new google.maps.Marker({
       map,
       position: destination,
@@ -309,7 +301,7 @@ export function OutdoorMap({
     })
     track(destMarker)
     destMarker.addListener('click', () => {
-      void openPinInfo(destMarker, 'Destination', destName, destAddress, destination)
+      openPinInfo(destMarker, 'Destination', destName, destAddress, destination)
     })
     bounds.extend(destination)
 

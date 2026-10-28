@@ -470,5 +470,6 @@ export function serializeStop(loc) {
     latitude: loc.latitude,
     longitude: loc.longitude,
     elevation: loc.elevation,
+    physicalAddress: loc.physicalAddress || loc.address || null,
   }
 }

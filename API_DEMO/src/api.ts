@@ -75,12 +75,15 @@ export type NavigateResult = {
       latitude: number
       longitude: number
       elevation: number
+      physicalAddress?: string | null
     }
   }
   origin: {
     latitude: number
     longitude: number
     label: string
+    /** Property / complex address from backend (not reverse-geocoded) */
+    address?: string | null
     offsetMiles: number
     startMode?: 'demo' | 'live' | 'custom'
     viaParking?: boolean

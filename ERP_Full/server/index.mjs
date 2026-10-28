@@ -667,6 +667,11 @@ app.post('/api/v1/navigate', (req, res) =>
               : startMode === 'live'
                 ? `Current location (${bodyLat.toFixed(5)}, ${bodyLng.toFixed(5)})`
                 : `Start (~${viaParking ? MILES_START : Math.min(MILES_START, 0.45)} mi from destination)`,
+          // Backend property address (complex) — start pin is relative to this destination site
+          address:
+            complex?.address ||
+            [complex?.name, complex?.city].filter(Boolean).join(', ') ||
+            null,
           offsetMiles: originMiles,
           startMode,
           viaParking,
@@ -677,7 +682,13 @@ app.post('/api/v1/navigate', (req, res) =>
           latitude: unit.latitude,
           longitude: unit.longitude,
           label: unit.name,
-          address: unit.physicalAddress,
+          // Prefer unit physical address from Firestore/ERP, then complex address
+          address:
+            unit.physicalAddress ||
+            unit.address ||
+            complex?.address ||
+            [building.name, complex?.name, complex?.city].filter(Boolean).join(' · ') ||
+            null,
         },
         outdoor,
         walk,
