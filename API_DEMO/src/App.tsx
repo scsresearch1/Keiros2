@@ -64,7 +64,6 @@ export default function App() {
   const [liveSelected, setLiveSelected] = useState(false)
   const [customOrigin, setCustomOrigin] = useState<StartPoint | null>(null)
   const [pickerOpen, setPickerOpen] = useState(false)
-  const [liveOrigin, setLiveOrigin] = useState<{ latitude: number; longitude: number } | null>(null)
   const [locating, setLocating] = useState(false)
   const [indoorView, setIndoorView] = useState<'floor' | 'building'>('building')
   /** Google Maps–style live GPS follow. Next/Previous stay available as optional manual control. */
