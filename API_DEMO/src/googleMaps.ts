@@ -43,6 +43,11 @@ export function loadGoogleMaps(): Promise<typeof google> {
     } catch {
       /* REST Routes API fallback in googleRoute.ts */
     }
+    try {
+      await importLibrary('geocoding')
+    } catch {
+      /* reverse-geocode optional for S/D address popups */
+    }
     return window.google
   })()
 
@@ -51,6 +56,23 @@ export function loadGoogleMaps(): Promise<typeof google> {
 
 export function latLngLiteral(lat: number, lng: number): google.maps.LatLngLiteral {
   return { lat, lng }
+}
+
+/** Reverse-geocode lat/lng to a formatted address (Geocoding API). */
+export async function reverseGeocodeAddress(
+  position: google.maps.LatLngLiteral,
+): Promise<string | null> {
+  try {
+    if (typeof google.maps.Geocoder !== 'function') {
+      await importLibrary('geocoding')
+    }
+    const geocoder = new google.maps.Geocoder()
+    const response = await geocoder.geocode({ location: position })
+    const formatted = response.results?.[0]?.formatted_address
+    return formatted?.trim() || null
+  } catch {
+    return null
+  }
 }
 
 /** GeoJSON [lng, lat][] → Google LatLngLiteral[] */

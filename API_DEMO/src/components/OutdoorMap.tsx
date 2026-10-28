@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { JourneyStep, NavigateResult } from '../api'
-import { geoJsonToLatLngs, latLngLiteral, loadGoogleMaps } from '../googleMaps'
+import { geoJsonToLatLngs, latLngLiteral, loadGoogleMaps, reverseGeocodeAddress } from '../googleMaps'
 import { fetchRoadPath, pinPathToEndpoints } from '../googleRoute'
 import type { LiveFix } from '../liveNavigation'
 import { bearingDeg } from '../liveNavigation'
@@ -208,34 +208,109 @@ export function OutdoorMap({
       return
     }
 
-    track(
-      new google.maps.Marker({
-        map,
-        position: origin,
-        title: `Start · ${result.origin.label}`,
-        zIndex: 40,
-        icon: {
-          url: `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(pinSvg('#0ea5e9', 'S'))}`,
-          scaledSize: new google.maps.Size(36, 44),
-          anchor: new google.maps.Point(18, 44),
-        },
-      }),
-    )
+    const info = new google.maps.InfoWindow()
+    track({
+      setMap(m) {
+        if (!m) info.close()
+      },
+    })
+
+    function pinPopupHtml(opts: {
+      kind: 'Start' | 'Destination'
+      name: string
+      address?: string | null
+      coords: google.maps.LatLngLiteral
+      loading?: boolean
+    }) {
+      const addr = opts.loading
+        ? '<em style="opacity:.75">Looking up address…</em>'
+        : opts.address
+          ? escapeHtml(opts.address)
+          : '<em style="opacity:.75">Address unavailable</em>'
+      return `<div style="max-width:240px;font:13px/1.35 system-ui,sans-serif;color:#0f172a">
+        <div style="font-weight:800;margin-bottom:4px">${opts.kind}</div>
+        <div style="margin-bottom:6px">${escapeHtml(opts.name)}</div>
+        <div style="margin-bottom:6px">${addr}</div>
+        <div style="opacity:.65;font-size:11px">${opts.coords.lat.toFixed(5)}, ${opts.coords.lng.toFixed(5)}</div>
+      </div>`
+    }
+
+    async function openPinInfo(
+      marker: google.maps.Marker,
+      kind: 'Start' | 'Destination',
+      name: string,
+      knownAddress: string | undefined,
+      coords: google.maps.LatLngLiteral,
+    ) {
+      info.setContent(
+        pinPopupHtml({
+          kind,
+          name,
+          address: knownAddress || null,
+          coords,
+          loading: !knownAddress,
+        }),
+      )
+      info.open({ map, anchor: marker })
+      if (knownAddress) return
+      const lookedUp = await reverseGeocodeAddress(coords)
+      // Ignore if user already opened another pin
+      info.setContent(
+        pinPopupHtml({
+          kind,
+          name,
+          address: lookedUp,
+          coords,
+        }),
+      )
+    }
+
+    const startMarker = new google.maps.Marker({
+      map,
+      position: origin,
+      title: `Start · ${result.origin.label}`,
+      zIndex: 40,
+      icon: {
+        url: `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(pinSvg('#0ea5e9', 'S'))}`,
+        scaledSize: new google.maps.Size(36, 44),
+        anchor: new google.maps.Point(18, 44),
+      },
+    })
+    track(startMarker)
+    startMarker.addListener('click', () => {
+      void openPinInfo(
+        startMarker,
+        'Start',
+        result.origin.label || 'Start',
+        undefined,
+        origin,
+      )
+    })
     bounds.extend(origin)
 
-    track(
-      new google.maps.Marker({
-        map,
-        position: destination,
-        title: `Destination · ${result.destination.label}`,
-        zIndex: 45,
-        icon: {
-          url: `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(pinSvg('#ea4335', 'D'))}`,
-          scaledSize: new google.maps.Size(36, 44),
-          anchor: new google.maps.Point(18, 44),
-        },
-      }),
-    )
+    const destName =
+      result.destination.label ||
+      result.selection?.unit?.name ||
+      'Destination'
+    const destAddress =
+      result.destination.address ||
+      result.selection?.complex?.address ||
+      undefined
+    const destMarker = new google.maps.Marker({
+      map,
+      position: destination,
+      title: `Destination · ${destName}`,
+      zIndex: 45,
+      icon: {
+        url: `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(pinSvg('#ea4335', 'D'))}`,
+        scaledSize: new google.maps.Size(36, 44),
+        anchor: new google.maps.Point(18, 44),
+      },
+    })
+    track(destMarker)
+    destMarker.addListener('click', () => {
+      void openPinInfo(destMarker, 'Destination', destName, destAddress, destination)
+    })
     bounds.extend(destination)
 
     const trafficLayer = new google.maps.TrafficLayer()
