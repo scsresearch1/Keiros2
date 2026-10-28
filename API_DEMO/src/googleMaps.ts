@@ -38,9 +38,10 @@ export function loadGoogleMaps(): Promise<typeof google> {
     await importLibrary('marker')
     await importLibrary('geometry')
     try {
+      // New Routes library (legacy DirectionsService is blocked on many keys)
       await importLibrary('routes')
     } catch {
-      /* Directions optional — polyline fallback still works */
+      /* REST Routes API fallback in googleRoute.ts */
     }
     return window.google
   })()

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { JourneyStep, NavigateResult } from '../api'
 import { geoJsonToLatLngs, latLngLiteral, loadGoogleMaps } from '../googleMaps'
+import { fetchRoadPath } from '../googleRoute'
 import type { LiveFix } from '../liveNavigation'
 import { bearingDeg } from '../liveNavigation'
 
@@ -30,10 +31,8 @@ function trafficColor(level?: string | null) {
 }
 
 const WALK_COLOR = '#38bdf8'
-const PARKING_COLOR = '#a78bfa'
-const ENTRANCE_COLOR = '#fbbf24'
 const LIVE_BLUE = '#1a73e8'
-const ROUTE_GREEN = '#1a73e8'
+const ROUTE_BLUE = '#1a73e8'
 
 function readCollapsed(key: string) {
   try {
@@ -84,8 +83,7 @@ export function OutdoorMap({
 }: Props) {
   const hostRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<google.maps.Map | null>(null)
-  const overlaysRef = useRef<Array<google.maps.MVCObject | google.maps.DirectionsRenderer>>([])
-  const stepMarkerRef = useRef<google.maps.Marker | null>(null)
+  const overlaysRef = useRef<Array<{ setMap?: (map: google.maps.Map | null) => void }>>([])
   const liveMarkerRef = useRef<google.maps.Marker | null>(null)
   const accuracyRef = useRef<google.maps.Circle | null>(null)
   const lastLiveRef = useRef<LiveFix | null>(null)
@@ -101,19 +99,8 @@ export function OutdoorMap({
     traffic: readCollapsed('traffic'),
   }))
 
-  const parking = result.parking ?? {
-    latitude: result.destination.latitude,
-    longitude: result.destination.longitude,
-    label: 'Parking (near destination)',
-    offsetMeters: 0,
-  }
-  const entrance = result.entrance ?? {
-    latitude: result.destination.latitude,
-    longitude: result.destination.longitude,
-    label: 'Building entrance',
-  }
   const isPointToPoint =
-    parking.mode === 'point-to-point' ||
+    result.parking?.mode === 'point-to-point' ||
     result.outdoor.arrivalMode === 'point-to-point' ||
     result.outdoor.arrivalMode === 'walk-from-origin' ||
     result.outdoor.arrivalMode === 'at-entrance'
@@ -124,14 +111,11 @@ export function OutdoorMap({
   )
 
   function clearOverlays() {
-    for (const item of overlaysRef.current) {
-      const anyItem = item as { setMap?: (map: google.maps.Map | null) => void }
-      anyItem.setMap?.(null)
-    }
+    for (const item of overlaysRef.current) item.setMap?.(null)
     overlaysRef.current = []
   }
 
-  function track(obj: google.maps.MVCObject | google.maps.DirectionsRenderer) {
+  function track<T extends { setMap?: (map: google.maps.Map | null) => void }>(obj: T) {
     overlaysRef.current.push(obj)
     return obj
   }
@@ -190,10 +174,8 @@ export function OutdoorMap({
       cancelled = true
       if (panTimerRef.current) window.clearTimeout(panTimerRef.current)
       clearOverlays()
-      stepMarkerRef.current?.setMap(null)
       liveMarkerRef.current?.setMap(null)
       accuracyRef.current?.setMap(null)
-      stepMarkerRef.current = null
       liveMarkerRef.current = null
       accuracyRef.current = null
       mapRef.current = null
@@ -203,7 +185,7 @@ export function OutdoorMap({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Draw start, destination, Google Directions route (+ fallback polylines)
+  // Start + Destination only; road path via Routes API (not legacy Directions).
   useEffect(() => {
     const map = mapRef.current
     if (!map || !mapReady) return
@@ -213,78 +195,37 @@ export function OutdoorMap({
 
     const bounds = new google.maps.LatLngBounds()
     const origin = latLngLiteral(result.origin.latitude, result.origin.longitude)
-    const entranceLl = latLngLiteral(entrance.latitude, entrance.longitude)
     const destination = latLngLiteral(result.destination.latitude, result.destination.longitude)
-    const parkingLl = latLngLiteral(parking.latitude, parking.longitude)
 
-    const startMarker = new google.maps.Marker({
-      map,
-      position: origin,
-      title: `Start · ${result.origin.label}`,
-      zIndex: 40,
-      icon: {
-        url: `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(pinSvg('#0ea5e9', 'S'))}`,
-        scaledSize: new google.maps.Size(36, 44),
-        anchor: new google.maps.Point(18, 44),
-      },
-    })
-    track(startMarker)
+    track(
+      new google.maps.Marker({
+        map,
+        position: origin,
+        title: `Start · ${result.origin.label}`,
+        zIndex: 40,
+        icon: {
+          url: `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(pinSvg('#0ea5e9', 'S'))}`,
+          scaledSize: new google.maps.Size(36, 44),
+          anchor: new google.maps.Point(18, 44),
+        },
+      }),
+    )
     bounds.extend(origin)
 
-    const destMarker = new google.maps.Marker({
-      map,
-      position: destination,
-      title: `Destination · ${result.destination.label}`,
-      zIndex: 45,
-      icon: {
-        url: `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(pinSvg('#ea4335', 'D'))}`,
-        scaledSize: new google.maps.Size(36, 44),
-        anchor: new google.maps.Point(18, 44),
-      },
-    })
-    track(destMarker)
+    track(
+      new google.maps.Marker({
+        map,
+        position: destination,
+        title: `Destination · ${result.destination.label}`,
+        zIndex: 45,
+        icon: {
+          url: `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(pinSvg('#ea4335', 'D'))}`,
+          scaledSize: new google.maps.Size(36, 44),
+          anchor: new google.maps.Point(18, 44),
+        },
+      }),
+    )
     bounds.extend(destination)
-
-    if (
-      Math.abs(entrance.latitude - result.destination.latitude) > 1e-5 ||
-      Math.abs(entrance.longitude - result.destination.longitude) > 1e-5
-    ) {
-      const entranceMarker = new google.maps.Marker({
-        map,
-        position: entranceLl,
-        title: `Entrance · ${entrance.label}`,
-        zIndex: 35,
-        icon: {
-          path: google.maps.SymbolPath.CIRCLE,
-          scale: 8,
-          fillColor: ENTRANCE_COLOR,
-          fillOpacity: 1,
-          strokeColor: '#fff',
-          strokeWeight: 2,
-        },
-      })
-      track(entranceMarker)
-      bounds.extend(entranceLl)
-    }
-
-    if (!isPointToPoint) {
-      const parkingMarker = new google.maps.Marker({
-        map,
-        position: parkingLl,
-        title: `Parking · ${parking.label}`,
-        zIndex: 30,
-        icon: {
-          path: google.maps.SymbolPath.CIRCLE,
-          scale: 9,
-          fillColor: PARKING_COLOR,
-          fillOpacity: 1,
-          strokeColor: '#fff',
-          strokeWeight: 2,
-        },
-      })
-      track(parkingMarker)
-      bounds.extend(parkingLl)
-    }
 
     const trafficLayer = new google.maps.TrafficLayer()
     trafficLayer.setMap(map)
@@ -303,69 +244,38 @@ export function OutdoorMap({
         )
       )
 
-    function drawFallbackPolylines() {
-      if (outdoorIsReal) {
-        const line = new google.maps.Polyline({
+    function drawPath(path: google.maps.LatLngLiteral[], color: string) {
+      if (path.length < 2) return
+      track(
+        new google.maps.Polyline({
           map,
-          path: outdoorPath,
-          strokeColor: ROUTE_GREEN,
-          strokeOpacity: 0.92,
+          path,
+          strokeColor: color,
+          strokeOpacity: 0.95,
           strokeWeight: 6,
-          zIndex: 10,
-        })
-        track(line)
-        outdoorPath.forEach((p) => bounds.extend(p))
-      }
+          zIndex: 20,
+        }),
+      )
+      path.forEach((p) => bounds.extend(p))
+    }
+
+    function drawServerRoadFallback() {
+      if (outdoorIsReal) drawPath(outdoorPath, ROUTE_BLUE)
       const walkSame =
         outdoorIsReal &&
         walkPath.length > 1 &&
         outdoorPath.length === walkPath.length &&
         outdoorPath[0].lat === walkPath[0].lat &&
         outdoorPath[0].lng === walkPath[0].lng
-      if (walkPath.length > 1 && !walkSame) {
-        const line = new google.maps.Polyline({
-          map,
-          path: walkPath,
-          strokeColor: WALK_COLOR,
-          strokeOpacity: isPointToPoint ? 0.95 : 0,
-          strokeWeight: 5,
-          zIndex: 11,
-          icons: isPointToPoint
-            ? undefined
-            : [
-                {
-                  icon: {
-                    path: 'M 0,-1 0,1',
-                    strokeOpacity: 1,
-                    strokeColor: WALK_COLOR,
-                    scale: 3,
-                  },
-                  offset: '0',
-                  repeat: '14px',
-                },
-              ],
-        })
-        track(line)
-        walkPath.forEach((p) => bounds.extend(p))
-      }
-      for (const step of driveSteps) {
-        const path = geoJsonToLatLngs(step.geometry)
-        if (path.length < 2 || outdoorIsReal) continue
-        const line = new google.maps.Polyline({
-          map,
-          path,
-          strokeColor: trafficColor(step.trafficLevel),
-          strokeOpacity: 0.9,
-          strokeWeight: 5,
-          zIndex: 12,
-        })
-        track(line)
-        path.forEach((p) => bounds.extend(p))
+      if (walkPath.length > 1 && !walkSame) drawPath(walkPath, WALK_COLOR)
+      if (!outdoorIsReal && !(walkPath.length > 1)) {
+        for (const step of driveSteps) {
+          const path = geoJsonToLatLngs(step.geometry)
+          if (path.length > 1) drawPath(path, trafficColor(step.trafficLevel) || ROUTE_BLUE)
+        }
       }
     }
 
-    // Point-to-point goes all the way to the unit (D), not only the entrance pin.
-    const routeEnd = isPointToPoint ? destination : parkingLl
     const preferWalk =
       isPointToPoint &&
       (driveSteps.length === 0 ||
@@ -374,188 +284,35 @@ export function OutdoorMap({
           `${result.outdoor.provider || ''} ${result.outdoor.profile || ''}`,
         ))
 
-    function extendRouteToDestination(from: google.maps.LatLngLiteral) {
-      if (
-        Math.abs(from.lat - destination.lat) < 1e-6 &&
-        Math.abs(from.lng - destination.lng) < 1e-6
-      ) {
-        return
+    void (async () => {
+      try {
+        const path = await fetchRoadPath(origin, destination, preferWalk ? 'WALK' : 'DRIVE')
+        if (session !== routeSessionRef.current) return
+        drawPath(path, preferWalk ? WALK_COLOR : ROUTE_BLUE)
+        setMapError('')
+      } catch (err) {
+        if (session !== routeSessionRef.current) return
+        drawServerRoadFallback()
+        const msg = err instanceof Error ? err.message : String(err)
+        if (/REQUEST_DENIED|PERMISSION|API|403|Routes/i.test(msg)) {
+          setMapError(
+            'Enable Routes API on your Google Cloud key (APIs & Services → enable “Routes API”), then hard-refresh. Showing server road path for now.',
+          )
+        }
       }
-      const stub = new google.maps.Polyline({
-        map,
-        path: [from, destination],
-        strokeColor: preferWalk || isPointToPoint ? WALK_COLOR : ROUTE_GREEN,
-        strokeOpacity: 0.9,
-        strokeWeight: 5,
-        zIndex: 22,
-      })
-      track(stub)
-      bounds.extend(destination)
-    }
-
-    const canDirections = typeof google.maps.DirectionsService === 'function'
-    if (!canDirections) {
-      drawFallbackPolylines()
-      extendRouteToDestination(entranceLl)
+      if (session !== routeSessionRef.current) return
       if (!bounds.isEmpty()) {
         map.fitBounds(bounds, { top: 48, right: 280, bottom: 48, left: 48 })
       }
-    } else {
-      const directions = new google.maps.DirectionsService()
-      const renderer = new google.maps.DirectionsRenderer({
-        map,
-        suppressMarkers: true,
-        preserveViewport: true,
-        polylineOptions: {
-          strokeColor: preferWalk ? WALK_COLOR : ROUTE_GREEN,
-          strokeOpacity: 0.95,
-          strokeWeight: 6,
-          zIndex: 20,
-        },
-      })
-      track(renderer)
+    })()
+  }, [mapReady, result, isPointToPoint, driveSteps])
 
-      directions.route(
-        {
-          origin,
-          destination: routeEnd,
-          travelMode: preferWalk ? google.maps.TravelMode.WALKING : google.maps.TravelMode.DRIVING,
-          provideRouteAlternatives: false,
-          drivingOptions: preferWalk
-            ? undefined
-            : {
-                departureTime: new Date(),
-                trafficModel: google.maps.TrafficModel.BEST_GUESS,
-              },
-        },
-        (response, status) => {
-          if (session !== routeSessionRef.current) return
-          if (status === google.maps.DirectionsStatus.OK && response) {
-            renderer.setDirections(response)
-            const route = response.routes[0]
-            route?.overview_path?.forEach((p) => bounds.extend(p))
-            const last = route?.overview_path?.[route.overview_path.length - 1]
-            if (isPointToPoint && last) {
-              extendRouteToDestination({ lat: last.lat(), lng: last.lng() })
-            }
-            if (!bounds.isEmpty()) {
-              map.fitBounds(bounds, { top: 48, right: 280, bottom: 48, left: 48 })
-            }
-            if (!isPointToPoint) {
-              directions.route(
-                {
-                  origin: parkingLl,
-                  destination: destination,
-                  travelMode: google.maps.TravelMode.WALKING,
-                  waypoints:
-                    Math.abs(entrance.latitude - result.destination.latitude) > 1e-5 ||
-                    Math.abs(entrance.longitude - result.destination.longitude) > 1e-5
-                      ? [{ location: entranceLl, stopover: true }]
-                      : undefined,
-                },
-                (walkRes, walkStatus) => {
-                  if (session !== routeSessionRef.current) return
-                  if (walkStatus !== google.maps.DirectionsStatus.OK || !walkRes) {
-                    extendRouteToDestination(entranceLl)
-                    return
-                  }
-                  const walkPathPts = walkRes.routes[0]?.overview_path
-                  if (!walkPathPts?.length) {
-                    extendRouteToDestination(entranceLl)
-                    return
-                  }
-                  const walkLine = new google.maps.Polyline({
-                    map,
-                    path: walkPathPts,
-                    strokeColor: WALK_COLOR,
-                    strokeOpacity: 0,
-                    strokeWeight: 5,
-                    zIndex: 21,
-                    icons: [
-                      {
-                        icon: {
-                          path: 'M 0,-1 0,1',
-                          strokeOpacity: 1,
-                          scale: 3,
-                          strokeColor: WALK_COLOR,
-                        },
-                        offset: '0',
-                        repeat: '14px',
-                      },
-                    ],
-                  })
-                  track(walkLine)
-                  walkPathPts.forEach((p) => bounds.extend(p))
-                  map.fitBounds(bounds, { top: 48, right: 280, bottom: 48, left: 48 })
-                },
-              )
-            }
-          } else {
-            renderer.setMap(null)
-            drawFallbackPolylines()
-            extendRouteToDestination(entranceLl)
-            if (!bounds.isEmpty()) {
-              map.fitBounds(bounds, { top: 48, right: 280, bottom: 48, left: 48 })
-            }
-          }
-        },
-      )
-    }
-
-    return () => {
-      // Next effect run / unmount clears via clearOverlays at start or unmount.
-    }
-  }, [
-    mapReady,
-    result,
-    parking,
-    entrance,
-    isPointToPoint,
-    driveSteps,
-  ])
-
-  // Active journey step marker
+  // Optional camera nudge for journey steps (no extra yellow waypoint markers)
   useEffect(() => {
     const map = mapRef.current
-    if (!map || !mapReady || !activeStep || activeStep.phase === 'indoor') {
-      stepMarkerRef.current?.setMap(null)
-      stepMarkerRef.current = null
-      return
-    }
-    const pos = latLngLiteral(activeStep.latitude, activeStep.longitude)
-    const fill =
-      activeStep.phase === 'walk' ? WALK_COLOR : trafficColor(activeStep.trafficLevel) || '#22c55e'
-    if (!stepMarkerRef.current) {
-      stepMarkerRef.current = new google.maps.Marker({
-        map,
-        position: pos,
-        zIndex: 50,
-        icon: {
-          path: google.maps.SymbolPath.CIRCLE,
-          scale: 9,
-          fillColor: fill,
-          fillOpacity: followLive && liveFix ? 0.55 : 0.95,
-          strokeColor: '#fff',
-          strokeWeight: 2,
-        },
-        title: activeStep.instruction,
-      })
-    } else {
-      stepMarkerRef.current.setPosition(pos)
-      stepMarkerRef.current.setIcon({
-        path: google.maps.SymbolPath.CIRCLE,
-        scale: 9,
-        fillColor: fill,
-        fillOpacity: followLive && liveFix ? 0.55 : 0.95,
-        strokeColor: '#fff',
-        strokeWeight: 2,
-      })
-    }
+    if (!map || !mapReady || !activeStep || activeStep.phase === 'indoor') return
     if (followLive && liveFix) return
-    map.panTo(pos)
-    const z = map.getZoom() ?? 14
-    if (activeStep.phase === 'walk' && z < 15) map.setZoom(16)
-    else if (z < 13) map.setZoom(14)
+    map.panTo(latLngLiteral(activeStep.latitude, activeStep.longitude))
   }, [activeStep, followLive, liveFix, mapReady])
 
   // Live GPS puck + follow
@@ -649,29 +406,11 @@ export function OutdoorMap({
               <span className="demo-leaflet-card__chev" aria-hidden="true" />
             </button>
             <div className="demo-leaflet-card__body">
-              {isPointToPoint ? (
-                <>
-                  <span style={{ color: ROUTE_GREEN }}>━━</span> Point-to-point → destination
-                  <br />
-                  <span style={{ color: WALK_COLOR }}>━━</span> Walk to unit
-                  <br />
-                </>
-              ) : (
-                <>
-                  <span style={{ color: trafficColor('Light') }}>━━</span> Drive (to parking)
-                  <br />
-                  <span style={{ color: WALK_COLOR }}>- - -</span> Walk (parking → entrance)
-                  <br />
-                </>
-              )}
-              <span style={{ color: LIVE_BLUE }}>●</span> You (live) ·{' '}
-              {!isPointToPoint ? (
-                <>
-                  <span style={{ color: PARKING_COLOR }}>●</span> Parking ·{' '}
-                </>
-              ) : null}
-              <span style={{ color: ENTRANCE_COLOR }}>●</span> Entrance ·{' '}
-              <span style={{ color: '#ea4335' }}>●</span> Destination
+              <span style={{ color: ROUTE_BLUE }}>━━</span> Road route (start → destination)
+              <br />
+              <span style={{ color: '#0ea5e9' }}>●</span> Start ·{' '}
+              <span style={{ color: '#ea4335' }}>●</span> Destination ·{' '}
+              <span style={{ color: LIVE_BLUE }}>●</span> You (live)
             </div>
           </div>
 
