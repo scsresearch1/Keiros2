@@ -51,7 +51,13 @@ type RoutePoint = { lat: number; lng: number; stepIndex: number }
 function flattenRoute(steps: JourneyStep[]): RoutePoint[] {
   const points: RoutePoint[] = []
   steps.forEach((step, stepIndex) => {
-    if (step.phase === 'indoor') return
+    // Indoor stops also have lat/lng — include them so GPS can advance the full journey.
+    if (step.phase === 'indoor') {
+      if (Number.isFinite(step.latitude) && Number.isFinite(step.longitude)) {
+        points.push({ lat: step.latitude, lng: step.longitude, stepIndex })
+      }
+      return
+    }
     const geom = step.geometry
     if (geom && geom.length) {
       for (const [lng, lat] of geom) {
@@ -66,6 +72,12 @@ function flattenRoute(steps: JourneyStep[]): RoutePoint[] {
     }
   })
   return points
+}
+
+/** Indoor GPS is noisier — use a wider arrival radius, scaled by reported accuracy. */
+function arrivalRadiusM(step: JourneyStep | undefined, accuracyM: number) {
+  const base = step?.phase === 'indoor' ? 38 : 45
+  return Math.max(base, Math.min(90, accuracyM * 1.15))
 }
 
 function projectOnSegment(
@@ -100,10 +112,8 @@ export function matchLiveProgress(
   fix: LiveFix,
   currentIndex: number,
 ): LiveProgress {
-  const outdoor = steps
-    .map((s, i) => ({ s, i }))
-    .filter(({ s }) => s.phase !== 'indoor')
-  if (!outdoor.length) {
+  const points = flattenRoute(steps)
+  if (!points.length) {
     return {
       stepIndex: currentIndex,
       distanceToRouteM: Infinity,
@@ -115,18 +125,18 @@ export function matchLiveProgress(
     }
   }
 
-  const points = flattenRoute(steps)
-  if (points.length < 2) {
-    const target = outdoor[outdoor.length - 1].s
-    const rem = haversineM(fix.latitude, fix.longitude, target.latitude, target.longitude)
+  if (points.length === 1) {
+    const only = points[0]
+    const rem = haversineM(fix.latitude, fix.longitude, only.lat, only.lng)
+    const step = steps[only.stepIndex]
     return {
-      stepIndex: outdoor[0].i,
+      stepIndex: only.stepIndex,
       distanceToRouteM: rem,
       remainingM: rem,
-      remainingSec: estimateSec(rem, fix.speed, outdoor[0].s.phase),
+      remainingSec: estimateSec(rem, fix.speed, step?.phase ?? 'walk'),
       toNextManeuverM: rem,
-      snapped: { latitude: fix.latitude, longitude: fix.longitude },
-      offRoute: rem > OFF_ROUTE_M,
+      snapped: { latitude: only.lat, longitude: only.lng },
+      offRoute: rem > arrivalRadiusM(step, fix.accuracy),
     }
   }
 
@@ -150,26 +160,45 @@ export function matchLiveProgress(
     }
   }
 
-  let remaining = haversineM(best.lat, best.lng, points[best.seg + 1].lat, points[best.seg + 1].lng)
+  // Prefer nearest waypoint when GPS is closer to a discrete stop than to a segment
+  for (let i = 0; i < points.length; i += 1) {
+    const pt = points[i]
+    const d = haversineM(fix.latitude, fix.longitude, pt.lat, pt.lng)
+    if (d < best.distM) {
+      best = {
+        distM: d,
+        lat: pt.lat,
+        lng: pt.lng,
+        seg: Math.max(0, i - 1),
+        stepIndex: pt.stepIndex,
+      }
+    }
+  }
+
+  const nextPt = points[Math.min(best.seg + 1, points.length - 1)]
+  let remaining = haversineM(best.lat, best.lng, nextPt.lat, nextPt.lng)
   for (let i = best.seg + 1; i < points.length - 1; i++) {
     remaining += haversineM(points[i].lat, points[i].lng, points[i + 1].lat, points[i + 1].lng)
   }
 
   let stepIndex = best.stepIndex
+  // Advance when GPS is within arrival radius of the *next* stop (indoor or outdoor).
   const next = currentIndex + 1
-  if (next < steps.length && steps[next].phase !== 'indoor') {
+  if (next < steps.length) {
     const n = steps[next]
-    const toNext = haversineM(fix.latitude, fix.longitude, n.latitude, n.longitude)
-    if (toNext < 45) stepIndex = Math.max(stepIndex, next)
+    if (Number.isFinite(n.latitude) && Number.isFinite(n.longitude)) {
+      const toNext = haversineM(fix.latitude, fix.longitude, n.latitude, n.longitude)
+      if (toNext < arrivalRadiusM(n, fix.accuracy)) stepIndex = Math.max(stepIndex, next)
+    }
   }
-  if (stepIndex < currentIndex && best.distM < 80) {
+  // Don't jump backwards while still near the current corridor
+  if (stepIndex < currentIndex && best.distM < 90) {
     stepIndex = currentIndex
   }
 
   const active = steps[stepIndex]
   let toNextManeuverM = active?.distanceM ?? 0
-  if (active?.geometry && active.geometry.length > 1) {
-    // Distance along this step from snapped point to step end
+  if (active?.geometry && active.geometry.length > 1 && active.phase !== 'indoor') {
     const end = active.geometry[active.geometry.length - 1]
     toNextManeuverM = haversineM(best.lat, best.lng, end[1], end[0])
   } else if (active) {
@@ -177,6 +206,8 @@ export function matchLiveProgress(
   }
 
   const phase = active?.phase ?? 'drive'
+  const offRouteLimit =
+    phase === 'indoor' ? Math.max(OFF_ROUTE_M * 1.6, fix.accuracy * 1.4) : OFF_ROUTE_M
   return {
     stepIndex,
     distanceToRouteM: best.distM,
@@ -184,7 +215,7 @@ export function matchLiveProgress(
     remainingSec: estimateSec(remaining, fix.speed, phase),
     toNextManeuverM,
     snapped: { latitude: best.lat, longitude: best.lng },
-    offRoute: best.distM > OFF_ROUTE_M,
+    offRoute: phase === 'indoor' ? false : best.distM > offRouteLimit,
   }
 }
 

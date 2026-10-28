@@ -401,13 +401,13 @@ export default function App() {
     : null
   const voice = useDirectionVoice(voiceCurrent, voiceSteps[journeyIndex + 1] ?? null)
 
+  const activePhase = voiceSteps[journeyIndex]?.phase
   const outdoorActive =
-    Boolean(result) &&
-    (voiceSteps[journeyIndex]?.phase === 'drive' ||
-      voiceSteps[journeyIndex]?.phase === 'walk' ||
-      voiceSteps[journeyIndex]?.phase === 'outdoor')
+    activePhase === 'drive' || activePhase === 'walk' || activePhase === 'outdoor'
+  const indoorActive = activePhase === 'indoor'
 
-  const liveWatchOn = Boolean(result && liveNav && outdoorActive)
+  // Keep GPS on for outdoor and indoor — indoor stops already have lat/lng.
+  const liveWatchOn = Boolean(result && liveNav && (outdoorActive || indoorActive))
   const { fix: liveFix, error: liveGpsError, watching: liveWatching } = useGeolocationWatch(liveWatchOn)
 
   useEffect(() => {
@@ -418,13 +418,20 @@ export default function App() {
     const progress = matchLiveProgress(result.journey.steps, liveFix, journeyIndex)
     setLiveProgress(progress)
     if (Date.now() < manualHoldUntil.current) return
-    if (progress.stepIndex !== journeyIndex && progress.distanceToRouteM < 120) {
+    // Indoor GPS is less precise — allow a wider snap distance before auto-advance.
+    const maxSnap = result.journey.steps[progress.stepIndex]?.phase === 'indoor' ? 160 : 120
+    if (progress.stepIndex !== journeyIndex && progress.distanceToRouteM < maxSnap) {
       setJourneyIndex(progress.stepIndex)
     }
 
-    // Off-route → recalculate like Google Maps (throttle)
+    // Off-route outdoor recalculation only (indoor GPS noise should not rebuild the drive).
     const now = Date.now()
+    const onOutdoor =
+      result.journey.steps[journeyIndex]?.phase === 'drive' ||
+      result.journey.steps[journeyIndex]?.phase === 'walk' ||
+      result.journey.steps[journeyIndex]?.phase === 'outdoor'
     if (
+      onOutdoor &&
       progress.offRoute &&
       now > rerouteLockUntil.current &&
       now - lastOffRouteAt.current > 2500
@@ -843,7 +850,7 @@ export default function App() {
                   {journeyIndex >= steps.length - 1 ? 'Arrived' : 'Next indoor step'}
                 </button>
                 <span className="demo-hint">
-                  Path uses corridors, elevators/stairs, and turn-by-turn cues.
+                  Live GPS uses each stop’s coordinates to auto-advance. Next stays optional if GPS is weak indoors.
                 </span>
               </div>
               {indoorView === 'floor' ? (
@@ -864,9 +871,9 @@ export default function App() {
               <NavGuidanceBanner
                 active={active}
                 upcoming={steps[journeyIndex + 1] ?? null}
-                progress={liveNav && showOutdoorMap ? liveProgress : null}
+                progress={liveNav ? liveProgress : null}
                 recalculating={recalculating}
-                live={liveNav && showOutdoorMap && Boolean(liveFix)}
+                live={liveNav && Boolean(liveFix)}
               />
               <div className="demo-live-bar">
                 <button
@@ -885,11 +892,13 @@ export default function App() {
                       ? liveWatching && liveFix
                         ? liveProgress?.offRoute
                           ? 'Off the planned path — finding a better route…'
-                          : `Tracking you · ±${Math.round(liveFix.accuracy)} m · ETA updates as you move`
+                          : phase === 'indoor'
+                            ? `Indoor GPS · ±${Math.round(liveFix.accuracy)} m · advances when you near the next stop`
+                            : `Tracking you · ±${Math.round(liveFix.accuracy)} m · ETA updates as you move`
                         : liveGpsError
                           ? liveGpsError
                           : 'Waiting for GPS… allow location on this device'
-                      : 'Turn on for Google Maps–style follow, ETA, and auto-reroute. Next stays optional.'}
+                      : 'Turn on for GPS follow outdoors and auto-advance indoor stops by coordinates.'}
                 </span>
               </div>
             </div>
