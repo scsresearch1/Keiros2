@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, type PointerEvent as RE, type WheelEvent as WE } from 'react'
+import { useEffect, useMemo, useRef, useState, type PointerEvent as RE } from 'react'
 import type { NavigateResult } from '../api'
 
 type Props = {
@@ -51,8 +51,26 @@ function project(
 export function Indoor3D({ map3d, activeStep, instruction, complexName }: Props) {
   const [cam, setCam] = useState<Cam>(DEFAULT)
   const drag = useRef<{ x: number; y: number; yaw: number; pitch: number } | null>(null)
+  const svgRef = useRef<SVGSVGElement | null>(null)
 
   const model = useMemo(() => buildModel(map3d, activeStep), [map3d, activeStep])
+  const hasModel = Boolean(model)
+
+  // Non-passive wheel listener — React onWheel is passive and can't preventDefault.
+  useEffect(() => {
+    if (!hasModel) return
+    const el = svgRef.current
+    if (!el) return
+    const onWheel = (event: WheelEvent) => {
+      event.preventDefault()
+      setCam((current) => ({
+        ...current,
+        zoom: clamp(current.zoom * (event.deltaY > 0 ? 0.92 : 1.08), 0.55, 2.6),
+      }))
+    }
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => el.removeEventListener('wheel', onWheel)
+  }, [hasModel, map3d.building.id])
 
   if (!model) return <div className="demo-indoor empty">No indoor geometry</div>
 
@@ -77,13 +95,6 @@ export function Indoor3D({ map3d, activeStep, instruction, complexName }: Props)
   }
   const onPointerUp = () => {
     drag.current = null
-  }
-  const onWheel = (event: WE<SVGSVGElement>) => {
-    event.preventDefault()
-    setCam((current) => ({
-      ...current,
-      zoom: clamp(current.zoom * (event.deltaY > 0 ? 0.92 : 1.08), 0.55, 2.6),
-    }))
   }
 
   const deg = Math.round((cam.yaw * 180) / Math.PI) % 360
@@ -126,6 +137,7 @@ export function Indoor3D({ map3d, activeStep, instruction, complexName }: Props)
       </p>
 
       <svg
+        ref={svgRef}
         viewBox={`0 0 ${width} ${height}`}
         className="demo-indoor__svg"
         preserveAspectRatio="xMidYMid meet"
@@ -133,7 +145,6 @@ export function Indoor3D({ map3d, activeStep, instruction, complexName }: Props)
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
-        onWheel={onWheel}
       >
         <defs>
           <pattern id="orion-grid" width="28" height="28" patternUnits="userSpaceOnUse">

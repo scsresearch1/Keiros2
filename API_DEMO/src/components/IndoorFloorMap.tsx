@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type PointerEvent as RE, type WheelEvent as WE } from 'react'
+import { useEffect, useMemo, useRef, useState, type PointerEvent as RE } from 'react'
 import type { NavigateResult } from '../api'
 
 type Props = {
@@ -28,6 +28,7 @@ export function IndoorFloorMap({ map3d, activeStep, instruction, onSelectFloor, 
   const [view, setView] = useState({ x: 0, y: 0, zoom: 1 })
   const [progress, setProgress] = useState(0.18)
   const drag = useRef<{ x: number; y: number; ox: number; oy: number } | null>(null)
+  const svgRef = useRef<SVGSVGElement | null>(null)
 
   useEffect(() => {
     setFloorId(stepFloorId)
@@ -55,6 +56,23 @@ export function IndoorFloorMap({ map3d, activeStep, instruction, onSelectFloor, 
   }, [activeStep, floorId])
 
   const scene = useMemo(() => buildScene(map3d, floorId, activeStep), [map3d, floorId, activeStep])
+  const hasScene = Boolean(scene)
+
+  useEffect(() => {
+    if (!hasScene) return
+    const el = svgRef.current
+    if (!el) return
+    const onWheel = (event: WheelEvent) => {
+      event.preventDefault()
+      setView((current) => ({
+        ...current,
+        zoom: clamp(current.zoom * (event.deltaY > 0 ? 0.92 : 1.08), 0.75, 2.6),
+      }))
+    }
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => el.removeEventListener('wheel', onWheel)
+  }, [hasScene, floorId])
+
   const youAreHere = floorId === stepFloorId
   const walker = scene && youAreHere ? pointAlong(scene.leg, progress) : null
 
@@ -73,10 +91,6 @@ export function IndoorFloorMap({ map3d, activeStep, instruction, onSelectFloor, 
   const onPointerUp = () => {
     drag.current = null
   }
-  const onWheel = (event: WE<SVGSVGElement>) => {
-    event.preventDefault()
-    setView((current) => ({ ...current, zoom: clamp(current.zoom * (event.deltaY > 0 ? 0.92 : 1.08), 0.75, 2.6) }))
-  }
 
   if (!scene) return <div className="floor-map floor-map--empty">No floor plan for this building</div>
 
@@ -87,13 +101,13 @@ export function IndoorFloorMap({ map3d, activeStep, instruction, onSelectFloor, 
     <div className="floor-map">
       <div className="floor-map__canvas">
         <svg
+          ref={svgRef}
           viewBox={`${frame.x} ${frame.y} ${frame.w} ${frame.h}`}
           preserveAspectRatio="xMidYMid slice"
           className="floor-map__svg"
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}
-          onWheel={onWheel}
         >
           <rect x={frame.x} y={frame.y} width={frame.w} height={frame.h} fill="#f4f1eb" />
           <g transform={`translate(${view.x} ${view.y}) translate(${frame.x + frame.w / 2} ${frame.y + frame.h / 2}) scale(${view.zoom}) translate(${-(frame.x + frame.w / 2)} ${-(frame.y + frame.h / 2)})`}>
