@@ -364,7 +364,8 @@ export function OutdoorMap({
       }
     }
 
-    const routeEnd = isPointToPoint ? entranceLl : parkingLl
+    // Point-to-point goes all the way to the unit (D), not only the entrance pin.
+    const routeEnd = isPointToPoint ? destination : parkingLl
     const preferWalk =
       isPointToPoint &&
       (driveSteps.length === 0 ||
@@ -373,9 +374,29 @@ export function OutdoorMap({
           `${result.outdoor.provider || ''} ${result.outdoor.profile || ''}`,
         ))
 
+    function extendRouteToDestination(from: google.maps.LatLngLiteral) {
+      if (
+        Math.abs(from.lat - destination.lat) < 1e-6 &&
+        Math.abs(from.lng - destination.lng) < 1e-6
+      ) {
+        return
+      }
+      const stub = new google.maps.Polyline({
+        map,
+        path: [from, destination],
+        strokeColor: preferWalk || isPointToPoint ? WALK_COLOR : ROUTE_GREEN,
+        strokeOpacity: 0.9,
+        strokeWeight: 5,
+        zIndex: 22,
+      })
+      track(stub)
+      bounds.extend(destination)
+    }
+
     const canDirections = typeof google.maps.DirectionsService === 'function'
     if (!canDirections) {
       drawFallbackPolylines()
+      extendRouteToDestination(entranceLl)
       if (!bounds.isEmpty()) {
         map.fitBounds(bounds, { top: 48, right: 280, bottom: 48, left: 48 })
       }
@@ -413,6 +434,10 @@ export function OutdoorMap({
             renderer.setDirections(response)
             const route = response.routes[0]
             route?.overview_path?.forEach((p) => bounds.extend(p))
+            const last = route?.overview_path?.[route.overview_path.length - 1]
+            if (isPointToPoint && last) {
+              extendRouteToDestination({ lat: last.lat(), lng: last.lng() })
+            }
             if (!bounds.isEmpty()) {
               map.fitBounds(bounds, { top: 48, right: 280, bottom: 48, left: 48 })
             }
@@ -420,14 +445,25 @@ export function OutdoorMap({
               directions.route(
                 {
                   origin: parkingLl,
-                  destination: entranceLl,
+                  destination: destination,
                   travelMode: google.maps.TravelMode.WALKING,
+                  waypoints:
+                    Math.abs(entrance.latitude - result.destination.latitude) > 1e-5 ||
+                    Math.abs(entrance.longitude - result.destination.longitude) > 1e-5
+                      ? [{ location: entranceLl, stopover: true }]
+                      : undefined,
                 },
                 (walkRes, walkStatus) => {
                   if (session !== routeSessionRef.current) return
-                  if (walkStatus !== google.maps.DirectionsStatus.OK || !walkRes) return
+                  if (walkStatus !== google.maps.DirectionsStatus.OK || !walkRes) {
+                    extendRouteToDestination(entranceLl)
+                    return
+                  }
                   const walkPathPts = walkRes.routes[0]?.overview_path
-                  if (!walkPathPts?.length) return
+                  if (!walkPathPts?.length) {
+                    extendRouteToDestination(entranceLl)
+                    return
+                  }
                   const walkLine = new google.maps.Polyline({
                     map,
                     path: walkPathPts,
@@ -457,6 +493,7 @@ export function OutdoorMap({
           } else {
             renderer.setMap(null)
             drawFallbackPolylines()
+            extendRouteToDestination(entranceLl)
             if (!bounds.isEmpty()) {
               map.fitBounds(bounds, { top: 48, right: 280, bottom: 48, left: 48 })
             }
@@ -614,9 +651,9 @@ export function OutdoorMap({
             <div className="demo-leaflet-card__body">
               {isPointToPoint ? (
                 <>
-                  <span style={{ color: ROUTE_GREEN }}>━━</span> Point-to-point (Google)
+                  <span style={{ color: ROUTE_GREEN }}>━━</span> Point-to-point → destination
                   <br />
-                  <span style={{ color: WALK_COLOR }}>━━</span> Walk leg
+                  <span style={{ color: WALK_COLOR }}>━━</span> Walk to unit
                   <br />
                 </>
               ) : (

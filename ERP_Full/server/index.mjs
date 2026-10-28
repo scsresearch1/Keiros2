@@ -509,11 +509,16 @@ app.post('/api/v1/navigate', (req, res) =>
       longitude: entry.longitude,
       name: entry.name || 'Building entrance',
     }
-    // Outdoor handoff pin = building entrance; indoor continues to the unit.
-    const routeTarget = {
-      latitude: entrancePoint.latitude,
-      longitude: entrancePoint.longitude,
-    }
+    // Via parking: outdoor ends at entrance. Point-to-point: outdoor goes to the unit pin.
+    const routeTarget = viaParking
+      ? {
+          latitude: entrancePoint.latitude,
+          longitude: entrancePoint.longitude,
+        }
+      : {
+          latitude: unit.latitude,
+          longitude: unit.longitude,
+        }
     const origin = explicitStart
       ? { latitude: bodyLat, longitude: bodyLng }
       : offsetMiles(
@@ -545,14 +550,14 @@ app.post('/api/v1/navigate', (req, res) =>
             : 'Drive ends at parking. Walk from parking to entrance, then continue indoors.'
     } else {
       const arrival = await choosePointToPoint(origin, routeTarget, {
-        destLabel: entrancePoint.name || unit.name,
+        destLabel: unit.name || entrancePoint.name,
       })
       parking = arrival.parking
       drive = arrival.drive
       walk = arrival.walk
       arrivalMode = 'point-to-point'
       outdoorNote =
-        'Point-to-point: start → entrance → unit. No parking stop. Enable “Via parking” for the car-park route.'
+        'Point-to-point: start → destination unit. No parking stop. Enable “Via parking” for the car-park route.'
     }
     const weather = await weatherPromise
     const originMiles = Math.round(milesBetween(origin, routeTarget) * 10) / 10
