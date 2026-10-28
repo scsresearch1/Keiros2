@@ -3,8 +3,6 @@ import {
   fetchHealth,
   fetchHierarchy,
   navigate,
-  refreshConditions,
-  applyDriveRefresh,
   phaseLabel,
   type Hierarchy,
   type NavigateResult,
@@ -58,7 +56,6 @@ export default function App() {
   const [unitId, setUnitId] = useState('')
   const [result, setResult] = useState<NavigateResult | null>(null)
   const [journeyIndex, setJourneyIndex] = useState(0)
-  const [refreshing, setRefreshing] = useState(false)
   const [startMode, setStartMode] = useState<StartMode>('demo')
   /** Off by default: go straight to the unit. Enable to add drive → parking → walk. */
   const [viaParking, setViaParking] = useState(false)
@@ -369,28 +366,6 @@ export default function App() {
       return
     }
     await planRoute('demo')
-  }
-
-  async function onRefreshConditions() {
-    if (!apiKey || !result) return
-    setRefreshing(true)
-    setError('')
-    try {
-      const live = await refreshConditions(apiKey, {
-        latitude: result.destination.latitude,
-        longitude: result.destination.longitude,
-        originMiles: result.origin.offsetMiles,
-        origin: { latitude: result.origin.latitude, longitude: result.origin.longitude },
-        parking: result.parking
-          ? { latitude: result.parking.latitude, longitude: result.parking.longitude }
-          : undefined,
-      })
-      setResult(await attachLotToResult(applyDriveRefresh(result, live)))
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not refresh conditions')
-    } finally {
-      setRefreshing(false)
-    }
   }
 
   function signOut() {
@@ -746,81 +721,6 @@ export default function App() {
 
       {result ? (
         <>
-          <section className="demo-meta">
-            <article>
-              <h3>Weather · live</h3>
-              <p>
-                <strong>{result.weather.summary ?? '—'}</strong>
-                {result.weather.temperatureF != null ? ` · ${result.weather.temperatureF}°F` : ''}
-                {result.weather.feelsLikeF != null ? ` (feels ${result.weather.feelsLikeF}°F)` : ''}
-              </p>
-              <p>
-                Humidity {result.weather.humidityPct ?? '—'}% · Wind {result.weather.windMph ?? '—'} mph
-                {result.weather.precipitationIn != null
-                  ? ` · precip ${result.weather.precipitationIn} in`
-                  : ''}
-              </p>
-              <p className="demo-meta__src">{result.weather.provider}</p>
-            </article>
-            <article>
-              <h3>Traffic · live</h3>
-              <p>
-                <strong className={`traffic-${(result.outdoor.traffic.level || '').toLowerCase()}`}>
-                  {result.outdoor.traffic.level}
-                </strong>
-                {' · '}
-                congestion {result.outdoor.traffic.congestionIndex}
-                {result.outdoor.traffic.averageSpeedMph != null
-                  ? ` · avg ${result.outdoor.traffic.averageSpeedMph} mph`
-                  : ''}
-              </p>
-              <p>
-                {result.outdoor.distanceMiles} mi · {result.outdoor.durationMinutes} min ·{' '}
-                {result.outdoor.provider}
-              </p>
-              <p className="demo-meta__src">{result.outdoor.traffic.note}</p>
-            </article>
-            <article>
-              <h3>Journey</h3>
-              <p>
-                {result.journey?.summary ??
-                  (viaParking
-                    ? 'Drive to parking → walk to entrance → navigate inside.'
-                    : 'Point-to-point: start → entrance → unit.')}
-              </p>
-              <p>
-                {result.journey?.driveSteps ?? result.journey?.outdoorSteps ?? 0} drive ·{' '}
-                {result.journey?.walkSteps ?? 0} walk · {result.journey?.indoorSteps ?? 0} inside
-                {result.walk?.distanceM != null
-                  ? ` · walk ${result.walk.distanceM} m (${result.walk.durationMinutes ?? '—'} min)`
-                  : ''}
-              </p>
-              <p>
-                Start: {result.origin.label}
-                {result.origin.startMode === 'custom' &&
-                !result.origin.label.includes(
-                  `${result.origin.latitude.toFixed(5)}, ${result.origin.longitude.toFixed(5)}`,
-                )
-                  ? ` · ${result.origin.latitude.toFixed(5)}, ${result.origin.longitude.toFixed(5)}`
-                  : liveOrigin && startMode === 'live'
-                    ? ` · device ${liveOrigin.latitude.toFixed(5)}, ${liveOrigin.longitude.toFixed(5)}`
-                    : ''}
-              </p>
-              <p>
-                Indoor {result.indoor?.walkMinutes ?? '—'} min · session{' '}
-                <code>{result.sessionId}</code>
-              </p>
-              {!result.walk || !result.parking ? (
-                <p className="demo-error">
-                  API response is missing walk/parking. Restart ERP_Full/server and press Navigate again.
-                </p>
-              ) : null}
-              <button type="button" className="demo-ghost demo-ghost--small" onClick={() => void onRefreshConditions()} disabled={refreshing}>
-                {refreshing ? 'Refreshing…' : 'Refresh weather & traffic'}
-              </button>
-            </article>
-          </section>
-
           <div className="demo-phase-strip" aria-label="Journey phases">
             {steps.some((s) => s.phase === 'drive' || s.phase === 'outdoor') ? (
               <>
