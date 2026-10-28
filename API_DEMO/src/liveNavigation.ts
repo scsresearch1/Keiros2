@@ -69,7 +69,7 @@ function flattenRoute(steps: JourneyStep[]): RoutePoint[] {
   return points
 }
 
-function arrivalRadiusM(step: JourneyStep | undefined, accuracyM: number) {
+function arrivalRadiusM(accuracyM: number) {
   const base = 45
   return Math.max(base, Math.min(90, accuracyM * 1.15))
 }
@@ -137,7 +137,7 @@ export function matchLiveProgress(
       remainingSec: estimateSec(rem, fix.speed, step?.phase ?? 'walk'),
       toNextManeuverM: rem,
       snapped: { latitude: only.lat, longitude: only.lng },
-      offRoute: rem > arrivalRadiusM(step, fix.accuracy),
+      offRoute: rem > arrivalRadiusM(fix.accuracy),
     }
   }
 
@@ -189,7 +189,7 @@ export function matchLiveProgress(
     const n = steps[next]
     if (Number.isFinite(n.latitude) && Number.isFinite(n.longitude)) {
       const toNext = haversineM(fix.latitude, fix.longitude, n.latitude, n.longitude)
-      if (toNext < arrivalRadiusM(n, fix.accuracy)) stepIndex = Math.max(stepIndex, next)
+      if (toNext < arrivalRadiusM(fix.accuracy)) stepIndex = Math.max(stepIndex, next)
     }
   }
   // Don't jump backwards while still near the current corridor
