@@ -307,7 +307,6 @@ export default function App() {
       setStartMode('demo')
       setStartReady(true)
       setLiveSelected(false)
-      setLiveOrigin(null)
       setError('')
       if (selectionReady()) await planRoute('demo')
       return
@@ -316,7 +315,6 @@ export default function App() {
     setError('')
     try {
       const coords = await readCurrentLocation()
-      setLiveOrigin(coords)
       setLiveSelected(true)
       setStartMode('live')
       setStartReady(true)
@@ -324,7 +322,6 @@ export default function App() {
     } catch (err) {
       setStartMode('demo')
       setLiveSelected(false)
-      setLiveOrigin(null)
       setError(err instanceof Error ? err.message : 'Could not read the current location.')
     } finally {
       setLocating(false)
@@ -355,7 +352,6 @@ export default function App() {
       setLocating(true)
       try {
         const coords = await readCurrentLocation()
-        setLiveOrigin(coords)
         await planRoute('live', coords)
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Could not read the current location.')
@@ -382,7 +378,6 @@ export default function App() {
     setLiveSelected(false)
     setCustomOrigin(null)
     setPickerOpen(false)
-    setLiveOrigin(null)
   }
 
   async function applyCustomStart(point: StartPoint) {
