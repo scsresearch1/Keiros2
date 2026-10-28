@@ -69,7 +69,7 @@ export default function App() {
   const [pickerOpen, setPickerOpen] = useState(false)
   const [liveOrigin, setLiveOrigin] = useState<{ latitude: number; longitude: number } | null>(null)
   const [locating, setLocating] = useState(false)
-  const [indoorView, setIndoorView] = useState<'floor' | 'building'>('floor')
+  const [indoorView, setIndoorView] = useState<'floor' | 'building'>('building')
   /** Google Maps–style live GPS follow. Next/Previous stay available as optional manual control. */
   const [liveNav, setLiveNav] = useState(true)
   const [liveProgress, setLiveProgress] = useState<LiveProgress | null>(null)
@@ -1040,8 +1040,8 @@ export default function App() {
               <div className="demo-indoor-head">
                 <p className="demo-indoor-banner">
                   {indoorView === 'floor'
-                    ? 'Inside — follow the blue path on this floor'
-                    : 'Inside — 3D building overview'}
+                    ? 'Inside — follow the path on this floor'
+                    : 'Inside — 3D building · drag to rotate, yellow path is your indoor route'}
                 </p>
                 <div className="demo-indoor-toggle" role="tablist" aria-label="Indoor map">
                   <button
@@ -1080,7 +1080,12 @@ export default function App() {
               {indoorView === 'floor' ? (
                 <IndoorFloorMap map3d={result.map3d} activeStep={indoorStep} instruction={active?.instruction} />
               ) : (
-                <Indoor3D map3d={result.map3d} activeStep={indoorStep} instruction={active?.instruction} />
+                <Indoor3D
+                  map3d={result.map3d}
+                  activeStep={indoorStep}
+                  instruction={active?.instruction}
+                  complexName={result.selection.complex?.name}
+                />
               )}
             </div>
           )}
