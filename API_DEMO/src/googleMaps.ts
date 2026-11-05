@@ -12,11 +12,16 @@ export function googleMapsApiKey(): string {
 }
 
 /**
- * Map ID enables vector maps + AdvancedMarkerElement (current Google Maps rendering).
- * Create one in Google Cloud → Map Management, or use DEMO_MAP_ID for testing.
+ * Optional Cloud Map ID for Advanced Markers.
+ * Do NOT default to DEMO_MAP_ID — that ID uses a sparse gray basemap that looks like OSM.
+ * Leave unset → classic rich Google roadmap + Marker pins.
  */
 export function googleMapsMapId(): string {
-  return String(import.meta.env.VITE_GOOGLE_MAPS_MAP_ID || 'DEMO_MAP_ID').trim() || 'DEMO_MAP_ID'
+  return String(import.meta.env.VITE_GOOGLE_MAPS_MAP_ID || '').trim()
+}
+
+export function useAdvancedMarkers(): boolean {
+  return Boolean(googleMapsMapId())
 }
 
 /** Load Maps JS API once (Map, Advanced Markers, Geometry, Routes). */
@@ -60,22 +65,24 @@ export function latLngLiteral(lat: number, lng: number): google.maps.LatLngLiter
   return { lat, lng }
 }
 
-/** Default Map options for current Google vector rendering + Advanced Markers. */
+/** Rich Google roadmap by default; mapId only when you set a real Cloud Map ID. */
 export function mapOptions(
   center: google.maps.LatLngLiteral,
   zoom: number,
   extra: google.maps.MapOptions = {},
 ): google.maps.MapOptions {
+  const mapId = googleMapsMapId()
   return {
     center,
     zoom,
-    mapId: googleMapsMapId(),
+    mapTypeId: 'roadmap',
     mapTypeControl: false,
     streetViewControl: false,
     fullscreenControl: true,
     zoomControl: true,
     clickableIcons: false,
     gestureHandling: 'greedy',
+    ...(mapId ? { mapId } : {}),
     ...extra,
   }
 }
@@ -90,9 +97,8 @@ export function geoJsonToLatLngs(
     .map(([lng, lat]) => ({ lat, lng }))
 }
 
-function htmlFromSvg(svg: string, className?: string) {
+function htmlFromSvg(svg: string) {
   const wrap = document.createElement('div')
-  if (className) wrap.className = className
   wrap.innerHTML = svg
   wrap.style.display = 'flex'
   wrap.style.alignItems = 'center'
@@ -100,9 +106,51 @@ function htmlFromSvg(svg: string, className?: string) {
   return wrap
 }
 
-export type AdvMarker = google.maps.marker.AdvancedMarkerElement
+function svgDataUrl(svg: string) {
+  return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`
+}
 
-/** Create an AdvancedMarkerElement with SVG/HTML content (replaces deprecated Marker). */
+/** Pin handle used by OutdoorMap / StartPicker (Advanced or classic Marker). */
+export type AdvMarker = {
+  map: google.maps.Map | null
+  position: google.maps.LatLng | google.maps.LatLngLiteral | null | google.maps.LatLngAltitude
+  title?: string
+  zIndex?: number
+  content?: HTMLElement | null
+  anchorTop?: string
+  anchorLeft?: string
+  gmpDraggable?: boolean
+  addEventListener: (type: string, fn: () => void) => void
+  addListener?: (type: string, fn: () => void) => google.maps.MapsEventListener
+  /** Internal classic marker when not using Advanced Markers */
+  __classic?: google.maps.Marker
+}
+
+function wrapClassicMarker(marker: google.maps.Marker): AdvMarker {
+  const handle: AdvMarker = {
+    __classic: marker,
+    get map() {
+      return (marker.getMap() as google.maps.Map | null) ?? null
+    },
+    set map(m: google.maps.Map | null) {
+      marker.setMap(m)
+    },
+    get position() {
+      return marker.getPosition() ?? null
+    },
+    set position(p) {
+      if (!p) return
+      marker.setPosition(p as google.maps.LatLng | google.maps.LatLngLiteral)
+    },
+    addEventListener(type: string, fn: () => void) {
+      if (type === 'gmp-click' || type === 'click') marker.addListener('click', fn)
+      if (type === 'dragend') marker.addListener('dragend', fn)
+    },
+  }
+  return handle
+}
+
+/** Create a map pin (Advanced Marker if Map ID set; else classic Marker on rich roadmap). */
 export function createAdvancedMarker(opts: {
   map: google.maps.Map
   position: google.maps.LatLngLiteral
@@ -112,19 +160,45 @@ export function createAdvancedMarker(opts: {
   content?: HTMLElement
   gmpDraggable?: boolean
 }): AdvMarker {
-  const AdvancedMarkerElement = google.maps.marker.AdvancedMarkerElement
-  const content = opts.content ?? (opts.svg ? htmlFromSvg(opts.svg) : undefined)
-  return new AdvancedMarkerElement({
+  if (useAdvancedMarkers()) {
+    const AdvancedMarkerElement = google.maps.marker.AdvancedMarkerElement
+    const content = opts.content ?? (opts.svg ? htmlFromSvg(opts.svg) : undefined)
+    return new AdvancedMarkerElement({
+      map: opts.map,
+      position: opts.position,
+      title: opts.title,
+      zIndex: opts.zIndex,
+      content,
+      gmpDraggable: opts.gmpDraggable,
+    }) as unknown as AdvMarker
+  }
+
+  const marker = new google.maps.Marker({
     map: opts.map,
     position: opts.position,
     title: opts.title,
     zIndex: opts.zIndex,
-    content,
-    gmpDraggable: opts.gmpDraggable,
+    draggable: opts.gmpDraggable,
+    icon: opts.svg
+      ? {
+          url: svgDataUrl(opts.svg),
+          scaledSize: new google.maps.Size(36, 44),
+          anchor: new google.maps.Point(18, 44),
+        }
+      : undefined,
   })
+  return wrapClassicMarker(marker)
 }
 
 export function setAdvancedMarkerSvg(marker: AdvMarker, svg: string) {
+  if (marker.__classic) {
+    marker.__classic.setIcon({
+      url: svgDataUrl(svg),
+      scaledSize: new google.maps.Size(48, 48),
+      anchor: new google.maps.Point(24, 24),
+    })
+    return
+  }
   marker.content = htmlFromSvg(svg)
 }
 

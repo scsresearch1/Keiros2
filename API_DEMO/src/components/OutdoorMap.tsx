@@ -257,7 +257,10 @@ export function OutdoorMap({
           coords,
         }),
       )
-      info.open({ map, anchor: marker })
+      info.open({
+        map,
+        anchor: (marker.__classic ?? marker) as google.maps.Marker | google.maps.marker.AdvancedMarkerElement,
+      })
     }
 
     const startMarker = track(
@@ -333,8 +336,11 @@ export function OutdoorMap({
       style: 'drive' | 'walk-dots',
       zIndex: number,
     ) {
-      // Keep network snap — don't invent long chords across dirt lots.
-      const pinned = pinPathToEndpoints(path, from, to, 12, 22)
+      // Drive: keep network end (don't stretch blue into the door). Walk: allow short snap to door.
+      const pinned =
+        style === 'drive'
+          ? pinPathToEndpoints(path, from, path[path.length - 1] ?? to, 12, 8)
+          : pinPathToEndpoints(path, from, to, 12, 22)
       if (pinned.length < 2) return
 
       if (style === 'walk-dots') {

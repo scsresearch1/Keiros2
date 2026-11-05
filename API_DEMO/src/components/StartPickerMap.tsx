@@ -155,7 +155,7 @@ export const StartPickerMap = forwardRef<StartPickerMapHandle, Props>(function S
         svg: startPinSvg(),
         gmpDraggable: true,
       })
-      marker.addListener('dragend', () => {
+      marker.addEventListener('dragend', () => {
         const ll = markerLatLng(marker)
         if (!ll) return
         skipFlyRef.current = true
