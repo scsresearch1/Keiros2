@@ -117,8 +117,47 @@ function blendHeading(prev: number | null, next: number): number {
   if (prev == null || !Number.isFinite(prev)) return next
   const delta = ((next - prev + 540) % 360) - 180
   // Large phone turns: catch up fast. Small noise: soften.
-  const t = Math.abs(delta) > 25 ? 0.85 : 0.65
+  const t = Math.abs(delta) > 35 ? 0.7 : 0.28
   return (prev + delta * t + 360) % 360
+}
+
+type SmoothPos = { lat: number; lng: number }
+
+/**
+ * Google-like GPS display filter: ignore tiny stationary noise, ease toward real movement.
+ * Matching / re-route still use the raw LiveFix; only the puck + camera use this.
+ */
+function blendPosition(
+  prev: SmoothPos | null,
+  next: SmoothPos,
+  opts: { speedMps: number | null; accuracyM: number },
+): SmoothPos {
+  if (!prev) return next
+  const meters =
+    Math.hypot(
+      (next.lat - prev.lat) * 111_320,
+      (next.lng - prev.lng) * 111_320 * Math.cos((next.lat * Math.PI) / 180),
+    ) || 0
+  const accuracy = Math.max(8, opts.accuracyM || 20)
+  const speed = opts.speedMps != null && Number.isFinite(opts.speedMps) ? Math.max(0, opts.speedMps) : 0
+  const stationary = speed < 0.6
+
+  // Standing still: swallow GPS wobble inside the accuracy circle.
+  if (stationary && meters < Math.max(4, accuracy * 0.45)) {
+    return prev
+  }
+  // Slow walk: strong easing. Driving: catch up quicker so the puck stays ahead of the car.
+  const alpha = stationary ? 0.12 : speed < 4 ? 0.22 : speed < 12 ? 0.38 : 0.55
+  // Big real jumps (after a turn onto a new block) catch up faster.
+  const boost = meters > Math.max(25, accuracy * 1.2) ? Math.min(0.85, alpha + 0.35) : alpha
+  return {
+    lat: prev.lat + (next.lat - prev.lat) * boost,
+    lng: prev.lng + (next.lng - prev.lng) * boost,
+  }
+}
+
+function headingDeltaDeg(a: number, b: number) {
+  return Math.abs(((b - a + 540) % 360) - 180)
 }
 
 export function OutdoorMap({
@@ -138,6 +177,9 @@ export function OutdoorMap({
   const accuracyRef = useRef<google.maps.Circle | null>(null)
   const lastLiveRef = useRef<LiveFix | null>(null)
   const smoothHeadingRef = useRef<number | null>(null)
+  const smoothPosRef = useRef<SmoothPos | null>(null)
+  const lastCameraHeadingRef = useRef<number | null>(null)
+  const lastPuckRotRef = useRef<number | null>(null)
   const userPanningRef = useRef(false)
   const panTimerRef = useRef<number | null>(null)
   const routeSessionRef = useRef(0)
@@ -740,6 +782,9 @@ export function OutdoorMap({
       accuracyRef.current = null
       lastLiveRef.current = null
       smoothHeadingRef.current = null
+      smoothPosRef.current = null
+      lastCameraHeadingRef.current = null
+      lastPuckRotRef.current = null
       return
     }
 
@@ -764,22 +809,31 @@ export function OutdoorMap({
     }
     const heading = smoothHeadingRef.current
     lastLiveRef.current = liveFix
-    const pos = latLngLiteral(liveFix.latitude, liveFix.longitude)
+
+    const smoothed = blendPosition(
+      smoothPosRef.current,
+      { lat: liveFix.latitude, lng: liveFix.longitude },
+      { speedMps: liveFix.speed, accuracyM: liveFix.accuracy },
+    )
+    smoothPosRef.current = smoothed
+    const pos = latLngLiteral(smoothed.lat, smoothed.lng)
 
     // Always track the phone in Live mode (do not gate on distance to S — that left the
     // puck stranded across the city when the overview zoomed out to the full trip).
     const shouldFollow = followLive && !userPanningRef.current
+    const driving = liveFix.speed != null && liveFix.speed > 8
+    const targetZoom = driving ? 16 : 18
+    const needStreetZoom = !liveSnapDoneRef.current || (map.getZoom() ?? 0) < 15
 
-    // Rotate map toward phone-top when following (heading-up). Hybrid may ignore heading —
-    // puck still uses map.getHeading() so the arrow matches the phone.
-    if (shouldFollow && heading != null) {
-      const driving = liveFix.speed != null && liveFix.speed > 8
-      const targetZoom = driving ? 16 : 18
-      // Keep street zoom while following — never leave the camera on a city-wide fitBounds.
-      const zoom =
-        !liveSnapDoneRef.current || (map.getZoom() ?? 0) < 16
-          ? targetZoom
-          : Math.max(map.getZoom() ?? targetZoom, 15)
+    // Rotate map toward phone-top when following — but only when heading actually changed
+    // enough (constant compass noise was spinning the map every frame).
+    const headingMoved =
+      heading != null &&
+      (lastCameraHeadingRef.current == null ||
+        headingDeltaDeg(lastCameraHeadingRef.current, heading) >= 6)
+
+    if (shouldFollow && heading != null && (needStreetZoom || headingMoved)) {
+      const zoom = needStreetZoom ? targetZoom : Math.max(map.getZoom() ?? targetZoom, 15)
       try {
         map.moveCamera({
           center: pos,
@@ -792,15 +846,15 @@ export function OutdoorMap({
         map.setZoom(zoom)
         if (typeof map.setHeading === 'function') map.setHeading(normalizeDeg(heading))
       }
+      lastCameraHeadingRef.current = normalizeDeg(heading)
       liveSnapDoneRef.current = true
     } else if (shouldFollow) {
-      const driving = liveFix.speed != null && liveFix.speed > 8
-      const targetZoom = driving ? 16 : 18
-      if (!liveSnapDoneRef.current || (map.getZoom() ?? 0) < 15) {
+      if (needStreetZoom) {
         map.setCenter(pos)
         map.setZoom(targetZoom)
         liveSnapDoneRef.current = true
       } else {
+        // Soft follow — panTo eases; avoids hard setCenter jitter on every GPS tick.
         map.panTo(pos)
       }
     }
@@ -808,11 +862,14 @@ export function OutdoorMap({
     const appliedMapHeading =
       typeof map.getHeading === 'function' && Number.isFinite(map.getHeading())
         ? normalizeDeg(map.getHeading() as number)
-        : 0
+        : lastCameraHeadingRef.current ?? 0
     setMapHeading(appliedMapHeading)
     // Arrow = phone-top relative to whatever way the map is currently drawn.
     const puckRot =
       heading != null ? normalizeDeg(heading - appliedMapHeading) : null
+    const puckRotChanged =
+      puckRot != null &&
+      (lastPuckRotRef.current == null || headingDeltaDeg(lastPuckRotRef.current, puckRot) >= 3)
 
     if (!liveMarkerRef.current) {
       const puck = createAdvancedMarker({
@@ -825,28 +882,33 @@ export function OutdoorMap({
       puck.anchorTop = '50%'
       puck.anchorLeft = '50%'
       liveMarkerRef.current = puck
+      lastPuckRotRef.current = puckRot
     } else {
       liveMarkerRef.current.position = pos
-      setAdvancedMarkerSvg(liveMarkerRef.current, livePuckSvg(puckRot))
+      if (puckRotChanged) {
+        setAdvancedMarkerSvg(liveMarkerRef.current, livePuckSvg(puckRot))
+        lastPuckRotRef.current = puckRot
+      }
       liveMarkerRef.current.anchorTop = '50%'
       liveMarkerRef.current.anchorLeft = '50%'
     }
 
+    const accRadius = Math.max(12, Math.min(40, liveFix.accuracy || 20))
     if (!accuracyRef.current) {
       accuracyRef.current = new google.maps.Circle({
         map,
         center: pos,
-        radius: Math.max(8, liveFix.accuracy || 20),
+        radius: accRadius,
         strokeColor: LIVE_BLUE,
-        strokeOpacity: 0.55,
+        strokeOpacity: 0.45,
         strokeWeight: 1,
         fillColor: LIVE_BLUE,
-        fillOpacity: 0.12,
+        fillOpacity: 0.1,
         zIndex: 5,
       })
     } else {
       accuracyRef.current.setCenter(pos)
-      accuracyRef.current.setRadius(Math.max(8, liveFix.accuracy || 20))
+      accuracyRef.current.setRadius(accRadius)
     }
   }, [liveFix, followLive, mapReady])
 

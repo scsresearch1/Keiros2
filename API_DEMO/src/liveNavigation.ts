@@ -499,22 +499,22 @@ export function useGeolocationWatch(
       },
     )
 
-    let compassRaf = 0
+    let compassTimer = 0
     let pendingCompass: number | null = null
     const flushCompass = () => {
-      compassRaf = 0
+      compassTimer = 0
       if (pendingCompass == null) return
       const compass = pendingCompass
       pendingCompass = null
       lastCompassHeading.current = compass
       const prev = lastFixRef.current
       if (!prev) return
-      const heading = pickHeading(
-        lastGpsHeading.current,
-        prev.speed,
-      )
-      if (heading == null || (prev.heading != null && Math.abs(((heading - prev.heading + 540) % 360) - 180) < 0.8)) {
-        return
+      const heading = pickHeading(lastGpsHeading.current, prev.speed)
+      if (heading == null) return
+      if (prev.heading != null) {
+        const delta = Math.abs(((heading - prev.heading + 540) % 360) - 180)
+        // Ignore tiny compass noise — was republishing every frame and thrashing the map.
+        if (delta < 4) return
       }
       const next: LiveFix = { ...prev, heading, timestamp: Date.now() }
       lastFixRef.current = next
@@ -525,7 +525,8 @@ export function useGeolocationWatch(
       const h = compassHeadingFromEvent(e)
       if (h == null) return
       pendingCompass = h
-      if (!compassRaf) compassRaf = window.requestAnimationFrame(flushCompass)
+      // ~8 Hz is enough for a stable Google-like puck; rAF was overkill.
+      if (!compassTimer) compassTimer = window.setTimeout(flushCompass, 120)
     }
 
     // Absolute first (Android); fall back to deviceorientation (iOS webkitCompassHeading).
@@ -536,7 +537,7 @@ export function useGeolocationWatch(
       navigator.geolocation.clearWatch(id)
       window.removeEventListener('deviceorientationabsolute', onOrientation as EventListener, true)
       window.removeEventListener('deviceorientation', onOrientation as EventListener, true)
-      if (compassRaf) window.cancelAnimationFrame(compassRaf)
+      if (compassTimer) window.clearTimeout(compassTimer)
       setWatching(false)
     }
   }, [enabled])
