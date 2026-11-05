@@ -1,21 +1,24 @@
 # Netlify — Keiros API_DEMO (Vite SPA)
-# Create a SECOND Netlify site from the same repo.
 # Site settings → Build & deploy → Base directory = API_DEMO
 
 [build]
   command = "npm ci && npm run build"
   publish = "dist"
 
-# Overpass proxies FIRST (browser cannot call overpass-*.de — CORS).
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
+
+# Overpass via serverless function (raw upstream redirects returned 406).
 [[redirects]]
   from = "/api/overpass"
-  to = "https://overpass-api.de/api/interpreter"
+  to = "/.netlify/functions/overpass"
   status = 200
   force = true
 
 [[redirects]]
   from = "/api/overpass-kumi"
-  to = "https://overpass.kumi.systems/api/interpreter"
+  to = "/.netlify/functions/overpass"
   status = 200
   force = true
 
@@ -26,15 +29,10 @@
 
 [build.environment]
   NODE_VERSION = "22"
-  # Browser Maps key must end up in the JS bundle — allow secrets scan to skip it.
-  # Enable Maps JavaScript API + Routes API on this key in Google Cloud.
   SECRETS_SCAN_OMIT_KEYS = "VITE_GOOGLE_MAPS_API_KEY,VITE_GOOGLE_MAPS_MAP_ID"
   VITE_GOOGLE_MAPS_API_KEY = "AIzaSyCnQijsiKFJtL39zOTCQfGUQ_Bkju5hWiY"
-  # Cloud Map ID (JavaScript/Roadmap, no custom style) → full Google look + Advanced Markers.
-  # Without this, DEMO_MAP_ID is used (warning-free, but demo basemap style).
   # VITE_GOOGLE_MAPS_MAP_ID = "YOUR_MAP_ID"
 
-# Also set in Netlify UI if preferred (same name). Required for Vite build:
 #   VITE_API_BASE=https://YOUR-SERVICE.onrender.com
 #   VITE_GOOGLE_MAPS_API_KEY=...
 #   VITE_GOOGLE_MAPS_MAP_ID=...

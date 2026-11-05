@@ -26,13 +26,14 @@ export type OutdoorPlan = {
   toEntranceM: number
 }
 
-/** Already at the entry door — skip long outdoor drive. */
-export const AT_ENTRANCE_M = 40
-/** Entry door → unit pin: always walk (never drive onto the building). */
-export const ENTRANCE_TO_UNIT_WALK_M = 6
+/** Already at the destination pin — no outdoor route. */
+export const AT_DESTINATION_M = 25
 
 export const DRIVE_COLOR = '#1a73e8'
 export const WALK_COLOR = '#0d9488'
+
+/** @deprecated use AT_DESTINATION_M — kept for smartReroute import */
+export const AT_ENTRANCE_M = 40
 
 export function metersBetween(a: LatLngLit, b: LatLngLit) {
   const R = 6371000
@@ -50,9 +51,15 @@ function lit(lat: number, lng: number): LatLngLit {
 }
 
 /**
- * Outdoor:
- * 1) Drive origin → entry door (closest driveable, then walk to door if needed)
- * 2) Walk entry door → unit pin when they differ (red dots) — never drive E→D
+ * Outdoor goal = the actual destination coordinate (unit / D).
+ *
+ * Default plan (before OSM driveway extract):
+ * walk origin → D. Driveway drive is decided in OutdoorMap after extract:
+ *   driveway near D → drive onto it, then walk to exact D
+ *   no driveway → walk to D
+ *
+ * Entry door (E) is shown as a waypoint only — never the drive target that
+ * sends the blue line away from D.
  */
 export function resolveOutdoorLegs(result: NavigateResult): OutdoorPlan {
   const origin = lit(result.origin.latitude, result.origin.longitude)
@@ -64,17 +71,18 @@ export function resolveOutdoorLegs(result: NavigateResult): OutdoorPlan {
     ? lit(result.entrance.latitude, result.entrance.longitude)
     : unit
 
+  const toDestM = Math.round(metersBetween(origin, unit))
   const toEntranceM = Math.round(metersBetween(origin, entrance))
-  const entranceToUnitM = Math.round(metersBetween(entrance, unit))
 
-  const entranceWp: OutdoorWaypoint = {
-    kind: 'entrance',
-    position: entrance,
-    label: result.entrance?.label || 'Entry door',
-    fill: '#22c55e',
-  }
+  const waypoints: OutdoorWaypoint[] = [
+    {
+      kind: 'entrance',
+      position: entrance,
+      label: result.entrance?.label || 'Entry door',
+      fill: '#22c55e',
+    },
+  ]
 
-  const waypoints: OutdoorWaypoint[] = [entranceWp]
   if (
     result.parking &&
     Number.isFinite(result.parking.latitude) &&
@@ -90,26 +98,13 @@ export function resolveOutdoorLegs(result: NavigateResult): OutdoorPlan {
   }
 
   const legs: OutdoorLeg[] = []
-
-  if (toEntranceM > AT_ENTRANCE_M) {
+  if (toDestM > AT_DESTINATION_M) {
     legs.push({
-      id: 'drive-to-entry-door',
-      mode: 'DRIVE',
-      from: origin,
-      to: entrance,
-      label: 'Drive to entry door',
-      color: DRIVE_COLOR,
-    })
-  }
-
-  // Connect Entry (E) → Destination unit (D) on foot — this was missing / wrongly driven.
-  if (entranceToUnitM > ENTRANCE_TO_UNIT_WALK_M) {
-    legs.push({
-      id: 'walk-entry-to-unit',
+      id: 'walk-to-destination',
       mode: 'WALK',
-      from: entrance,
+      from: origin,
       to: unit,
-      label: 'Walk entry door → unit',
+      label: 'Walk to destination (no driveway yet)',
       color: WALK_COLOR,
     })
   }
@@ -117,14 +112,7 @@ export function resolveOutdoorLegs(result: NavigateResult): OutdoorPlan {
   return {
     legs,
     waypoints,
-    policy:
-      legs.length === 0
-        ? 'at-entry-door'
-        : legs.some((l) => l.mode === 'DRIVE') && legs.some((l) => l.mode === 'WALK')
-          ? 'drive-to-entry-then-walk-to-unit'
-          : legs[0]?.mode === 'WALK'
-            ? 'walk-entry-to-unit'
-            : 'drive-to-entry-door',
+    policy: legs.length === 0 ? 'at-destination' : 'walk-to-destination',
     toEntranceM,
   }
 }

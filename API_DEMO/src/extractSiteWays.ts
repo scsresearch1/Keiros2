@@ -1,8 +1,6 @@
 /**
- * Optional OSM driveway/sidewalk extract.
- * Browser → Overpass is blocked/broken on Netlify (CORS / 406 via redirect proxy).
- * Default OFF so Google Drive+Walk always works. Set VITE_OSM_EXTRACT=1 when a
- * real server-side Overpass proxy exists.
+ * Extract driveways + sidewalks from OpenStreetMap via same-origin Overpass proxy.
+ * Netlify: /.netlify/functions/overpass (see netlify.toml redirects).
  */
 
 export type SiteWayKind = 'driveway' | 'sidewalk'
@@ -30,13 +28,13 @@ type OverpassElement = {
   geometry?: { lat: number; lon: number }[]
 }
 
-const OSM_ENABLED = String(import.meta.env.VITE_OSM_EXTRACT || '').trim() === '1'
+/** Prefer Netlify function; keep kumi path as secondary rewrite if configured. */
 const OVERPASS_URLS = ['/api/overpass', '/api/overpass-kumi']
 const cache = new Map<string, Promise<SiteWaysExtract>>()
 
 function padBbox(
   points: { lat: number; lng: number }[],
-  padDeg = 0.0035,
+  padDeg = 0.004,
 ): [number, number, number, number] {
   let south = Infinity
   let north = -Infinity
@@ -82,6 +80,7 @@ function classify(tags: Record<string, string> | undefined): SiteWayKind | null 
     return 'sidewalk'
   }
 
+  // Private apartment / site driveways and parking aisles — what satellite shows but Google often skips.
   if (
     service === 'driveway' ||
     service === 'parking_aisle' ||
@@ -91,13 +90,7 @@ function classify(tags: Record<string, string> | undefined): SiteWayKind | null 
     highway === 'unclassified' ||
     highway === 'tertiary' ||
     highway === 'secondary' ||
-    highway === 'primary' ||
-    highway === 'trunk' ||
-    highway === 'motorway' ||
-    highway === 'motorway_link' ||
-    highway === 'primary_link' ||
-    highway === 'secondary_link' ||
-    highway === 'tertiary_link'
+    highway === 'primary'
   ) {
     return 'driveway'
   }
@@ -116,16 +109,10 @@ function buildQuery(south: number, west: number, north: number, east: number) {
   way["highway"="living_street"](${b});
   way["highway"="residential"](${b});
   way["highway"="unclassified"](${b});
-  way["highway"="tertiary"](${b});
-  way["highway"="secondary"](${b});
-  way["highway"="primary"](${b});
   way["highway"="footway"](${b});
   way["highway"="path"](${b});
   way["highway"="pedestrian"](${b});
-  way["highway"="steps"](${b});
   way["footway"="sidewalk"](${b});
-  way["footway"="crossing"](${b});
-  way["highway"="cycleway"]["foot"~"yes|designated|permissive"](${b});
 );
 out geom;
 `.trim()
@@ -170,17 +157,11 @@ function elementToWay(el: OverpassElement): SiteWay | null {
   }
 }
 
-/**
- * Returns site ways when OSM extract is enabled; otherwise empty (Google-only routing).
- * Never throws for the disabled / failed proxy case used on Netlify.
- */
+/** Always attempts extract; on failure returns empty (Google-only fallback). */
 export function extractSiteWays(points: { lat: number; lng: number }[]): Promise<SiteWaysExtract> {
   const valid = points.filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lng))
   const bbox = padBbox(valid.length ? valid : [{ lat: 0, lng: 0 }])
-
-  if (!OSM_ENABLED || valid.length < 1) {
-    return Promise.resolve(emptyExtract(bbox))
-  }
+  if (valid.length < 1) return Promise.resolve(emptyExtract(bbox))
 
   const key = bbox.map((n) => n.toFixed(5)).join(',')
   const hit = cache.get(key)

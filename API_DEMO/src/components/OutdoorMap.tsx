@@ -9,6 +9,7 @@ import {
   mapOptions,
   setAdvancedMarkerSvg,
 } from '../googleMaps'
+import { nearestDrivewayPointTo } from '../drivewayApproach'
 import { planDrivePlusWalk, planWalkOnly } from '../driveWalkHandoff'
 import { extractSiteWays, type SiteWaysExtract } from '../extractSiteWays'
 import { pinPathToEndpoints } from '../googleRoute'
@@ -16,7 +17,8 @@ import type { LiveFix } from '../liveNavigation'
 import { bearingDeg } from '../liveNavigation'
 import { resolveOutdoorLegs, type OutdoorLeg } from '../outdoorLegs'
 
-const DRIVEWAY_LAYER = '#64748b'
+/** Highlight extracted site driveways so the visible driveway is obvious. */
+const DRIVEWAY_LAYER = '#f59e0b'
 const SIDEWALK_LAYER = '#14b8a6'
 /** Firm drive line (closest driveable point). */
 const ROUTE_DRIVE_BLUE = '#1a73e8'
@@ -412,8 +414,8 @@ export function OutdoorMap({
             map,
             path,
             strokeColor: DRIVEWAY_LAYER,
-            strokeOpacity: 0.55,
-            strokeWeight: 4,
+            strokeOpacity: 0.9,
+            strokeWeight: 5,
             zIndex: 8,
             geodesic: false,
           }),
@@ -510,10 +512,66 @@ export function OutdoorMap({
       let driveWalkCount = 0
       const sources = new Set<string>()
 
+      // Rule: always end at the actual destination coordinate (D).
+      // Driveway near D → drive onto it, then walk to D.
+      // No driveway → walk to D. Never drive to E and away from D.
+      const drivewayCurb = nearestDrivewayPointTo(extract, destination, 160)
+
+      const legsToDraw: OutdoorLeg[] = drivewayCurb
+        ? [
+            {
+              id: 'drive-to-driveway',
+              mode: 'DRIVE',
+              from: origin,
+              to: drivewayCurb,
+              label: 'Drive on driveway toward destination',
+              color: ROUTE_DRIVE_BLUE,
+            },
+            {
+              id: 'walk-to-destination',
+              mode: 'WALK',
+              from: drivewayCurb,
+              to: destination,
+              label: 'Walk to actual destination',
+              color: ROUTE_WALK_DOT,
+            },
+          ]
+        : [
+            {
+              id: 'walk-to-destination',
+              mode: 'WALK',
+              from: origin,
+              to: destination,
+              label: 'Walk to actual destination (no driveway)',
+              color: ROUTE_WALK_DOT,
+            },
+          ]
+
+      if (drivewayCurb) {
+        track(
+          createAdvancedMarker({
+            map,
+            position: drivewayCurb,
+            title: 'Driveway — leave vehicle, walk to destination',
+            zIndex: 48,
+            svg: pinSvg('#f59e0b', 'W'),
+          }),
+        )
+        bounds.extend(drivewayCurb)
+        setSiteNet((prev) =>
+          prev
+            ? { ...prev, routedOn: `Drive → walk to D · ${prev.driveways} driveways` }
+            : prev,
+        )
+      } else {
+        setSiteNet((prev) =>
+          prev ? { ...prev, routedOn: 'Walk to D (no driveway)' } : prev,
+        )
+      }
+
       await Promise.all(
-        outdoorPlan.legs.map(async (leg, index) => {
+        legsToDraw.map(async (leg, index) => {
           try {
-            // DRIVE legs: car to entry. WALK legs: foot only (E→D) — never drive from the door.
             const plan =
               leg.mode === 'WALK'
                 ? await planWalkOnly(leg.from, leg.to, extract)
@@ -687,9 +745,9 @@ export function OutdoorMap({
               <br />
               <span style={{ color: SIDEWALK_LAYER }}>···</span> Extracted sidewalks (OSM)
               <br />
-              <span style={{ color: ROUTE_DRIVE_BLUE }}>━━</span> Drive (firm blue) to closest driveable point
+              <span style={{ color: ROUTE_DRIVE_BLUE }}>━━</span> Drive on driveway toward destination
               <br />
-              <span style={{ color: ROUTE_WALK_DOT }}>●●●</span> Walk (red dots) on sidewalks to entry door
+              <span style={{ color: ROUTE_WALK_DOT }}>●●●</span> Walk (red dots) to actual destination
               <br />
               <span style={{ color: '#0ea5e9' }}>●</span> Start ·{' '}
               <span style={{ color: '#a855f7' }}>●</span> Parking ·{' '}

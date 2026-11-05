@@ -78,19 +78,35 @@ async function bestDriveRoute(
   try {
     const g: RoadRoute = await fetchRoadRoute(from, to, 'DRIVE')
     if (g.path.length >= 2) {
-      candidates.push({
-        path: g.path,
-        distanceM: g.distanceM,
-        source: 'google-drive',
-        gap: pathEndGapM(g.path, to),
-      })
+      // Google often stops on the public road and never enters the visible site driveway.
+      // Stitch OSM driveway from Google's end onto `to` (curb / driveway snap).
+      let path = g.path
+      let distanceM = g.distanceM
+      let source = 'google-drive'
+      let gap = pathEndGapM(g.path, to)
+
+      if (extract?.driveways.length && gap > LAST_MILE_WALK_M) {
+        const googleEnd = g.path[g.path.length - 1]
+        const ontoDriveway = routeOnSiteWays(extract, googleEnd, to, 'DRIVE')
+        if (ontoDriveway && ontoDriveway.path.length >= 2) {
+          const stitchGap = pathEndGapM(ontoDriveway.path, to)
+          if (stitchGap + 5 < gap) {
+            path = [...g.path, ...ontoDriveway.path.slice(1)]
+            distanceM = g.distanceM + ontoDriveway.distanceM
+            source = 'google-drive+osm-driveway'
+            gap = stitchGap
+          }
+        }
+      }
+
+      candidates.push({ path, distanceM, source, gap })
     }
   } catch {
     /* ignore */
   }
 
   if (!candidates.length) return null
-  // Prefer the drive that gets closest to the entry door on the vehicle network.
+  // Prefer the drive that gets closest to the site driveway / curb.
   candidates.sort((a, b) => {
     if (Math.abs(a.gap - b.gap) > 8) return a.gap - b.gap
     return a.distanceM - b.distanceM
