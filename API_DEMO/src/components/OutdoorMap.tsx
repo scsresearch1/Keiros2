@@ -113,6 +113,12 @@ export function OutdoorMap({
   const userPanningRef = useRef(false)
   const panTimerRef = useRef<number | null>(null)
   const routeSessionRef = useRef(0)
+  /** After Navigate in Live mode, snap once to GPS at street zoom (don't wait on fitBounds). */
+  const liveSnapDoneRef = useRef(false)
+  const liveFixRef = useRef(liveFix)
+  liveFixRef.current = liveFix
+  const followLiveRef = useRef(followLive)
+  followLiveRef.current = followLive
 
   const [mapError, setMapError] = useState('')
   const [mapReady, setMapReady] = useState(false)
@@ -343,7 +349,8 @@ export function OutdoorMap({
       bounds.extend(wp.position)
     }
 
-    // Frame Fresno / site immediately — don't wait on Overpass (CORS used to stall the view).
+    // Frame start immediately (Live = GPS street zoom; Demo = route bounds after paths).
+    liveSnapDoneRef.current = false
     fitRouteView()
 
     const trafficLayer = new google.maps.TrafficLayer()
@@ -469,6 +476,20 @@ export function OutdoorMap({
     function fitRouteView() {
       const gmap = mapRef.current
       if (!gmap || bounds.isEmpty()) return
+
+      // Phone Live: jump to start/GPS at street zoom immediately — don't fit the whole trip
+      // (that left the camera zoomed out for a long time).
+      if (followLiveRef.current) {
+        const fix = liveFixRef.current
+        const focus = fix
+          ? latLngLiteral(fix.latitude, fix.longitude)
+          : origin
+        gmap.setCenter(focus)
+        gmap.setZoom(17)
+        liveSnapDoneRef.current = true
+        return
+      }
+
       gmap.fitBounds(bounds, { top: 56, right: 280, bottom: 56, left: 56 })
       google.maps.event.addListenerOnce(gmap, 'idle', () => {
         if (session !== routeSessionRef.current) return
@@ -722,8 +743,7 @@ export function OutdoorMap({
       accuracyRef.current.setRadius(Math.max(8, liveFix.accuracy || 20))
     }
 
-    // Only follow GPS when it's near the planned outdoor route (same metro).
-    // Otherwise Demo Fresno + phone GPS in India yank the camera to Hyderabad.
+    // Follow GPS when near the planned start (same metro). Snap hard on first fix.
     const routeLat = Number(result.origin.latitude)
     const routeLng = Number(result.origin.longitude)
     const nearRouteM = Math.hypot(
@@ -731,9 +751,16 @@ export function OutdoorMap({
       (liveFix.longitude - routeLng) * 111_320 * Math.cos((routeLat * Math.PI) / 180),
     )
     if (followLive && !userPanningRef.current && nearRouteM < 8000) {
-      const targetZoom = liveFix.speed != null && liveFix.speed > 8 ? 16 : 17
-      if ((map.getZoom() ?? 0) < 15) map.setZoom(targetZoom)
-      map.panTo(pos)
+      const driving = liveFix.speed != null && liveFix.speed > 8
+      const targetZoom = driving ? 16 : 18
+      if (!liveSnapDoneRef.current || (map.getZoom() ?? 0) < 16) {
+        map.setCenter(pos)
+        map.setZoom(targetZoom)
+        liveSnapDoneRef.current = true
+      } else {
+        map.panTo(pos)
+        if ((map.getZoom() ?? 0) < targetZoom - 0.5) map.setZoom(targetZoom)
+      }
     }
   }, [liveFix, followLive, mapReady, result.origin.latitude, result.origin.longitude])
 
