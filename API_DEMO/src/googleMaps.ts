@@ -112,6 +112,8 @@ export function createAdvancedMarker(opts: {
   svg?: string
   content?: HTMLElement
   gmpDraggable?: boolean
+  /** Required for gmp-click / InfoWindow on Advanced Markers (default true). */
+  gmpClickable?: boolean
 }): AdvMarker {
   const AdvancedMarkerElement = google.maps.marker.AdvancedMarkerElement
   const content = opts.content ?? (opts.svg ? htmlFromSvg(opts.svg) : undefined)
@@ -122,6 +124,7 @@ export function createAdvancedMarker(opts: {
     zIndex: opts.zIndex,
     content,
     gmpDraggable: opts.gmpDraggable,
+    gmpClickable: opts.gmpClickable !== false,
   })
 }
 

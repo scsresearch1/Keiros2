@@ -260,6 +260,7 @@ export function OutdoorMap({
       backendAddress: string | null | undefined,
       coords: google.maps.LatLngLiteral,
     ) {
+      info.close()
       info.setContent(
         pinPopupHtml({
           kind,
@@ -268,7 +269,13 @@ export function OutdoorMap({
           coords,
         }),
       )
-      info.open({ map, anchor: marker })
+      // AdvancedMarker anchor (needs gmpClickable). Position fallback if anchor fails.
+      try {
+        info.open({ map, anchor: marker })
+      } catch {
+        info.setPosition(coords)
+        info.open({ map })
+      }
     }
 
     const startMarker = track(
@@ -312,20 +319,20 @@ export function OutdoorMap({
     })
     bounds.extend(destination)
 
+    // Outdoor target is D — do not plot Entry (E). Only parking when "Via parking" is on.
     for (const wp of outdoorPlan.waypoints) {
-      const letter = wp.kind === 'parking' ? 'P' : 'E'
-      const kindLabel = wp.kind === 'parking' ? 'Parking' : 'Entrance'
+      if (wp.kind !== 'parking') continue
       const marker = track(
         createAdvancedMarker({
           map,
           position: wp.position,
-          title: `${kindLabel} · ${wp.label}`,
-          zIndex: wp.kind === 'parking' ? 42 : 43,
-          svg: pinSvg(wp.fill, letter),
+          title: `Parking · ${wp.label}`,
+          zIndex: 42,
+          svg: pinSvg(wp.fill, 'P'),
         }),
       )
       marker.addEventListener('gmp-click', () => {
-        openPinInfo(marker, kindLabel, wp.label, null, wp.position)
+        openPinInfo(marker, 'Parking', wp.label, null, wp.position)
       })
       bounds.extend(wp.position)
     }
