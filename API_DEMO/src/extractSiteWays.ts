@@ -1,6 +1,8 @@
 /**
- * Extract real driveway vs sidewalk geometries from OpenStreetMap (Overpass).
- * Browser calls same-origin `/api/overpass*` (Netlify/Vite proxy) to avoid CORS.
+ * Optional OSM driveway/sidewalk extract.
+ * Browser → Overpass is blocked/broken on Netlify (CORS / 406 via redirect proxy).
+ * Default OFF so Google Drive+Walk always works. Set VITE_OSM_EXTRACT=1 when a
+ * real server-side Overpass proxy exists.
  */
 
 export type SiteWayKind = 'driveway' | 'sidewalk'
@@ -8,7 +10,6 @@ export type SiteWayKind = 'driveway' | 'sidewalk'
 export type SiteWay = {
   id: string
   kind: SiteWayKind
-  /** [lng, lat] rings matching GeoJSON order */
   coordinates: [number, number][]
   name?: string
   highway?: string
@@ -29,9 +30,8 @@ type OverpassElement = {
   geometry?: { lat: number; lon: number }[]
 }
 
-/** Same-origin proxies — never call overpass-*.de from the browser (CORS blocked on Netlify). */
+const OSM_ENABLED = String(import.meta.env.VITE_OSM_EXTRACT || '').trim() === '1'
 const OVERPASS_URLS = ['/api/overpass', '/api/overpass-kumi']
-
 const cache = new Map<string, Promise<SiteWaysExtract>>()
 
 function padBbox(
@@ -49,10 +49,18 @@ function padBbox(
     west = Math.min(west, p.lng)
     east = Math.max(east, p.lng)
   }
-  if (!Number.isFinite(south)) {
-    return [0, 0, 0, 0]
-  }
+  if (!Number.isFinite(south)) return [0, 0, 0, 0]
   return [south - padDeg, west - padDeg, north + padDeg, east + padDeg]
+}
+
+function emptyExtract(bbox: [number, number, number, number]): SiteWaysExtract {
+  return {
+    driveways: [],
+    sidewalks: [],
+    bbox,
+    source: 'openstreetmap',
+    fetchedAt: new Date().toISOString(),
+  }
 }
 
 function classify(tags: Record<string, string> | undefined): SiteWayKind | null {
@@ -129,11 +137,14 @@ async function fetchOverpass(query: string): Promise<OverpassElement[]> {
     try {
       const res = await fetch(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+          Accept: 'application/json',
+        },
         body: `data=${encodeURIComponent(query)}`,
       })
       if (!res.ok) throw new Error(`Overpass ${res.status}`)
-      const json = (await res.json()) as { elements?: OverpassElement[]; remark?: string }
+      const json = (await res.json()) as { elements?: OverpassElement[] }
       return json.elements ?? []
     } catch (err) {
       lastErr = err instanceof Error ? err : new Error(String(err))
@@ -160,40 +171,45 @@ function elementToWay(el: OverpassElement): SiteWay | null {
 }
 
 /**
- * Pull driveway + sidewalk linework around the route points from OpenStreetMap.
- * Failures must not break Google routing — caller should catch and continue.
+ * Returns site ways when OSM extract is enabled; otherwise empty (Google-only routing).
+ * Never throws for the disabled / failed proxy case used on Netlify.
  */
 export function extractSiteWays(points: { lat: number; lng: number }[]): Promise<SiteWaysExtract> {
   const valid = points.filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lng))
-  if (valid.length < 1) {
-    return Promise.reject(new Error('No points for site extract'))
+  const bbox = padBbox(valid.length ? valid : [{ lat: 0, lng: 0 }])
+
+  if (!OSM_ENABLED || valid.length < 1) {
+    return Promise.resolve(emptyExtract(bbox))
   }
-  const bbox = padBbox(valid)
+
   const key = bbox.map((n) => n.toFixed(5)).join(',')
   const hit = cache.get(key)
   if (hit) return hit
 
   const pending = (async () => {
-    const [south, west, north, east] = bbox
-    const elements = await fetchOverpass(buildQuery(south, west, north, east))
-    const driveways: SiteWay[] = []
-    const sidewalks: SiteWay[] = []
-    for (const el of elements) {
-      const way = elementToWay(el)
-      if (!way) continue
-      if (way.kind === 'driveway') driveways.push(way)
-      else sidewalks.push(way)
-    }
-    return {
-      driveways,
-      sidewalks,
-      bbox,
-      source: 'openstreetmap' as const,
-      fetchedAt: new Date().toISOString(),
+    try {
+      const [south, west, north, east] = bbox
+      const elements = await fetchOverpass(buildQuery(south, west, north, east))
+      const driveways: SiteWay[] = []
+      const sidewalks: SiteWay[] = []
+      for (const el of elements) {
+        const way = elementToWay(el)
+        if (!way) continue
+        if (way.kind === 'driveway') driveways.push(way)
+        else sidewalks.push(way)
+      }
+      return {
+        driveways,
+        sidewalks,
+        bbox,
+        source: 'openstreetmap' as const,
+        fetchedAt: new Date().toISOString(),
+      }
+    } catch {
+      return emptyExtract(bbox)
     }
   })()
 
   cache.set(key, pending)
-  pending.catch(() => cache.delete(key))
   return pending
 }

@@ -456,13 +456,16 @@ export function OutdoorMap({
         setSiteNet({
           driveways: extract.driveways.length,
           sidewalks: extract.sidewalks.length,
-          routedOn: 'OSM layers on',
+          routedOn:
+            extract.driveways.length || extract.sidewalks.length
+              ? 'OSM layers on'
+              : 'Google routing (OSM extract off)',
         })
       } catch {
-        // CORS / Overpass down must NOT block Google Drive+Walk routing.
+        // Never block Google Drive+Walk.
         if (session !== routeSessionRef.current) return
         extract = null
-        setSiteNet({ driveways: 0, sidewalks: 0, routedOn: 'OSM skipped · Google routing' })
+        setSiteNet({ driveways: 0, sidewalks: 0, routedOn: 'Google routing' })
       }
 
       if (!outdoorPlan.legs.length) {
@@ -617,12 +620,20 @@ export function OutdoorMap({
       accuracyRef.current.setRadius(Math.max(8, liveFix.accuracy || 20))
     }
 
-    if (followLive && !userPanningRef.current) {
+    // Only follow GPS when it's near the planned outdoor route (same metro).
+    // Otherwise Demo Fresno + phone GPS in India yank the camera to Hyderabad.
+    const routeLat = Number(result.origin.latitude)
+    const routeLng = Number(result.origin.longitude)
+    const nearRouteM = Math.hypot(
+      (liveFix.latitude - routeLat) * 111_320,
+      (liveFix.longitude - routeLng) * 111_320 * Math.cos((routeLat * Math.PI) / 180),
+    )
+    if (followLive && !userPanningRef.current && nearRouteM < 8000) {
       const targetZoom = liveFix.speed != null && liveFix.speed > 8 ? 16 : 17
       if ((map.getZoom() ?? 0) < 15) map.setZoom(targetZoom)
       map.panTo(pos)
     }
-  }, [liveFix, followLive, mapReady])
+  }, [liveFix, followLive, mapReady, result.origin.latitude, result.origin.longitude])
 
   return (
     <div className={`demo-map-shell${followLive && liveFix ? ' is-live' : ''}`}>

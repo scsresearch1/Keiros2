@@ -67,7 +67,7 @@ export default function App() {
   const [locating, setLocating] = useState(false)
   const [indoorView, setIndoorView] = useState<'floor' | 'building'>('building')
   /** Google Maps–style live GPS follow. Next/Previous stay available as optional manual control. */
-  const [liveNav, setLiveNav] = useState(true)
+  const [liveNav, setLiveNav] = useState(false)
   const [liveProgress, setLiveProgress] = useState<LiveProgress | null>(null)
   const [recalculating, setRecalculating] = useState(false)
   const manualHoldUntil = useRef(0)
@@ -290,7 +290,9 @@ export default function App() {
       // Point-to-point starts at the first step (origin → destination).
       setJourneyIndex(0)
       setIndoorView('floor')
-      setLiveNav(true)
+      // Demo uses simulated Fresno start — do NOT attach live GPS (e.g. India) or the
+      // map jumps continents and shows "Off route" forever.
+      setLiveNav(mode === 'live' || mode === 'custom')
       setLiveProgress(null)
       setRecalculating(false)
       manualHoldUntil.current = Date.now() + 8000
@@ -425,6 +427,17 @@ export default function App() {
     }
 
     const now = Date.now()
+    const dest = {
+      latitude: result.entrance?.latitude ?? result.destination.latitude,
+      longitude: result.entrance?.longitude ?? result.destination.longitude,
+    }
+    const toDestM = Math.hypot(
+      (liveFix.latitude - dest.latitude) * 111_320,
+      (liveFix.longitude - dest.longitude) * 111_320 * Math.cos((dest.latitude * Math.PI) / 180),
+    )
+    // GPS on another continent vs Fresno demo → never thrash recalculation.
+    if (toDestM > 8000) return
+
     if (
       progress.offRoute &&
       now > rerouteLockUntil.current &&
