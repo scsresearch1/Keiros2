@@ -31,6 +31,11 @@ type Props = {
   traffic: NavigateResult['outdoor']['traffic']
   liveFix?: LiveFix | null
   followLive?: boolean
+  /** Dense polylines actually drawn — used for Google-like off-route / reroute. */
+  onRouteCorridor?: (corridor: {
+    drive?: [number, number][]
+    walk?: [number, number][]
+  }) => void
 }
 
 function escapeHtml(value: string) {
@@ -97,6 +102,7 @@ export function OutdoorMap({
   traffic,
   liveFix = null,
   followLive = false,
+  onRouteCorridor,
 }: Props) {
   const hostRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<google.maps.Map | null>(null)
@@ -507,6 +513,8 @@ export function OutdoorMap({
       const errors: string[] = []
       let driveWalkCount = 0
       const sources = new Set<string>()
+      const corridorDrive: google.maps.LatLngLiteral[] = []
+      const corridorWalk: google.maps.LatLngLiteral[] = []
 
       // Via parking: drive → lot, then walk pathways to entrance.
       // Otherwise: Google drive toward D (may add last-meter walk).
@@ -540,9 +548,7 @@ export function OutdoorMap({
         const plan =
           leg.mode === 'WALK'
             ? await planWalkOnly(leg.from, leg.to, extract)
-            : outdoorPlan.viaParking && leg.id === 'drive-to-parking'
-              ? await planDrivePlusWalk(leg.from, leg.to, extract)
-              : await planDrivePlusWalk(leg.from, leg.to, extract)
+            : await planDrivePlusWalk(leg.from, leg.to, extract)
 
         if (session !== routeSessionRef.current) return
         if (!plan.segments.length) {
@@ -564,6 +570,8 @@ export function OutdoorMap({
           const pinFrom = seg.path[0] ?? leg.from
           const pinTo =
             seg.mode === 'WALK' ? leg.to : (seg.path[seg.path.length - 1] ?? leg.to)
+          if (seg.mode === 'WALK') corridorWalk.push(...seg.path)
+          else corridorDrive.push(...seg.path)
           drawPath(
             seg.path,
             pinFrom,
@@ -619,6 +627,17 @@ export function OutdoorMap({
         setMapError('')
       }
       fitRouteView()
+
+      if (onRouteCorridor) {
+        onRouteCorridor({
+          drive: corridorDrive.length
+            ? corridorDrive.map((p) => [p.lng, p.lat] as [number, number])
+            : undefined,
+          walk: corridorWalk.length
+            ? corridorWalk.map((p) => [p.lng, p.lat] as [number, number])
+            : undefined,
+        })
+      }
 
       // When OSM pathways arrive, redraw walk legs on sidewalks/footways.
       void extractPromise.then(async (extract) => {

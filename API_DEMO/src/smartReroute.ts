@@ -12,44 +12,72 @@ function pathToGeoJson(path: { lat: number; lng: number }[]): [number, number][]
   return path.map((p) => [p.lng, p.lat])
 }
 
+function isDbParking(result: NavigateResult) {
+  const p = result.parking
+  if (!p || !Number.isFinite(p.latitude) || !Number.isFinite(p.longitude)) return false
+  if (/already on site|start here|walk to entrance/i.test(p.label || '')) return false
+  return result.origin.viaParking === true || p.mode === 'database' || p.mode === 'drive-park-walk'
+}
+
+export type RerouteOptions = {
+  /** Current journey step phase — more reliable than first outdoor step. */
+  phaseHint?: string | null
+}
+
 /**
- * Recalculate from live GPS using Google Routes map networks:
- * DRIVE → roads / driveways, WALK → sidewalks / paths.
- * Mode follows the current journey phase + outdoor plan (not crow-fly distance).
+ * Google-class recalculation from live GPS:
+ * - Drive: traffic-aware roads to parking (if Via parking) or destination
+ * - Walk: pedestrian paths for the last mile
+ * - Always stamps new origin so the outdoor map redraws the blue/red path
  */
 export async function rerouteFromLiveFix(
   result: NavigateResult,
   fix: LatLng,
+  opts?: RerouteOptions,
 ): Promise<NavigateResult | null> {
   const indoor = result.journey.steps.filter((s) => s.phase === 'indoor')
+  const phaseHint = opts?.phaseHint
   const phaseNow =
-    result.journey.steps.find((s) => s.phase === 'drive' || s.phase === 'outdoor' || s.phase === 'walk')
-      ?.phase ?? 'drive'
+    phaseHint === 'walk' || phaseHint === 'drive' || phaseHint === 'outdoor'
+      ? phaseHint
+      : (result.journey.steps.find((s) => s.phase === 'drive' || s.phase === 'outdoor' || s.phase === 'walk')
+          ?.phase ?? 'drive')
 
   const entrance: LatLng = {
     latitude: result.entrance?.latitude ?? result.destination.latitude,
     longitude: result.entrance?.longitude ?? result.destination.longitude,
   }
-  const parking: LatLng | null = result.parking
-    ? { latitude: result.parking.latitude, longitude: result.parking.longitude }
-    : null
-
   const dest: LatLng = {
     latitude: result.destination.latitude,
     longitude: result.destination.longitude,
   }
+  const parking = isDbParking(result)
+    ? {
+        latitude: result.parking!.latitude,
+        longitude: result.parking!.longitude,
+      }
+    : null
+
   const atDoor = metersBetween(toLit(fix), toLit(entrance)) <= AT_ENTRANCE_M
-  // Mode from journey phase / proximity — not outdoorPlan.policy (that often contains "walk"
-  // for the final leg and would force every live recalculation onto foot).
+  const pastParking =
+    parking != null && metersBetween(toLit(fix), toLit(parking)) <= 55 && phaseNow === 'walk'
   const walking =
     atDoor ||
     phaseNow === 'walk' ||
-    (!result.outdoor.steps?.length && phaseNow !== 'drive') ||
-    /on-site/i.test(result.outdoor.provider || '')
+    pastParking ||
+    (!result.outdoor.steps?.length && phaseNow !== 'drive' && phaseNow !== 'outdoor')
+
+  const stampedOrigin = {
+    ...result.origin,
+    latitude: fix.latitude,
+    longitude: fix.longitude,
+    label: result.origin.label || 'Current location',
+  }
 
   try {
     if (walking) {
-      const route = await fetchRoadRoute(toLit(fix), toLit(dest), 'WALK')
+      const walkTarget = dest
+      const route = await fetchRoadRoute(toLit(fix), toLit(walkTarget), 'WALK')
       const walkSteps = route.steps.map((s, i) => ({ ...s, index: i, phase: 'walk' as const }))
       const steps = [
         ...walkSteps,
@@ -57,9 +85,10 @@ export async function rerouteFromLiveFix(
       ]
       return {
         ...result,
+        origin: stampedOrigin,
         outdoor: {
           ...result.outdoor,
-          provider: 'Google Routes map (walk paths)',
+          provider: 'Google Routes (live recalculate · walk)',
           distanceM: 0,
           distanceMiles: 0,
           durationMinutes: 0,
@@ -67,7 +96,7 @@ export async function rerouteFromLiveFix(
           steps: [],
           traffic: {
             ...result.outdoor.traffic,
-            note: 'Recalculated on Google pedestrian paths / sidewalks.',
+            note: 'Recalculated — walking on map pathways.',
             updatedAt: new Date().toISOString(),
           },
         },
@@ -86,7 +115,7 @@ export async function rerouteFromLiveFix(
           outdoorSteps: 0,
           walkSteps: walkSteps.length,
           steps,
-          summary: 'Recalculated walking route on map pathways.',
+          summary: 'Recalculated walking route from your location.',
         },
       }
     }
@@ -99,17 +128,17 @@ export async function rerouteFromLiveFix(
       phase: 'drive' as const,
     })) as JourneyStep[]
 
-    let walkSteps = result.journey.steps.filter((s) => s.phase === 'walk')
-    const walkFrom = parking ?? {
+    let walkSteps: JourneyStep[] = []
+    const walkFrom: LatLng = parking ?? {
       latitude: route.path[route.path.length - 1]?.lat ?? fix.latitude,
       longitude: route.path[route.path.length - 1]?.lng ?? fix.longitude,
     }
-    if (metersBetween(toLit(walkFrom), toLit(dest)) > 25) {
+    if (metersBetween(toLit(walkFrom), toLit(dest)) > 20) {
       try {
         const foot = await fetchRoadRoute(toLit(walkFrom), toLit(dest), 'WALK')
         walkSteps = foot.steps.map((s, i) => ({ ...s, index: i, phase: 'walk' as const }))
       } catch {
-        /* keep previous walk steps */
+        walkSteps = result.journey.steps.filter((s) => s.phase === 'walk')
       }
     }
 
@@ -121,9 +150,10 @@ export async function rerouteFromLiveFix(
 
     return {
       ...result,
+      origin: stampedOrigin,
       outdoor: {
         ...result.outdoor,
-        provider: 'Google Routes map (roads)',
+        provider: 'Google Routes (live recalculate · drive)',
         distanceM: route.distanceM,
         distanceMiles: Math.round((route.distanceM / 1609.344) * 10) / 10,
         durationMinutes: Math.round((route.durationSec / 60) * 10) / 10,
@@ -131,7 +161,9 @@ export async function rerouteFromLiveFix(
         steps: driveSteps,
         traffic: {
           ...result.outdoor.traffic,
-          note: 'Recalculated on Google roads / driveways.',
+          note: parking
+            ? `Recalculated drive to ${result.parking?.label || 'parking'}.`
+            : 'Recalculated drive on map roads.',
           updatedAt: new Date().toISOString(),
         },
       },
@@ -155,7 +187,9 @@ export async function rerouteFromLiveFix(
         outdoorSteps: driveSteps.length,
         walkSteps: walkSteps.length,
         steps,
-        summary: 'Recalculated driving route on map roads.',
+        summary: parking
+          ? 'Recalculated: drive to parking, then walk pathways.'
+          : 'Recalculated driving route from your location.',
       },
     }
   } catch {

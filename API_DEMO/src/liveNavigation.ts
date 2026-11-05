@@ -21,8 +21,12 @@ export type LiveProgress = {
 }
 
 const EARTH_M = 6371000
-/** Google-like: leave the planned polyline by this much → off route */
-export const OFF_ROUTE_M = 55
+/** Drive corridor — leave the planned polyline by this much → off route (Google ~40–75 m). */
+export const OFF_ROUTE_DRIVE_M = 60
+/** Walk corridor — tighter than drive. */
+export const OFF_ROUTE_WALK_M = 35
+/** @deprecated use OFF_ROUTE_DRIVE_M */
+export const OFF_ROUTE_M = OFF_ROUTE_DRIVE_M
 
 export function haversineM(aLat: number, aLng: number, bLat: number, bLng: number): number {
   const toRad = (d: number) => (d * Math.PI) / 180
@@ -115,6 +119,7 @@ export function matchLiveProgress(
 ): LiveProgress {
   const points = flattenRoute(steps)
   if (!points.length) {
+    // No corridor to follow → must recalculate (was false before, so reroute never fired).
     return {
       stepIndex: currentIndex,
       distanceToRouteM: Infinity,
@@ -122,7 +127,7 @@ export function matchLiveProgress(
       remainingSec: 0,
       toNextManeuverM: 0,
       snapped: null,
-      offRoute: false,
+      offRoute: true,
     }
   }
 
@@ -212,6 +217,12 @@ export function matchLiveProgress(
   }
 
   const phase = active?.phase ?? 'drive'
+  const walkPhase = phase === 'walk'
+  // Accuracy-aware threshold (Google-like): don't thrash on noisy GPS.
+  const threshold = Math.max(
+    walkPhase ? OFF_ROUTE_WALK_M : OFF_ROUTE_DRIVE_M,
+    (fix.accuracy || 15) * 1.35,
+  )
   return {
     stepIndex,
     distanceToRouteM: best.distM,
@@ -219,7 +230,7 @@ export function matchLiveProgress(
     remainingSec: estimateSec(remaining, fix.speed, phase),
     toNextManeuverM,
     snapped: { latitude: best.lat, longitude: best.lng },
-    offRoute: best.distM > OFF_ROUTE_M,
+    offRoute: best.distM > threshold,
   }
 }
 

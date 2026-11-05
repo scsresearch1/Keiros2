@@ -28,6 +28,61 @@ const KEY_STORAGE = 'keiros_api_demo_key'
 
 type StartMode = 'demo' | 'live' | 'custom'
 
+function approxMeters(aLat: number, aLng: number, bLat: number, bLng: number) {
+  return Math.hypot(
+    (aLat - bLat) * 111_320,
+    (aLng - bLng) * 111_320 * Math.cos((aLat * Math.PI) / 180),
+  )
+}
+
+/** Inject outdoor/walk LineString coords into journey steps so off-route uses the drawn path. */
+function enrichStepsWithRouteGeometry(
+  result: NavigateResult,
+  corridor?: { drive?: [number, number][]; walk?: [number, number][] },
+) {
+  const steps = result.journey.steps.map((s) => ({ ...s }))
+  const outdoorCoords =
+    (corridor?.drive && corridor.drive.length > 1
+      ? corridor.drive
+      : result.outdoor?.geometry?.coordinates) ?? null
+  const walkCoords =
+    (corridor?.walk && corridor.walk.length > 1
+      ? corridor.walk
+      : result.walk?.geometry?.coordinates) ?? null
+
+  if (outdoorCoords && outdoorCoords.length > 1) {
+    const driveIdx = steps.findIndex((s) => s.phase === 'drive' || s.phase === 'outdoor')
+    if (driveIdx >= 0) {
+      const existing = steps[driveIdx].geometry?.length ?? 0
+      if (existing < outdoorCoords.length) {
+        steps[driveIdx] = { ...steps[driveIdx], geometry: outdoorCoords }
+      }
+    } else {
+      steps.unshift({
+        id: 'live-drive-corridor',
+        phase: 'drive',
+        index: 0,
+        instruction: 'Follow the drive route',
+        latitude: outdoorCoords[0][1],
+        longitude: outdoorCoords[0][0],
+        geometry: outdoorCoords,
+      })
+    }
+  }
+
+  if (walkCoords && walkCoords.length > 1) {
+    const walkIdx = steps.findIndex((s) => s.phase === 'walk')
+    if (walkIdx >= 0) {
+      const existing = steps[walkIdx].geometry?.length ?? 0
+      if (existing < walkCoords.length) {
+        steps[walkIdx] = { ...steps[walkIdx], geometry: walkCoords }
+      }
+    }
+  }
+
+  return steps
+}
+
 function readCurrentLocation(): Promise<{ latitude: number; longitude: number }> {
   return new Promise((resolve, reject) => {
     if (!navigator.geolocation) {
@@ -73,6 +128,14 @@ export default function App() {
   const manualHoldUntil = useRef(0)
   const rerouteLockUntil = useRef(0)
   const lastOffRouteAt = useRef(0)
+  /** Google-like: require consecutive off-route fixes before recalculating. */
+  const offRouteStreak = useRef(0)
+  const rerouteInFlight = useRef(false)
+  /** Dense map polylines from OutdoorMap (lng,lat) — preferred for off-route. */
+  const routeCorridorRef = useRef<{
+    drive?: [number, number][]
+    walk?: [number, number][]
+  }>({})
 
   useEffect(() => {
     void fetchHealth()
@@ -501,13 +564,17 @@ export default function App() {
   useEffect(() => {
     if (!liveWatchOn || !liveFix || !result) {
       setLiveProgress(null)
+      offRouteStreak.current = 0
       return
     }
-    const progress = matchLiveProgress(result.journey.steps, liveFix, journeyIndex)
+
+    // Match against dense outdoor/walk polylines, not sparse step pins.
+    const matchSteps = enrichStepsWithRouteGeometry(result, routeCorridorRef.current)
+    const progress = matchLiveProgress(matchSteps, liveFix, journeyIndex)
     setLiveProgress(progress)
     if (Date.now() < manualHoldUntil.current) return
+
     const target = result.journey.steps[progress.stepIndex]
-    // Never auto-switch into indoor from GPS.
     if (target?.phase === 'indoor') return
     if (progress.stepIndex !== journeyIndex && progress.distanceToRouteM < 120) {
       setJourneyIndex(progress.stepIndex)
@@ -515,32 +582,49 @@ export default function App() {
 
     const now = Date.now()
     const dest = {
-      latitude: result.entrance?.latitude ?? result.destination.latitude,
-      longitude: result.entrance?.longitude ?? result.destination.longitude,
+      latitude: result.destination.latitude,
+      longitude: result.destination.longitude,
     }
-    const toDestM = Math.hypot(
-      (liveFix.latitude - dest.latitude) * 111_320,
-      (liveFix.longitude - dest.longitude) * 111_320 * Math.cos((dest.latitude * Math.PI) / 180),
-    )
-    // GPS on another continent vs Fresno demo → never thrash recalculation.
-    if (toDestM > 8000) return
+    const origin = {
+      latitude: result.origin.latitude,
+      longitude: result.origin.longitude,
+    }
+    const toDestM = approxMeters(liveFix.latitude, liveFix.longitude, dest.latitude, dest.longitude)
+    const toOriginM = approxMeters(liveFix.latitude, liveFix.longitude, origin.latitude, origin.longitude)
+    // Ignore GPS that is nowhere near this trip (e.g. wrong continent).
+    if (toDestM > 25000 && toOriginM > 25000) return
 
+    if (progress.offRoute) {
+      offRouteStreak.current += 1
+    } else {
+      offRouteStreak.current = 0
+    }
+
+    // Google-like: 2–3 consecutive off-route samples (~2–4 s), then recalculate.
+    const confirmedOff = offRouteStreak.current >= 2
     if (
-      progress.offRoute &&
-      now > rerouteLockUntil.current &&
-      now - lastOffRouteAt.current > 2500
+      confirmedOff &&
+      !rerouteInFlight.current &&
+      now > rerouteLockUntil.current
     ) {
       lastOffRouteAt.current = now
-      rerouteLockUntil.current = now + 12000
+      rerouteInFlight.current = true
       setRecalculating(true)
-      void rerouteFromLiveFix(result, liveFix)
+      const phaseHint = result.journey.steps[journeyIndex]?.phase
+      void rerouteFromLiveFix(result, liveFix, { phaseHint })
         .then((next) => {
           if (!next) return
           setResult(next)
           setJourneyIndex(0)
           manualHoldUntil.current = 0
+          offRouteStreak.current = 0
+          // Short cool-down so a new path can settle; Google is ~3–5s.
+          rerouteLockUntil.current = Date.now() + 4500
         })
-        .finally(() => setRecalculating(false))
+        .finally(() => {
+          rerouteInFlight.current = false
+          setRecalculating(false)
+        })
     }
   }, [liveWatchOn, liveFix, result, journeyIndex])
 
@@ -906,6 +990,9 @@ export default function App() {
                   : null
               }
               followLive={liveNav}
+              onRouteCorridor={(corridor) => {
+                routeCorridorRef.current = corridor
+              }}
             />
           ) : (
             <div className="demo-indoor-wrap">
