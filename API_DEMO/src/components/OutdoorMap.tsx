@@ -152,7 +152,16 @@ export function OutdoorMap({
         if (cancelled || !hostRef.current) return
         const map = new google.maps.Map(
           hostRef.current,
-          mapOptions(latLngLiteral(result.origin.latitude, result.origin.longitude), 14),
+          mapOptions(latLngLiteral(result.origin.latitude, result.origin.longitude), 17, {
+            // Match Google Maps consumer look: satellite + labels (switchable).
+            mapTypeId: 'hybrid',
+            mapTypeControl: true,
+            mapTypeControlOptions: {
+              style: google.maps.MapTypeControlStyle.HORIZONTAL_BAR,
+              position: google.maps.ControlPosition.TOP_LEFT,
+              mapTypeIds: ['hybrid', 'roadmap', 'satellite'],
+            },
+          }),
         )
         mapRef.current = map
         setMapReady(true)
@@ -355,18 +364,30 @@ export function OutdoorMap({
                   path: google.maps.SymbolPath.CIRCLE,
                   fillColor: ROUTE_WALK_DOT,
                   fillOpacity: 1,
-                  strokeColor: ROUTE_WALK_DOT,
-                  strokeWeight: 1,
+                  strokeColor: '#ffffff',
+                  strokeWeight: 1.5,
                   strokeOpacity: 1,
-                  scale: 3.5,
+                  scale: 5,
                 },
                 offset: '0',
-                repeat: '11px',
+                repeat: '14px',
               },
             ],
           }),
         )
       } else {
+        // Outer halo + firm blue core (reads better on satellite like Google Maps).
+        track(
+          new google.maps.Polyline({
+            map,
+            path: pinned,
+            strokeColor: '#ffffff',
+            strokeOpacity: 0.85,
+            strokeWeight: 12,
+            zIndex: zIndex - 1,
+            geodesic: false,
+          }),
+        )
         track(
           new google.maps.Polyline({
             map,
