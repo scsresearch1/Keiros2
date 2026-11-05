@@ -1,6 +1,6 @@
 import type { JourneyStep, NavigateResult } from './api'
 import { fetchRoadRoute } from './googleRoute'
-import { AT_ENTRANCE_M, metersBetween, resolveOutdoorLegs } from './outdoorLegs'
+import { AT_ENTRANCE_M, metersBetween } from './outdoorLegs'
 
 type LatLng = { latitude: number; longitude: number }
 
@@ -26,15 +26,6 @@ export async function rerouteFromLiveFix(
     result.journey.steps.find((s) => s.phase === 'drive' || s.phase === 'outdoor' || s.phase === 'walk')
       ?.phase ?? 'drive'
 
-  const plan = resolveOutdoorLegs({
-    ...result,
-    origin: {
-      ...result.origin,
-      latitude: fix.latitude,
-      longitude: fix.longitude,
-    },
-  })
-
   const entrance: LatLng = {
     latitude: result.entrance?.latitude ?? result.destination.latitude,
     longitude: result.entrance?.longitude ?? result.destination.longitude,
@@ -43,17 +34,22 @@ export async function rerouteFromLiveFix(
     ? { latitude: result.parking.latitude, longitude: result.parking.longitude }
     : null
 
+  const dest: LatLng = {
+    latitude: result.destination.latitude,
+    longitude: result.destination.longitude,
+  }
   const atDoor = metersBetween(toLit(fix), toLit(entrance)) <= AT_ENTRANCE_M
+  // Mode from journey phase / proximity — not outdoorPlan.policy (that often contains "walk"
+  // for the final leg and would force every live recalculation onto foot).
   const walking =
     atDoor ||
     phaseNow === 'walk' ||
-    plan.policy.includes('walk') ||
-    !result.outdoor.steps?.length ||
+    (!result.outdoor.steps?.length && phaseNow !== 'drive') ||
     /on-site/i.test(result.outdoor.provider || '')
 
   try {
     if (walking) {
-      const route = await fetchRoadRoute(toLit(fix), toLit(entrance), 'WALK')
+      const route = await fetchRoadRoute(toLit(fix), toLit(dest), 'WALK')
       const walkSteps = route.steps.map((s, i) => ({ ...s, index: i, phase: 'walk' as const }))
       const steps = [
         ...walkSteps,
@@ -95,10 +91,7 @@ export async function rerouteFromLiveFix(
       }
     }
 
-    const driveTarget: LatLng =
-      plan.legs.find((l) => l.mode === 'DRIVE') != null && parking
-        ? parking
-        : entrance
+    const driveTarget: LatLng = parking ?? dest
     const route = await fetchRoadRoute(toLit(fix), toLit(driveTarget), 'DRIVE')
     const driveSteps = route.steps.map((s, i) => ({
       ...s,
@@ -107,9 +100,13 @@ export async function rerouteFromLiveFix(
     })) as JourneyStep[]
 
     let walkSteps = result.journey.steps.filter((s) => s.phase === 'walk')
-    if (parking && metersBetween(toLit(driveTarget), toLit(entrance)) > 25) {
+    const walkFrom = parking ?? {
+      latitude: route.path[route.path.length - 1]?.lat ?? fix.latitude,
+      longitude: route.path[route.path.length - 1]?.lng ?? fix.longitude,
+    }
+    if (metersBetween(toLit(walkFrom), toLit(dest)) > 25) {
       try {
-        const foot = await fetchRoadRoute(toLit(parking), toLit(entrance), 'WALK')
+        const foot = await fetchRoadRoute(toLit(walkFrom), toLit(dest), 'WALK')
         walkSteps = foot.steps.map((s, i) => ({ ...s, index: i, phase: 'walk' as const }))
       } catch {
         /* keep previous walk steps */
