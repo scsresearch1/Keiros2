@@ -81,18 +81,36 @@ function pinSvg(fill: string, label: string) {
 </svg>`
 }
 
+/**
+ * Google Maps–style “you are here” puck.
+ * Arrow points to top of SVG (= north) before rotation; GPS heading is degrees clockwise from north.
+ */
 function livePuckSvg(heading: number | null) {
-  const rot = heading != null && Number.isFinite(heading) ? heading : 0
-  const cone =
-    heading != null && Number.isFinite(heading)
-      ? `<path d="M24 6 L30 22 L18 22 Z" fill="rgba(26,115,232,0.35)"/>`
-      : ''
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48">
-  <g transform="rotate(${rot} 24 24)">
-    ${cone}
-    <circle cx="24" cy="24" r="9" fill="#1a73e8" stroke="#fff" stroke-width="3"/>
+  const hasHeading = heading != null && Number.isFinite(heading)
+  const rot = hasHeading ? Number(heading) : 0
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="80" height="80" viewBox="0 0 80 80">
+  <defs>
+    <filter id="keirosPuckShadow" x="-50%" y="-50%" width="200%" height="200%">
+      <feDropShadow dx="0" dy="2" stdDeviation="2.5" flood-color="#0f172a" flood-opacity="0.45"/>
+    </filter>
+  </defs>
+  <g transform="rotate(${rot.toFixed(1)} 40 40)" filter="url(#keirosPuckShadow)">
+    ${
+      hasHeading
+        ? `<path d="M40 6 L54 32 L40 27 L26 32 Z" fill="#1a73e8" stroke="#ffffff" stroke-width="3" stroke-linejoin="round"/>`
+        : ''
+    }
+    <circle cx="40" cy="42" r="18" fill="#1a73e8" stroke="#ffffff" stroke-width="5"/>
+    <circle cx="40" cy="42" r="6.5" fill="#ffffff"/>
   </g>
 </svg>`
+}
+
+/** Shortest-path blend so the arrow doesn't spin wildly on noisy GPS. */
+function blendHeading(prev: number | null, next: number): number {
+  if (prev == null || !Number.isFinite(prev)) return next
+  const delta = ((next - prev + 540) % 360) - 180
+  return (prev + delta * 0.4 + 360) % 360
 }
 
 export function OutdoorMap({
@@ -110,6 +128,7 @@ export function OutdoorMap({
   const liveMarkerRef = useRef<AdvMarker | null>(null)
   const accuracyRef = useRef<google.maps.Circle | null>(null)
   const lastLiveRef = useRef<LiveFix | null>(null)
+  const smoothHeadingRef = useRef<number | null>(null)
   const userPanningRef = useRef(false)
   const panTimerRef = useRef<number | null>(null)
   const routeSessionRef = useRef(0)
@@ -695,17 +714,31 @@ export function OutdoorMap({
       liveMarkerRef.current = null
       accuracyRef.current = null
       lastLiveRef.current = null
+      smoothHeadingRef.current = null
       return
     }
 
-    let heading = liveFix.heading
+    // Prefer device compass/GPS heading; fall back to movement bearing when walking/driving.
+    let rawHeading: number | null =
+      liveFix.heading != null && Number.isFinite(liveFix.heading) ? liveFix.heading : null
     const prev = lastLiveRef.current
-    if ((heading == null || !Number.isFinite(heading)) && prev) {
-      const moved = Math.hypot(liveFix.latitude - prev.latitude, liveFix.longitude - prev.longitude)
-      if (moved > 0.00002) {
-        heading = bearingDeg(prev.latitude, prev.longitude, liveFix.latitude, liveFix.longitude)
-      }
+    const movedM =
+      prev != null
+        ? Math.hypot(
+            (liveFix.latitude - prev.latitude) * 111_320,
+            (liveFix.longitude - prev.longitude) *
+              111_320 *
+              Math.cos((liveFix.latitude * Math.PI) / 180),
+          )
+        : 0
+    const moving = movedM > 2.5 || (liveFix.speed != null && liveFix.speed > 0.8)
+    if ((rawHeading == null || !moving) && prev && movedM > 2.5) {
+      rawHeading = bearingDeg(prev.latitude, prev.longitude, liveFix.latitude, liveFix.longitude)
     }
+    if (rawHeading != null && Number.isFinite(rawHeading)) {
+      smoothHeadingRef.current = blendHeading(smoothHeadingRef.current, rawHeading)
+    }
+    const heading = smoothHeadingRef.current
     lastLiveRef.current = liveFix
     const pos = latLngLiteral(liveFix.latitude, liveFix.longitude)
 
@@ -717,13 +750,15 @@ export function OutdoorMap({
         svg: livePuckSvg(heading),
         title: 'You (live)',
       })
-      // Center the live puck on GPS (pins default to bottom-center).
+      // Center the puck on GPS (default Advanced Marker anchor is bottom-center).
       puck.anchorTop = '50%'
       puck.anchorLeft = '50%'
       liveMarkerRef.current = puck
     } else {
       liveMarkerRef.current.position = pos
       setAdvancedMarkerSvg(liveMarkerRef.current, livePuckSvg(heading))
+      liveMarkerRef.current.anchorTop = '50%'
+      liveMarkerRef.current.anchorLeft = '50%'
     }
 
     if (!accuracyRef.current) {
