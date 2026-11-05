@@ -14,7 +14,8 @@ import { StartLocationPanel } from './components/StartLocationPanel'
 import { NavGuidanceBanner } from './components/NavGuidanceBanner'
 import { AutocompleteField, type AutocompleteOption } from './components/AutocompleteField'
 import { unlockVoiceFromGesture, useDirectionVoice } from './voiceGuide'
-import { attachLotToResult, withLiveDrive } from './liveDrive'
+import { withLiveDrive } from './liveDrive'
+// import { attachLotToResult, withLiveDrive } from './liveDrive' // Via parking
 import {
   matchLiveProgress,
   requestCompassPermission,
@@ -120,8 +121,8 @@ export default function App() {
   const [result, setResult] = useState<NavigateResult | null>(null)
   const [journeyIndex, setJourneyIndex] = useState(0)
   const [startMode, setStartMode] = useState<StartMode>('demo')
-  /** Off by default: go straight to the unit. Enable to add drive → parking → walk. */
-  const [viaParking, setViaParking] = useState(false)
+  /** Via parking UI/flow disabled for now — always point-to-point to the unit. */
+  // const [viaParking, setViaParking] = useState(false)
   /** Demo Mode is the default start — destination can be chosen immediately. */
   const [startReady, setStartReady] = useState(true)
   const [liveSelected, setLiveSelected] = useState(false)
@@ -266,32 +267,43 @@ export default function App() {
     }))
   }, [units])
 
-  /** Parking from Keiros DB (type=Parking) — must stay above any early return (Rules of Hooks). */
+  /** Via parking: Parking from Keiros DB (type=Parking). Stubbed while via parking is off (Hooks order). */
   const databaseParking = useMemo(() => {
-    if (!hierarchy || !buildingId) return null
-    const near =
-      hierarchy.units.find((u) => u.id === unitId) ||
-      hierarchy.units.find((u) => u.buildingId === buildingId && /entry/i.test(u.type))
-    const pool = hierarchy.units.filter((u) => {
-      if (!/^parking$/i.test(u.type)) return false
-      if (!Number.isFinite(u.latitude) || !Number.isFinite(u.longitude)) return false
-      if (u.buildingId === buildingId) return true
-      if (complexId && u.complexId === complexId) return true
-      return false
-    })
-    if (!pool.length) return null
-    const ranked = [...pool].sort((a, b) => {
-      const aB = a.buildingId === buildingId ? 0 : 1
-      const bB = b.buildingId === buildingId ? 0 : 1
-      if (aB !== bB) return aB - bB
-      if (!near) return a.name.localeCompare(b.name)
-      const dA = Math.hypot(a.latitude - near.latitude, a.longitude - near.longitude)
-      const dB = Math.hypot(b.latitude - near.latitude, b.longitude - near.longitude)
-      return dA - dB
-    })
-    const p = ranked[0]
-    return { id: p.id, latitude: p.latitude, longitude: p.longitude, label: p.name || 'Parking' }
+    // if (!hierarchy || !buildingId) return null
+    // const near =
+    //   hierarchy.units.find((u) => u.id === unitId) ||
+    //   hierarchy.units.find((u) => u.buildingId === buildingId && /entry/i.test(u.type))
+    // const pool = hierarchy.units.filter((u) => {
+    //   if (!/^parking$/i.test(u.type)) return false
+    //   if (!Number.isFinite(u.latitude) || !Number.isFinite(u.longitude)) return false
+    //   if (u.buildingId === buildingId) return true
+    //   if (complexId && u.complexId === complexId) return true
+    //   return false
+    // })
+    // if (!pool.length) return null
+    // const ranked = [...pool].sort((a, b) => {
+    //   const aB = a.buildingId === buildingId ? 0 : 1
+    //   const bB = b.buildingId === buildingId ? 0 : 1
+    //   if (aB !== bB) return aB - bB
+    //   if (!near) return a.name.localeCompare(b.name)
+    //   const dA = Math.hypot(a.latitude - near.latitude, a.longitude - near.longitude)
+    //   const dB = Math.hypot(b.latitude - near.latitude, b.longitude - near.longitude)
+    //   return dA - dB
+    // })
+    // const p = ranked[0]
+    // return { id: p.id, latitude: p.latitude, longitude: p.longitude, label: p.name || 'Parking' }
+    void hierarchy
+    void buildingId
+    void complexId
+    void unitId
+    return null as {
+      id: string
+      latitude: number
+      longitude: number
+      label: string
+    } | null
   }, [hierarchy, buildingId, complexId, unitId])
+  void databaseParking
 
   /** When a parent is chosen and only one child exists, auto-select that child. */
   useEffect(() => {
@@ -363,27 +375,28 @@ export default function App() {
     setError('')
     try {
       const explicit = mode !== 'demo' && origin
-      const dbParking = viaParking ? databaseParking : null
-      if (viaParking && !dbParking) {
-        setError('No parking is marked in the database for this property. Add a Parking location (e.g. Black truck) or turn off Via parking.')
-        setLoading(false)
-        return
-      }
+      // --- Via parking (disabled) ---
+      // const dbParking = viaParking ? databaseParking : null
+      // if (viaParking && !dbParking) {
+      //   setError('No parking is marked in the database for this property. Add a Parking location (e.g. Black truck) or turn off Via parking.')
+      //   setLoading(false)
+      //   return
+      // }
       const nav = await navigate(apiKey, {
         complexId,
         buildingId,
         floorId,
         unitId,
         startMode: mode,
-        viaParking,
-        ...(dbParking
-          ? {
-              parkingId: dbParking.id,
-              parkingLatitude: dbParking.latitude,
-              parkingLongitude: dbParking.longitude,
-              parkingLabel: dbParking.label,
-            }
-          : {}),
+        viaParking: false,
+        // ...(dbParking
+        //   ? {
+        //       parkingId: dbParking.id,
+        //       parkingLatitude: dbParking.latitude,
+        //       parkingLongitude: dbParking.longitude,
+        //       parkingLabel: dbParking.label,
+        //     }
+        //   : {}),
         ...(explicit
           ? {
               originLatitude: origin.latitude,
@@ -394,59 +407,64 @@ export default function App() {
       })
       // Prefer DB parking pin. Skip OSM lot align when we already have Keiros parking.
       let routed = nav
-      if (viaParking && dbParking) {
-        routed = {
-          ...nav,
-          parking: {
-            latitude: dbParking.latitude,
-            longitude: dbParking.longitude,
-            label: dbParking.label,
-            offsetMeters: nav.parking?.offsetMeters ?? 0,
-            mode: 'database',
-          },
-        }
-        if (explicit && origin) {
-          routed = await withLiveDrive(routed, origin, {
-            label: origin.label,
-            startMode: mode === 'custom' ? 'custom' : 'live',
-          })
-          // withLiveDrive may rewrite parking for on-site — restore DB spot when still driving.
-          if (routed.origin.viaParking !== false && routed.parking?.mode !== 'on-site' && routed.parking?.mode !== 'walk-from-origin') {
-            routed = {
-              ...routed,
-              parking: {
-                latitude: dbParking.latitude,
-                longitude: dbParking.longitude,
-                label: dbParking.label,
-                offsetMeters: routed.parking?.offsetMeters ?? 0,
-                mode: 'database',
-              },
-            }
-          }
-        }
-      } else if (viaParking) {
-        routed = explicit
-          ? await withLiveDrive(nav, origin!, {
-              label: origin?.label,
-              startMode: mode === 'custom' ? 'custom' : 'live',
-            })
-          : await attachLotToResult(nav)
+      // if (viaParking && dbParking) {
+      //   routed = {
+      //     ...nav,
+      //     parking: {
+      //       latitude: dbParking.latitude,
+      //       longitude: dbParking.longitude,
+      //       label: dbParking.label,
+      //       offsetMeters: nav.parking?.offsetMeters ?? 0,
+      //       mode: 'database',
+      //     },
+      //   }
+      //   if (explicit && origin) {
+      //     routed = await withLiveDrive(routed, origin, {
+      //       label: origin.label,
+      //       startMode: mode === 'custom' ? 'custom' : 'live',
+      //     })
+      //     if (routed.origin.viaParking !== false && routed.parking?.mode !== 'on-site' && routed.parking?.mode !== 'walk-from-origin') {
+      //       routed = {
+      //         ...routed,
+      //         parking: {
+      //           latitude: dbParking.latitude,
+      //           longitude: dbParking.longitude,
+      //           label: dbParking.label,
+      //           offsetMeters: routed.parking?.offsetMeters ?? 0,
+      //           mode: 'database',
+      //         },
+      //       }
+      //     }
+      //   }
+      // } else if (viaParking) {
+      //   routed = explicit
+      //     ? await withLiveDrive(nav, origin!, {
+      //         label: origin?.label,
+      //         startMode: mode === 'custom' ? 'custom' : 'live',
+      //       })
+      //     : await attachLotToResult(nav)
+      // }
+      if (explicit && origin) {
+        routed = await withLiveDrive(nav, origin, {
+          label: origin.label,
+          startMode: mode === 'custom' ? 'custom' : 'live',
+        })
       }
-      // Stamp so outdoor map knows to drive → parking → walk pathways.
+      // Stamp viaParking false — outdoor map goes straight toward destination (no parking stop).
       setResult({
         ...routed,
-        origin: { ...routed.origin, viaParking },
-        ...(dbParking && routed.parking?.mode === 'database'
-          ? {
-              parking: {
-                latitude: dbParking.latitude,
-                longitude: dbParking.longitude,
-                label: dbParking.label,
-                offsetMeters: routed.parking?.offsetMeters ?? 0,
-                mode: 'database',
-              },
-            }
-          : {}),
+        origin: { ...routed.origin, viaParking: false },
+        // ...(dbParking && routed.parking?.mode === 'database'
+        //   ? {
+        //       parking: {
+        //         latitude: dbParking.latitude,
+        //         longitude: dbParking.longitude,
+        //         label: dbParking.label,
+        //         offsetMeters: routed.parking?.offsetMeters ?? 0,
+        //         mode: 'database',
+        //       },
+        //     }
+        //   : {}),
       })
       // Point-to-point starts at the first step (origin → destination).
       setJourneyIndex(0)
@@ -935,6 +953,7 @@ export default function App() {
               onChange={selectUnit}
             />
             <div className="demo-controls__go">
+              {/* Via parking — disabled for now
               <label className="demo-via-parking">
                 <input
                   type="checkbox"
@@ -943,17 +962,19 @@ export default function App() {
                 />
                 Via parking
               </label>
+              */}
               <button type="submit" disabled={loading || locating || !canNavigate}>
-                {loading ? 'Calling API…' : viaParking ? 'Navigate via parking' : 'Navigate'}
+                {loading ? 'Calling API…' : 'Navigate'}
               </button>
             </div>
           </div>
           <p className="demo-hint demo-hint--tight">
-            {viaParking
+            {/* {viaParking
               ? databaseParking
                 ? `Drive to “${databaseParking.label}” (database parking) → walk pathways to entrance → indoor.`
                 : 'Via parking needs a Parking location in this property’s database (e.g. Black truck).'
-              : 'Point-to-point: your start → entrance → unit (no parking stop).'}
+              : 'Point-to-point: your start → entrance → unit (no parking stop).'} */}
+            Point-to-point: your start → entrance → unit.
           </p>
         </section>
       </form>
@@ -969,16 +990,16 @@ export default function App() {
                   className={phase === 'drive' ? 'is-active phase-drive' : 'phase-drive'}
                   onClick={() => jumpToPhase('drive')}
                 >
-                  {result.origin.viaParking
-                    ? '1 · Drive to parking'
-                    : '1 · Drive to destination'}
+                  {/* {result.origin.viaParking ? '1 · Drive to parking' : '1 · Drive to destination'} */}
+                  1 · Drive to destination
                 </button>
                 <button
                   type="button"
                   className={phase === 'walk' ? 'is-active phase-walk' : 'phase-walk'}
                   onClick={() => jumpToPhase('walk')}
                 >
-                  {result.origin.viaParking ? '2 · Walk to entrance' : '2 · Walk to door'}
+                  {/* {result.origin.viaParking ? '2 · Walk to entrance' : '2 · Walk to door'} */}
+                  2 · Walk to door
                 </button>
                 <button
                   type="button"

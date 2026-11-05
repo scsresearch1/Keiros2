@@ -286,6 +286,7 @@ button:disabled {
   gap: 0.85rem;
 }
 
+/* Via parking checkbox — disabled for now
 .demo-via-parking {
   display: inline-flex;
   align-items: center;
@@ -302,6 +303,7 @@ button:disabled {
   height: 1rem;
   accent-color: var(--accent);
 }
+*/
 
 .demo-mode {
   display: flex;
