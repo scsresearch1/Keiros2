@@ -351,11 +351,11 @@ export function OutdoorMap({
       style: 'drive' | 'walk-dots',
       zIndex: number,
     ) {
-      // Drive: keep network end (don't stretch blue into the door). Walk: allow short snap to door.
+      // Drive: keep network end. Walk: always reach the real destination pin.
       const pinned =
         style === 'drive'
           ? pinPathToEndpoints(path, from, path[path.length - 1] ?? to, 12, 8)
-          : pinPathToEndpoints(path, from, to, 12, 22)
+          : pinPathToEndpoints(path, from, to, 18, 80, { alwaysReachEnd: true })
       if (pinned.length < 2) return
 
       if (style === 'walk-dots') {
@@ -604,10 +604,14 @@ export function OutdoorMap({
             if (plan.label === 'drive+walk') driveWalkCount += 1
             for (const seg of plan.segments) {
               sources.add(seg.source)
+              // Walk must pin to leg.to (actual D) — never to the truncated Google path end.
+              const pinFrom = seg.path[0] ?? leg.from
+              const pinTo =
+                seg.mode === 'WALK' ? leg.to : (seg.path[seg.path.length - 1] ?? leg.to)
               drawPath(
                 seg.path,
-                seg.path[0],
-                seg.path[seg.path.length - 1],
+                pinFrom,
+                pinTo,
                 seg.mode === 'WALK' ? 'walk-dots' : 'drive',
                 seg.mode === 'WALK' ? 22 : 20 + index,
               )

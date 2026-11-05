@@ -114,6 +114,21 @@ async function bestDriveRoute(
   return candidates[0]
 }
 
+/** Always land on the real destination coordinate. */
+function forceReach(
+  path: google.maps.LatLngLiteral[],
+  target: google.maps.LatLngLiteral,
+): google.maps.LatLngLiteral[] {
+  if (!path.length) return [{ ...target }]
+  const end = path[path.length - 1]
+  if (meters(end, target) <= 1.5) {
+    const out = path.map((p) => ({ ...p }))
+    out[out.length - 1] = { ...target }
+    return out
+  }
+  return [...path.map((p) => ({ ...p })), { ...target }]
+}
+
 async function bestSidewalkWalk(
   from: google.maps.LatLngLiteral,
   to: google.maps.LatLngLiteral,
@@ -182,13 +197,14 @@ export async function planDrivePlusWalk(
   if (!drive) {
     const walkOnly = await bestSidewalkWalk(from, to, extract)
     if (walkOnly) {
+      const path = forceReach(walkOnly.path, to)
       return {
         segments: [
           {
             mode: 'WALK',
-            path: walkOnly.path,
+            path,
             dashed: true,
-            distanceM: walkOnly.distanceM,
+            distanceM: Math.round(walkOnly.distanceM + meters(walkOnly.path[walkOnly.path.length - 1], to)),
             source: walkOnly.source,
           },
         ],
@@ -196,55 +212,72 @@ export async function planDrivePlusWalk(
         label: 'walk',
       }
     }
-    return { segments: [], handoff: null, label: 'walk' }
+    return {
+      segments: [
+        {
+          mode: 'WALK',
+          path: forceReach([from], to),
+          dashed: true,
+          distanceM: Math.round(meters(from, to)),
+          source: 'direct-to-destination',
+        },
+      ],
+      handoff: null,
+      label: 'walk',
+    }
   }
 
-  // Never let blue run past the entry door toward the unit / out the other side.
+  // Never let blue run past the destination pin.
   const drivePath = truncateAtClosest(drive.path, to)
   const handoff = drivePath[drivePath.length - 1]
   const endGap = meters(handoff, to)
 
-  // Vehicle network reaches the door — solid blue all the way to E.
+  const driveSeg: HandoffSegment = {
+    mode: 'DRIVE',
+    path: drivePath,
+    dashed: false,
+    distanceM: drive.distanceM,
+    source: drive.source,
+  }
+
+  // Vehicle network close enough — still walk any leftover meters to exact D.
   if (endGap <= LAST_MILE_WALK_M) {
+    if (endGap <= 2) {
+      return { segments: [driveSeg], handoff: null, label: 'drive' }
+    }
     return {
       segments: [
+        driveSeg,
         {
-          mode: 'DRIVE',
-          path: drivePath,
-          dashed: false,
-          distanceM: drive.distanceM,
-          source: drive.source,
+          mode: 'WALK',
+          path: forceReach([handoff], to),
+          dashed: true,
+          distanceM: Math.round(endGap),
+          source: 'last-meters-to-destination',
         },
       ],
-      handoff: null,
-      label: 'drive',
+      handoff,
+      label: 'drive+walk',
     }
   }
 
-  // Closest driveable point → walk pathways to the entry door.
+  // Closest driveable point → walk pathways all the way to destination.
   const walk = await bestSidewalkWalk(handoff, to, extract)
-  const segments: HandoffSegment[] = [
-    {
-      mode: 'DRIVE',
-      path: drivePath,
-      dashed: false,
-      distanceM: drive.distanceM,
-      source: drive.source,
-    },
-  ]
-
-  if (walk && walk.path.length >= 2) {
-    segments.push({
-      mode: 'WALK',
-      path: walk.path,
-      dashed: true,
-      distanceM: walk.distanceM,
-      source: walk.source,
-    })
-    return { segments, handoff, label: 'drive+walk' }
+  const walkPath = forceReach(walk && walk.path.length >= 2 ? walk.path : [handoff], to)
+  return {
+    segments: [
+      driveSeg,
+      {
+        mode: 'WALK',
+        path: walkPath,
+        dashed: true,
+        distanceM: walk?.distanceM ?? Math.round(meters(handoff, to)),
+        source: walk?.source ?? 'walk-to-destination',
+      },
+    ],
+    handoff,
+    label: 'drive+walk',
   }
-
-  return { segments, handoff, label: 'drive' }
 }
 
 /**
@@ -261,7 +294,7 @@ export async function planWalkOnly(
       segments: [
         {
           mode: 'WALK',
-          path: walk.path,
+          path: forceReach(walk.path, to),
           dashed: true,
           distanceM: walk.distanceM,
           source: walk.source,
@@ -271,17 +304,16 @@ export async function planWalkOnly(
       label: 'walk',
     }
   }
-  // Short on-site connector when graphs have no path (still never DRIVE).
   const gap = meters(from, to)
-  if (gap > 2 && gap < 250) {
+  if (gap > 2) {
     return {
       segments: [
         {
           mode: 'WALK',
-          path: [from, to],
+          path: forceReach([from], to),
           dashed: true,
           distanceM: Math.round(gap),
-          source: 'entry-to-unit-direct',
+          source: 'direct-to-destination',
         },
       ],
       handoff: null,

@@ -37,8 +37,8 @@ function metersBetween(a: google.maps.LatLngLiteral, b: google.maps.LatLngLitera
 
 /**
  * Keep Google's road / pathway snap.
- * Only nudge endpoints when already close — never invent long off-network
- * diagonals across parcels (that looked like a "curved" shortcut vs a straight driveway).
+ * Drive: only nudge nearby endpoints (don't invent long off-road chords).
+ * Walk: always finish at the destination pin (user must reach the real coordinate).
  */
 export function pinPathToEndpoints(
   path: google.maps.LatLngLiteral[],
@@ -46,6 +46,7 @@ export function pinPathToEndpoints(
   destination: google.maps.LatLngLiteral,
   snapMeters = 12,
   maxConnectMeters = 28,
+  opts?: { alwaysReachEnd?: boolean },
 ): google.maps.LatLngLiteral[] {
   if (!path.length) return []
   const out = path.map((p) => ({ ...p }))
@@ -58,8 +59,8 @@ export function pinPathToEndpoints(
   const end = out[out.length - 1]
   const endGap = metersBetween(end, destination)
   if (endGap <= snapMeters) out[out.length - 1] = destination
-  else if (endGap <= maxConnectMeters) out.push(destination)
-  // else: leave last point on the mapped network (no fake chord to the pin)
+  else if (endGap <= maxConnectMeters || opts?.alwaysReachEnd) out.push(destination)
+  // else (drive): leave last point on the mapped network
 
   return out
 }
