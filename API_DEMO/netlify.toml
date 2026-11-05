@@ -30,10 +30,11 @@
   # Enable Maps JavaScript API + Routes API on this key in Google Cloud.
   SECRETS_SCAN_OMIT_KEYS = "VITE_GOOGLE_MAPS_API_KEY,VITE_GOOGLE_MAPS_MAP_ID"
   VITE_GOOGLE_MAPS_API_KEY = "AIzaSyCnQijsiKFJtL39zOTCQfGUQ_Bkju5hWiY"
-  # Optional: your Cloud Map ID (JavaScript). Omit to use DEMO_MAP_ID.
+  # Cloud Map ID (JavaScript/Roadmap, no custom style) → full Google look + Advanced Markers.
+  # Without this, DEMO_MAP_ID is used (warning-free, but demo basemap style).
   # VITE_GOOGLE_MAPS_MAP_ID = "YOUR_MAP_ID"
 
 # Also set in Netlify UI if preferred (same name). Required for Vite build:
 #   VITE_API_BASE=https://YOUR-SERVICE.onrender.com
 #   VITE_GOOGLE_MAPS_API_KEY=...
-#   VITE_GOOGLE_MAPS_MAP_ID=...  (optional; enables your styled vector map)
+#   VITE_GOOGLE_MAPS_MAP_ID=...

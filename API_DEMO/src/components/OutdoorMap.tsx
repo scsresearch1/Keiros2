@@ -257,10 +257,7 @@ export function OutdoorMap({
           coords,
         }),
       )
-      info.open({
-        map,
-        anchor: (marker.__classic ?? marker) as google.maps.Marker | google.maps.marker.AdvancedMarkerElement,
-      })
+      info.open({ map, anchor: marker })
     }
 
     const startMarker = track(
