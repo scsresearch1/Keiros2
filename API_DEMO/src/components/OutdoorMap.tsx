@@ -274,7 +274,7 @@ export function OutdoorMap({
       result.origin.address ||
       result.selection?.complex?.address ||
       null
-    startMarker.addListener('gmp-click', () => {
+    startMarker.addEventListener('gmp-click', () => {
       openPinInfo(startMarker, 'Start', result.origin.label || 'Start', startAddress, origin)
     })
     bounds.extend(origin)
@@ -297,7 +297,7 @@ export function OutdoorMap({
         svg: pinSvg('#ea4335', 'D'),
       }),
     )
-    destMarker.addListener('gmp-click', () => {
+    destMarker.addEventListener('gmp-click', () => {
       openPinInfo(destMarker, 'Destination', destName, destAddress, destination)
     })
     bounds.extend(destination)
@@ -314,11 +314,14 @@ export function OutdoorMap({
           svg: pinSvg(wp.fill, letter),
         }),
       )
-      marker.addListener('gmp-click', () => {
+      marker.addEventListener('gmp-click', () => {
         openPinInfo(marker, kindLabel, wp.label, null, wp.position)
       })
       bounds.extend(wp.position)
     }
+
+    // Frame Fresno / site immediately — don't wait on Overpass (CORS used to stall the view).
+    fitRouteView()
 
     const trafficLayer = new google.maps.TrafficLayer()
     trafficLayer.setMap(map)
@@ -441,11 +444,13 @@ export function OutdoorMap({
         setSiteNet({
           driveways: extract.driveways.length,
           sidewalks: extract.sidewalks.length,
-          routedOn: 'extracting…',
+          routedOn: 'OSM layers on',
         })
       } catch {
+        // CORS / Overpass down must NOT block Google Drive+Walk routing.
         if (session !== routeSessionRef.current) return
-        setSiteNet({ driveways: 0, sidewalks: 0, routedOn: 'OSM extract unavailable' })
+        extract = null
+        setSiteNet({ driveways: 0, sidewalks: 0, routedOn: 'OSM skipped · Google routing' })
       }
 
       if (!outdoorPlan.legs.length) {

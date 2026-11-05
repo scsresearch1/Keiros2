@@ -1,6 +1,6 @@
 /**
  * Extract real driveway vs sidewalk geometries from OpenStreetMap (Overpass).
- * Google Maps does not expose these as separate layers — OSM is the practical source.
+ * Browser calls same-origin `/api/overpass*` (Netlify/Vite proxy) to avoid CORS.
  */
 
 export type SiteWayKind = 'driveway' | 'sidewalk'
@@ -29,10 +29,8 @@ type OverpassElement = {
   geometry?: { lat: number; lon: number }[]
 }
 
-const OVERPASS_URLS = [
-  'https://overpass-api.de/api/interpreter',
-  'https://overpass.kumi.systems/api/interpreter',
-]
+/** Same-origin proxies — never call overpass-*.de from the browser (CORS blocked on Netlify). */
+const OVERPASS_URLS = ['/api/overpass', '/api/overpass-kumi']
 
 const cache = new Map<string, Promise<SiteWaysExtract>>()
 
@@ -45,6 +43,7 @@ function padBbox(
   let west = Infinity
   let east = -Infinity
   for (const p of points) {
+    if (!Number.isFinite(p.lat) || !Number.isFinite(p.lng)) continue
     south = Math.min(south, p.lat)
     north = Math.max(north, p.lat)
     west = Math.min(west, p.lng)
@@ -62,7 +61,6 @@ function classify(tags: Record<string, string> | undefined): SiteWayKind | null 
   const service = tags.service || ''
   const footway = tags.footway || ''
 
-  // Explicit pedestrian / sidewalk network
   if (
     highway === 'footway' ||
     highway === 'path' ||
@@ -76,7 +74,6 @@ function classify(tags: Record<string, string> | undefined): SiteWayKind | null 
     return 'sidewalk'
   }
 
-  // Driveways, parking aisles, private service roads (apartment loops)
   if (
     service === 'driveway' ||
     service === 'parking_aisle' ||
@@ -101,7 +98,6 @@ function classify(tags: Record<string, string> | undefined): SiteWayKind | null 
 }
 
 function buildQuery(south: number, west: number, north: number, east: number) {
-  // bbox order in Overpass: south,west,north,east
   const b = `${south},${west},${north},${east}`
   return `
 [out:json][timeout:25];
@@ -165,9 +161,14 @@ function elementToWay(el: OverpassElement): SiteWay | null {
 
 /**
  * Pull driveway + sidewalk linework around the route points from OpenStreetMap.
+ * Failures must not break Google routing — caller should catch and continue.
  */
 export function extractSiteWays(points: { lat: number; lng: number }[]): Promise<SiteWaysExtract> {
-  const bbox = padBbox(points)
+  const valid = points.filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lng))
+  if (valid.length < 1) {
+    return Promise.reject(new Error('No points for site extract'))
+  }
+  const bbox = padBbox(valid)
   const key = bbox.map((n) => n.toFixed(5)).join(',')
   const hit = cache.get(key)
   if (hit) return hit
