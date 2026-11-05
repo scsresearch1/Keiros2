@@ -85,15 +85,11 @@ function pinSvg(fill: string, label: string) {
 
 /**
  * Google Maps–style “you are here” puck.
- * - headingUp: map already rotated to travel direction → arrow always points up (screen forward)
- * - otherwise: north-up map → rotate arrow by absolute GPS bearing (0 = north)
+ * `rot` is degrees clockwise from screen-up (phone-top relative to the map view).
  */
-function livePuckSvg(heading: number | null, opts?: { headingUp?: boolean }) {
-  const hasHeading = heading != null && Number.isFinite(heading)
-  const headingUp = Boolean(opts?.headingUp)
-  // Heading-up nav: arrow points to top of screen. North-up: rotate by true bearing.
-  const rot = headingUp ? 0 : hasHeading ? Number(heading) : 0
-  const showArrow = hasHeading || headingUp
+function livePuckSvg(rotDeg: number | null) {
+  const hasHeading = rotDeg != null && Number.isFinite(rotDeg)
+  const rot = hasHeading ? Number(rotDeg) : 0
   return `<svg xmlns="http://www.w3.org/2000/svg" width="80" height="80" viewBox="0 0 80 80">
   <defs>
     <filter id="keirosPuckShadow" x="-50%" y="-50%" width="200%" height="200%">
@@ -102,7 +98,7 @@ function livePuckSvg(heading: number | null, opts?: { headingUp?: boolean }) {
   </defs>
   <g transform="rotate(${rot.toFixed(1)} 40 40)" filter="url(#keirosPuckShadow)">
     ${
-      showArrow
+      hasHeading
         ? `<path d="M40 6 L54 32 L40 27 L26 32 Z" fill="#1a73e8" stroke="#ffffff" stroke-width="3" stroke-linejoin="round"/>`
         : ''
     }
@@ -116,11 +112,13 @@ function normalizeDeg(d: number) {
   return ((d % 360) + 360) % 360
 }
 
-/** Shortest-path blend so the arrow doesn't spin wildly on noisy GPS. */
+/** Shortest-path blend — snappy for phone turns, still damps GPS jitter. */
 function blendHeading(prev: number | null, next: number): number {
   if (prev == null || !Number.isFinite(prev)) return next
   const delta = ((next - prev + 540) % 360) - 180
-  return (prev + delta * 0.4 + 360) % 360
+  // Large phone turns: catch up fast. Small noise: soften.
+  const t = Math.abs(delta) > 25 ? 0.85 : 0.65
+  return (prev + delta * t + 360) % 360
 }
 
 export function OutdoorMap({
@@ -745,7 +743,7 @@ export function OutdoorMap({
       return
     }
 
-    // Prefer device compass/GPS heading; fall back to movement bearing when walking/driving.
+    // Prefer LiveFix heading (phone compass + GPS). Fall back to movement bearing.
     let rawHeading: number | null =
       liveFix.heading != null && Number.isFinite(liveFix.heading) ? liveFix.heading : null
     const prev = lastLiveRef.current
@@ -758,7 +756,7 @@ export function OutdoorMap({
               Math.cos((liveFix.latitude * Math.PI) / 180),
           )
         : 0
-    if ((rawHeading == null || (liveFix.speed == null || liveFix.speed < 0.5)) && prev && movedM > 2.5) {
+    if (rawHeading == null && prev && movedM > 2.5) {
       rawHeading = bearingDeg(prev.latitude, prev.longitude, liveFix.latitude, liveFix.longitude)
     }
     if (rawHeading != null && Number.isFinite(rawHeading)) {
@@ -768,23 +766,61 @@ export function OutdoorMap({
     lastLiveRef.current = liveFix
     const pos = latLngLiteral(liveFix.latitude, liveFix.longitude)
 
-    // Live follow = heading-up (Google Maps navigation): rotate the map so travel direction is up.
-    // Then the puck arrow always points to the top of the screen — N/E/S/W stay consistent with the map.
     const routeLat = Number(result.origin.latitude)
     const routeLng = Number(result.origin.longitude)
     const nearRouteM = Math.hypot(
       (liveFix.latitude - routeLat) * 111_320,
       (liveFix.longitude - routeLng) * 111_320 * Math.cos((routeLat * Math.PI) / 180),
     )
-    const headingUp =
-      followLive && !userPanningRef.current && nearRouteM < 8000 && heading != null
+    const shouldFollow =
+      followLive && !userPanningRef.current && nearRouteM < 8000
+
+    // Rotate map toward phone-top when following (heading-up). Hybrid may ignore heading —
+    // puck still uses map.getHeading() so the arrow matches the phone.
+    if (shouldFollow && heading != null) {
+      const driving = liveFix.speed != null && liveFix.speed > 8
+      const targetZoom = driving ? 16 : 18
+      const zoom = !liveSnapDoneRef.current || (map.getZoom() ?? 0) < 16 ? targetZoom : (map.getZoom() ?? targetZoom)
+      try {
+        map.moveCamera({
+          center: pos,
+          zoom,
+          heading: normalizeDeg(heading),
+          tilt: 0,
+        })
+      } catch {
+        map.setCenter(pos)
+        map.setZoom(zoom)
+        if (typeof map.setHeading === 'function') map.setHeading(normalizeDeg(heading))
+      }
+      liveSnapDoneRef.current = true
+    } else if (shouldFollow) {
+      const driving = liveFix.speed != null && liveFix.speed > 8
+      const targetZoom = driving ? 16 : 18
+      if (!liveSnapDoneRef.current || (map.getZoom() ?? 0) < 16) {
+        map.setCenter(pos)
+        map.setZoom(targetZoom)
+        liveSnapDoneRef.current = true
+      } else {
+        map.panTo(pos)
+      }
+    }
+
+    const appliedMapHeading =
+      typeof map.getHeading === 'function' && Number.isFinite(map.getHeading())
+        ? normalizeDeg(map.getHeading() as number)
+        : 0
+    setMapHeading(appliedMapHeading)
+    // Arrow = phone-top relative to whatever way the map is currently drawn.
+    const puckRot =
+      heading != null ? normalizeDeg(heading - appliedMapHeading) : null
 
     if (!liveMarkerRef.current) {
       const puck = createAdvancedMarker({
         map,
         position: pos,
         zIndex: 1000,
-        svg: livePuckSvg(heading, { headingUp }),
+        svg: livePuckSvg(puckRot),
         title: 'You (live)',
       })
       puck.anchorTop = '50%'
@@ -792,7 +828,7 @@ export function OutdoorMap({
       liveMarkerRef.current = puck
     } else {
       liveMarkerRef.current.position = pos
-      setAdvancedMarkerSvg(liveMarkerRef.current, livePuckSvg(heading, { headingUp }))
+      setAdvancedMarkerSvg(liveMarkerRef.current, livePuckSvg(puckRot))
       liveMarkerRef.current.anchorTop = '50%'
       liveMarkerRef.current.anchorLeft = '50%'
     }
@@ -812,39 +848,6 @@ export function OutdoorMap({
     } else {
       accuracyRef.current.setCenter(pos)
       accuracyRef.current.setRadius(Math.max(8, liveFix.accuracy || 20))
-    }
-
-    if (headingUp) {
-      const driving = liveFix.speed != null && liveFix.speed > 8
-      const targetZoom = driving ? 16 : 18
-      const zoom = !liveSnapDoneRef.current || (map.getZoom() ?? 0) < 16 ? targetZoom : (map.getZoom() ?? targetZoom)
-      try {
-        map.moveCamera({
-          center: pos,
-          zoom,
-          heading: normalizeDeg(heading),
-          tilt: 0,
-        })
-      } catch {
-        map.setCenter(pos)
-        map.setZoom(zoom)
-        if (typeof map.setHeading === 'function') map.setHeading(normalizeDeg(heading))
-      }
-      liveSnapDoneRef.current = true
-      setMapHeading(normalizeDeg(heading))
-    } else if (followLive && !userPanningRef.current && nearRouteM < 8000) {
-      // No heading yet — keep north-up, still follow position.
-      if (typeof map.setHeading === 'function') map.setHeading(0)
-      setMapHeading(0)
-      const driving = liveFix.speed != null && liveFix.speed > 8
-      const targetZoom = driving ? 16 : 18
-      if (!liveSnapDoneRef.current || (map.getZoom() ?? 0) < 16) {
-        map.setCenter(pos)
-        map.setZoom(targetZoom)
-        liveSnapDoneRef.current = true
-      } else {
-        map.panTo(pos)
-      }
     }
   }, [liveFix, followLive, mapReady, result.origin.latitude, result.origin.longitude])
 

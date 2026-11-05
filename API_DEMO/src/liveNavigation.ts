@@ -295,6 +295,51 @@ export function maneuverIcon(instruction: string, phase?: string) {
   return 'straight'
 }
 
+function normalizeHeading(d: number): number {
+  return ((d % 360) + 360) % 360
+}
+
+/**
+ * Phone-top direction in degrees clockwise from true north.
+ * GPS coords.heading only updates while moving — standing turns need this.
+ */
+export function compassHeadingFromEvent(e: DeviceOrientationEvent): number | null {
+  const webkit = (e as DeviceOrientationEvent & { webkitCompassHeading?: number }).webkitCompassHeading
+  if (typeof webkit === 'number' && Number.isFinite(webkit)) {
+    return normalizeHeading(webkit)
+  }
+  if (typeof e.alpha !== 'number' || !Number.isFinite(e.alpha)) return null
+  // Prefer absolute orientation when the browser provides it.
+  if (e.absolute === false) {
+    // Relative-only events are too noisy for a nav puck — skip unless nothing else.
+    // Still allow when absolute flag is missing (older Android).
+  }
+  const screenAngle =
+    typeof screen !== 'undefined' && screen.orientation && typeof screen.orientation.angle === 'number'
+      ? screen.orientation.angle
+      : typeof (window as Window & { orientation?: number }).orientation === 'number'
+        ? Number((window as Window & { orientation?: number }).orientation)
+        : 0
+  // alpha: 0 = north on many absolute implementations; convert to compass bearing.
+  return normalizeHeading(360 - e.alpha + screenAngle)
+}
+
+/** iOS requires a user gesture; call from the Live GPS button click. */
+export async function requestCompassPermission(): Promise<boolean> {
+  try {
+    const DOE = DeviceOrientationEvent as unknown as {
+      requestPermission?: () => Promise<'granted' | 'denied' | 'default'>
+    }
+    if (typeof DOE.requestPermission === 'function') {
+      const result = await DOE.requestPermission()
+      return result === 'granted'
+    }
+  } catch {
+    return false
+  }
+  return true
+}
+
 export function useGeolocationWatch(enabled: boolean): {
   fix: LiveFix | null
   error: string | null
@@ -303,7 +348,9 @@ export function useGeolocationWatch(enabled: boolean): {
   const [fix, setFix] = useState<LiveFix | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [watching, setWatching] = useState(false)
-  const lastHeading = useRef<number | null>(null)
+  const lastGpsHeading = useRef<number | null>(null)
+  const lastCompassHeading = useRef<number | null>(null)
+  const lastFixRef = useRef<LiveFix | null>(null)
 
   useEffect(() => {
     if (!enabled) {
@@ -318,23 +365,35 @@ export function useGeolocationWatch(enabled: boolean): {
 
     setError(null)
     setWatching(true)
+
+    const pickHeading = (gpsHeading: number | null, speed: number | null): number | null => {
+      const compass = lastCompassHeading.current
+      const moving = speed != null && Number.isFinite(speed) && speed > 3.5 // ~12 km/h
+      // Driving: GPS course-over-ground is stabler. Walking / standing: phone compass.
+      if (moving && gpsHeading != null) return gpsHeading
+      if (compass != null) return compass
+      if (gpsHeading != null) return gpsHeading
+      return lastGpsHeading.current
+    }
+
     const id = navigator.geolocation.watchPosition(
       (pos) => {
-        const heading =
+        const gpsHeading =
           typeof pos.coords.heading === 'number' && Number.isFinite(pos.coords.heading)
-            ? pos.coords.heading
-            : lastHeading.current
-        if (typeof pos.coords.heading === 'number' && Number.isFinite(pos.coords.heading)) {
-          lastHeading.current = pos.coords.heading
-        }
-        setFix({
+            ? normalizeHeading(pos.coords.heading)
+            : null
+        if (gpsHeading != null) lastGpsHeading.current = gpsHeading
+        const speed = typeof pos.coords.speed === 'number' ? pos.coords.speed : null
+        const next: LiveFix = {
           latitude: pos.coords.latitude,
           longitude: pos.coords.longitude,
           accuracy: pos.coords.accuracy,
-          heading,
-          speed: typeof pos.coords.speed === 'number' ? pos.coords.speed : null,
+          heading: pickHeading(gpsHeading, speed),
+          speed,
           timestamp: pos.timestamp,
-        })
+        }
+        lastFixRef.current = next
+        setFix(next)
         setError(null)
       },
       (err) => {
@@ -347,13 +406,49 @@ export function useGeolocationWatch(enabled: boolean): {
       },
       {
         enableHighAccuracy: true,
-        maximumAge: 2000,
+        maximumAge: 1000,
         timeout: 20000,
       },
     )
 
+    let compassRaf = 0
+    let pendingCompass: number | null = null
+    const flushCompass = () => {
+      compassRaf = 0
+      if (pendingCompass == null) return
+      const compass = pendingCompass
+      pendingCompass = null
+      lastCompassHeading.current = compass
+      const prev = lastFixRef.current
+      if (!prev) return
+      const heading = pickHeading(
+        lastGpsHeading.current,
+        prev.speed,
+      )
+      if (heading == null || (prev.heading != null && Math.abs(((heading - prev.heading + 540) % 360) - 180) < 0.8)) {
+        return
+      }
+      const next: LiveFix = { ...prev, heading, timestamp: Date.now() }
+      lastFixRef.current = next
+      setFix(next)
+    }
+
+    const onOrientation = (e: DeviceOrientationEvent) => {
+      const h = compassHeadingFromEvent(e)
+      if (h == null) return
+      pendingCompass = h
+      if (!compassRaf) compassRaf = window.requestAnimationFrame(flushCompass)
+    }
+
+    // Absolute first (Android); fall back to deviceorientation (iOS webkitCompassHeading).
+    window.addEventListener('deviceorientationabsolute', onOrientation as EventListener, true)
+    window.addEventListener('deviceorientation', onOrientation as EventListener, true)
+
     return () => {
       navigator.geolocation.clearWatch(id)
+      window.removeEventListener('deviceorientationabsolute', onOrientation as EventListener, true)
+      window.removeEventListener('deviceorientation', onOrientation as EventListener, true)
+      if (compassRaf) window.cancelAnimationFrame(compassRaf)
       setWatching(false)
     }
   }, [enabled])

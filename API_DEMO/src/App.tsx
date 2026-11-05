@@ -17,6 +17,7 @@ import { unlockVoiceFromGesture, useDirectionVoice } from './voiceGuide'
 import { attachLotToResult, withLiveDrive } from './liveDrive'
 import {
   matchLiveProgress,
+  requestCompassPermission,
   useGeolocationWatch,
   type LiveProgress,
 } from './liveNavigation'
@@ -481,6 +482,7 @@ export default function App() {
     setLocating(true)
     setError('')
     try {
+      void requestCompassPermission()
       const coords = await readCurrentLocation()
       setLiveSelected(true)
       setStartMode('live')
@@ -518,6 +520,7 @@ export default function App() {
     if (startMode === 'live') {
       setLocating(true)
       try {
+        void requestCompassPermission()
         const coords = await readCurrentLocation()
         await planRoute('live', coords)
       } catch (err) {
@@ -1029,6 +1032,7 @@ export default function App() {
                   aria-pressed={wantsLiveGps}
                   onClick={() => {
                     unlockVoiceFromGesture()
+                    void requestCompassPermission()
                     if (startMode === 'live') {
                       setLiveNav(true)
                       return
