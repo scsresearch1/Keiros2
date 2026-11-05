@@ -192,6 +192,33 @@ export default function App() {
     }))
   }, [units])
 
+  /** Parking from Keiros DB (type=Parking) — must stay above any early return (Rules of Hooks). */
+  const databaseParking = useMemo(() => {
+    if (!hierarchy || !buildingId) return null
+    const near =
+      hierarchy.units.find((u) => u.id === unitId) ||
+      hierarchy.units.find((u) => u.buildingId === buildingId && /entry/i.test(u.type))
+    const pool = hierarchy.units.filter((u) => {
+      if (!/^parking$/i.test(u.type)) return false
+      if (!Number.isFinite(u.latitude) || !Number.isFinite(u.longitude)) return false
+      if (u.buildingId === buildingId) return true
+      if (complexId && u.complexId === complexId) return true
+      return false
+    })
+    if (!pool.length) return null
+    const ranked = [...pool].sort((a, b) => {
+      const aB = a.buildingId === buildingId ? 0 : 1
+      const bB = b.buildingId === buildingId ? 0 : 1
+      if (aB !== bB) return aB - bB
+      if (!near) return a.name.localeCompare(b.name)
+      const dA = Math.hypot(a.latitude - near.latitude, a.longitude - near.longitude)
+      const dB = Math.hypot(b.latitude - near.latitude, b.longitude - near.longitude)
+      return dA - dB
+    })
+    const p = ranked[0]
+    return { id: p.id, latitude: p.latitude, longitude: p.longitude, label: p.name || 'Parking' }
+  }, [hierarchy, buildingId, complexId, unitId])
+
   /** When a parent is chosen and only one child exists, auto-select that child. */
   useEffect(() => {
     if (!complexId || buildingId) return
@@ -582,31 +609,6 @@ export default function App() {
   const firstIndoorIndex = steps.findIndex((s) => s.phase === 'indoor')
   const indoorStepCount = steps.filter((s) => s.phase === 'indoor').length
   const canNavigate = Boolean(complexId && buildingId && floorId && unitId)
-  const databaseParking = useMemo(() => {
-    if (!hierarchy || !buildingId) return null
-    const near =
-      hierarchy.units.find((u) => u.id === unitId) ||
-      hierarchy.units.find((u) => u.buildingId === buildingId && /entry/i.test(u.type))
-    const pool = hierarchy.units.filter((u) => {
-      if (!/^parking$/i.test(u.type)) return false
-      if (!Number.isFinite(u.latitude) || !Number.isFinite(u.longitude)) return false
-      if (u.buildingId === buildingId) return true
-      if (complexId && u.complexId === complexId) return true
-      return false
-    })
-    if (!pool.length) return null
-    const ranked = [...pool].sort((a, b) => {
-      const aB = a.buildingId === buildingId ? 0 : 1
-      const bB = b.buildingId === buildingId ? 0 : 1
-      if (aB !== bB) return aB - bB
-      if (!near) return a.name.localeCompare(b.name)
-      const dA = Math.hypot(a.latitude - near.latitude, a.longitude - near.longitude)
-      const dB = Math.hypot(b.latitude - near.latitude, b.longitude - near.longitude)
-      return dA - dB
-    })
-    const p = ranked[0]
-    return { id: p.id, latitude: p.latitude, longitude: p.longitude, label: p.name || 'Parking' }
-  }, [hierarchy, buildingId, complexId, unitId])
 
   function jumpToPhase(target: 'drive' | 'walk' | 'indoor') {
     const idx = steps.findIndex((s) => {
