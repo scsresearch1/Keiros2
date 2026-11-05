@@ -1,13 +1,15 @@
 /**
- * Outdoor: firm blue drive to closest driveable point, then red-dot walk on pathways to entry door.
+ * Outdoor: firm blue drive as far as the driveway/road network goes,
+ * then red-dot walk only for the remaining gap to the entry door.
+ *
+ * Do NOT artificially peel ~55m of drive — that stopped blue early while driveway remained.
  */
 import type { SiteWaysExtract } from './extractSiteWays'
 import { fetchRoadRoute, pathEndGapM, type RoadRoute, type RouteTravelMode } from './googleRoute'
 import { routeOnSiteWays } from './siteGraphRoute'
 
-/** Peel the last approach off the drive so walk (red dots) is always visible to the door. */
-export const APPROACH_WALK_M = 55
-export const LAST_MILE_WALK_M = 8
+/** Only switch to walk when the drive network ends this far from the entry door. */
+export const LAST_MILE_WALK_M = 30
 
 export type HandoffSegment = {
   mode: RouteTravelMode
@@ -34,29 +36,6 @@ function meters(a: google.maps.LatLngLiteral, b: google.maps.LatLngLiteral) {
   return 2 * R * Math.asin(Math.min(1, Math.sqrt(s)))
 }
 
-/** Handoff = last drive point still outside the final approach radius to the door. */
-function findHandoff(
-  path: google.maps.LatLngLiteral[],
-  door: google.maps.LatLngLiteral,
-  walkRadiusM: number,
-): { handoff: google.maps.LatLngLiteral; drivePath: google.maps.LatLngLiteral[] } {
-  if (path.length < 2) {
-    return { handoff: path[0] ?? door, drivePath: path }
-  }
-  let cut = path.length - 1
-  for (let i = 0; i < path.length; i++) {
-    if (meters(path[i], door) <= walkRadiusM) {
-      cut = Math.max(0, i - 1)
-      break
-    }
-  }
-  const drivePath = path.slice(0, cut + 1)
-  if (drivePath.length < 2) {
-    return { handoff: path[0], drivePath: path.slice(0, Math.min(2, path.length)) }
-  }
-  return { handoff: drivePath[drivePath.length - 1], drivePath }
-}
-
 async function bestDriveRoute(
   from: google.maps.LatLngLiteral,
   to: google.maps.LatLngLiteral,
@@ -65,7 +44,7 @@ async function bestDriveRoute(
   const candidates: { path: google.maps.LatLngLiteral[]; distanceM: number; source: string; gap: number }[] =
     []
 
-  if (extract) {
+  if (extract?.driveways.length) {
     const site = routeOnSiteWays(extract, from, to, 'DRIVE')
     if (site && site.path.length >= 2) {
       candidates.push({
@@ -92,8 +71,9 @@ async function bestDriveRoute(
   }
 
   if (!candidates.length) return null
+  // Prefer the drive that gets closest to the entry door on the vehicle network.
   candidates.sort((a, b) => {
-    if (Math.abs(a.gap - b.gap) > 10) return a.gap - b.gap
+    if (Math.abs(a.gap - b.gap) > 8) return a.gap - b.gap
     return a.distanceM - b.distanceM
   })
   return candidates[0]
@@ -154,8 +134,8 @@ async function bestSidewalkWalk(
 }
 
 /**
- * Drive (blue) to closest driveable point, then walk (red dots) pathways to entry door.
- * Always peels a final approach walk when the door is not on the drive network.
+ * Drive the full driveway/road path Google (or OSM) returns toward the entry door.
+ * Walk (red dots) only for the leftover gap after the vehicle network ends — never cut drive early.
  */
 export async function planDrivePlusWalk(
   from: google.maps.LatLngLiteral,
@@ -184,34 +164,39 @@ export async function planDrivePlusWalk(
     return { segments: [], handoff: null, label: 'walk' }
   }
 
-  const endGap = pathEndGapM(drive.path, to)
-  // Peel last ~55m (or whatever remains) so red-dot walk always shows to the door.
-  const { handoff, drivePath } =
-    endGap <= LAST_MILE_WALK_M
-      ? findHandoff(drive.path, to, APPROACH_WALK_M)
-      : {
-          handoff: drive.path[drive.path.length - 1],
-          drivePath: drive.path,
-        }
+  const handoff = drive.path[drive.path.length - 1]
+  const endGap = meters(handoff, to)
 
-  // If peel collapsed everything, keep a short drive stub then walk.
-  const usableDrive =
-    drivePath.length >= 2 ? drivePath : drive.path.slice(0, Math.max(2, Math.floor(drive.path.length * 0.85)))
+  // Vehicle network reaches the door — solid blue all the way.
+  if (endGap <= LAST_MILE_WALK_M) {
+    return {
+      segments: [
+        {
+          mode: 'DRIVE',
+          path: drive.path,
+          dashed: false,
+          distanceM: drive.distanceM,
+          source: drive.source,
+        },
+      ],
+      handoff: null,
+      label: 'drive',
+    }
+  }
 
-  const walkFrom = usableDrive[usableDrive.length - 1] ?? handoff
-  const walk = await bestSidewalkWalk(walkFrom, to, extract)
-
+  // Natural end of driveway/road — walk only the remaining gap to the entry door.
+  const walk = await bestSidewalkWalk(handoff, to, extract)
   const segments: HandoffSegment[] = [
     {
       mode: 'DRIVE',
-      path: usableDrive,
+      path: drive.path,
       dashed: false,
       distanceM: drive.distanceM,
       source: drive.source,
     },
   ]
 
-  if (walk && walk.path.length >= 2 && meters(walkFrom, to) > LAST_MILE_WALK_M) {
+  if (walk && walk.path.length >= 2) {
     segments.push({
       mode: 'WALK',
       path: walk.path,
@@ -219,27 +204,10 @@ export async function planDrivePlusWalk(
       distanceM: walk.distanceM,
       source: walk.source,
     })
-    return { segments, handoff: walkFrom, label: 'drive+walk' }
+    return { segments, handoff, label: 'drive+walk' }
   }
 
-  // Walk graph missing — still show handoff; drive stops short of door (no fake blue into the building).
-  if (meters(walkFrom, to) > LAST_MILE_WALK_M) {
-    return { segments, handoff: walkFrom, label: 'drive' }
-  }
-
-  return {
-    segments: [
-      {
-        mode: 'DRIVE',
-        path: drive.path,
-        dashed: false,
-        distanceM: drive.distanceM,
-        source: drive.source,
-      },
-    ],
-    handoff: null,
-    label: 'drive',
-  }
+  return { segments, handoff, label: 'drive' }
 }
 
 export async function planWalkOnly(

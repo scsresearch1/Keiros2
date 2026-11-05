@@ -208,10 +208,13 @@ async function computeRoadRouteJs(
   const raw = first?.path
   if (!raw?.length) throw new Error('No route path returned')
 
+  // Snap only if already on-network near the pin — never stretch a drive line to the door.
   const path = pinPathToEndpoints(
     raw.map((p) => asLiteral(p)),
     origin,
     destination,
+    8,
+    5,
   )
   const distanceM = Math.round(
     Number((first as { distanceMeters?: number }).distanceMeters) ||
@@ -286,7 +289,7 @@ async function computeRoadRouteRest(
   const route = json.routes?.[0]
   const encoded = route?.polyline?.encodedPolyline
   if (!encoded) throw new Error('Routes API returned no polyline')
-  const path = pinPathToEndpoints(decodePolyline(encoded), origin, destination)
+  const path = pinPathToEndpoints(decodePolyline(encoded), origin, destination, 8, 5)
   const distanceM = Math.round(route?.distanceMeters ?? 0)
   const durationSec = parseDurationSec(route?.duration)
   const rawSteps = route?.legs?.[0]?.steps ?? []
