@@ -15,7 +15,7 @@ import { extractSiteWays, type SiteWaysExtract } from '../extractSiteWays'
 import { pinPathToEndpoints } from '../googleRoute'
 import type { LiveFix } from '../liveNavigation'
 import { bearingDeg } from '../liveNavigation'
-import { resolveOutdoorLegs, type OutdoorLeg } from '../outdoorLegs'
+import { metersBetween, resolveOutdoorLegs, type OutdoorLeg } from '../outdoorLegs'
 
 /** Highlight extracted site driveways so the visible driveway is obvious. */
 const DRIVEWAY_LAYER = '#f59e0b'
@@ -481,36 +481,25 @@ export function OutdoorMap({
         ...outdoorPlan.legs.flatMap((l) => [l.from, l.to]),
       ]
 
-      let extract: SiteWaysExtract | null = null
-      try {
-        extract = await extractSiteWays(seedPoints)
-        if (session !== routeSessionRef.current) return
+      // OSM in background only — never block the Google path on Overpass 504s.
+      const extractPromise = extractSiteWays(seedPoints).catch(() => null)
+      void extractPromise.then((extract) => {
+        if (session !== routeSessionRef.current || !extract) return
         drawExtractedNetworks(extract)
         setSiteNet({
           driveways: extract.driveways.length,
           sidewalks: extract.sidewalks.length,
           routedOn:
             extract.driveways.length || extract.sidewalks.length
-              ? 'OSM layers on'
-              : 'Google routing (OSM extract off)',
+              ? 'OSM layers (background)'
+              : 'Google routing (OSM empty)',
         })
-      } catch {
-        // Never block Google Drive+Walk.
-        if (session !== routeSessionRef.current) return
-        extract = null
-        setSiteNet({ driveways: 0, sidewalks: 0, routedOn: 'Google routing' })
-      }
+      })
 
-      if (!outdoorPlan.legs.length) {
+      if (!outdoorPlan.legs.length && metersBetween(origin, destination) <= 25) {
         if (session !== routeSessionRef.current) return
         setMapError('')
-        if (extract) {
-          setSiteNet({
-            driveways: extract.driveways.length,
-            sidewalks: extract.sidewalks.length,
-            routedOn: 'networks only',
-          })
-        }
+        setSiteNet({ driveways: 0, sidewalks: 0, routedOn: 'at destination' })
         fitRouteView()
         return
       }
@@ -519,81 +508,27 @@ export function OutdoorMap({
       let driveWalkCount = 0
       const sources = new Set<string>()
 
-      // Always finish at actual destination D.
-      // OSM driveway near D → drive to that curb, walk to D.
-      // No OSM (or Overpass down) → Google DRIVE toward D, walk last meters.
-      // Never full-walk a driveable approach just because Overpass 429'd.
-      const drivewayCurb = nearestDrivewayPointTo(extract, destination, 160)
-      const hasOsmDriveways = Boolean(extract?.driveways.length)
+      // Immediate Google drive → walk to D (path shows in ~1s, not after Overpass timeout).
+      const legsToDraw: OutdoorLeg[] = [
+        {
+          id: 'drive-toward-destination',
+          mode: 'DRIVE',
+          from: origin,
+          to: destination,
+          label: 'Drive toward destination (Google roads)',
+          color: ROUTE_DRIVE_BLUE,
+        },
+      ]
 
-      const legsToDraw: OutdoorLeg[] = drivewayCurb
-        ? [
-            {
-              id: 'drive-to-driveway',
-              mode: 'DRIVE',
-              from: origin,
-              to: drivewayCurb,
-              label: 'Drive on driveway toward destination',
-              color: ROUTE_DRIVE_BLUE,
-            },
-            {
-              id: 'walk-to-destination',
-              mode: 'WALK',
-              from: drivewayCurb,
-              to: destination,
-              label: 'Walk to actual destination',
-              color: ROUTE_WALK_DOT,
-            },
-          ]
-        : [
-            {
-              id: 'drive-toward-destination',
-              mode: 'DRIVE',
-              from: origin,
-              to: destination,
-              label: hasOsmDriveways
-                ? 'Drive toward destination (no curb snap)'
-                : 'Drive toward destination (Google roads)',
-              color: ROUTE_DRIVE_BLUE,
-            },
-          ]
-
-      if (drivewayCurb) {
-        track(
-          createAdvancedMarker({
-            map,
-            position: drivewayCurb,
-            title: 'Driveway — leave vehicle, walk to destination',
-            zIndex: 48,
-            svg: pinSvg('#f59e0b', 'W'),
-          }),
-        )
-        bounds.extend(drivewayCurb)
-        setSiteNet((prev) =>
-          prev
-            ? { ...prev, routedOn: `Drive → walk to D · ${prev.driveways} driveways` }
-            : prev,
-        )
-      } else {
-        setSiteNet((prev) =>
-          prev
-            ? {
-                ...prev,
-                routedOn: hasOsmDriveways
-                  ? 'Google drive → walk to D'
-                  : 'Google drive (OSM extract unavailable)',
-              }
-            : prev,
-        )
-      }
+      setSiteNet({ driveways: 0, sidewalks: 0, routedOn: 'Google drive → walk to D' })
 
       await Promise.all(
         legsToDraw.map(async (leg, index) => {
           try {
             const plan =
               leg.mode === 'WALK'
-                ? await planWalkOnly(leg.from, leg.to, extract)
-                : await planDrivePlusWalk(leg.from, leg.to, extract)
+                ? await planWalkOnly(leg.from, leg.to, null)
+                : await planDrivePlusWalk(leg.from, leg.to, null)
 
             if (session !== routeSessionRef.current) return
             if (!plan.segments.length) {
@@ -604,7 +539,6 @@ export function OutdoorMap({
             if (plan.label === 'drive+walk') driveWalkCount += 1
             for (const seg of plan.segments) {
               sources.add(seg.source)
-              // Walk must pin to leg.to (actual D) — never to the truncated Google path end.
               const pinFrom = seg.path[0] ?? leg.from
               const pinTo =
                 seg.mode === 'WALK' ? leg.to : (seg.path[seg.path.length - 1] ?? leg.to)
@@ -617,7 +551,6 @@ export function OutdoorMap({
               )
             }
 
-            // Mark the leave-vehicle / start-walk handoff (like Google’s mode switch).
             if (plan.handoff) {
               track(
                 createAdvancedMarker({
@@ -639,16 +572,14 @@ export function OutdoorMap({
       )
 
       if (session !== routeSessionRef.current) return
-      if (extract) {
-        const src = [...sources].join('+') || 'none'
-        setSiteNet({
-          driveways: extract.driveways.length,
-          sidewalks: extract.sidewalks.length,
-          routedOn: driveWalkCount
-            ? `Drive + Walk ×${driveWalkCount} · ${src}`
-            : `routed · ${src}`,
-        })
-      }
+      const src = [...sources].join('+') || 'google'
+      setSiteNet((prev) => ({
+        driveways: prev?.driveways ?? 0,
+        sidewalks: prev?.sidewalks ?? 0,
+        routedOn: driveWalkCount
+          ? `Drive + Walk · ${src}`
+          : `routed · ${src}`,
+      }))
       if (errors.some((m) => /REQUEST_DENIED|PERMISSION|API|403|Routes/i.test(m))) {
         setMapError(
           'Enable Routes API on your Google Cloud key (APIs & Services → enable “Routes API”), then hard-refresh. Showing fallback path for now.',
@@ -657,6 +588,22 @@ export function OutdoorMap({
         setMapError('')
       }
       fitRouteView()
+
+      // Optional curb snap only if OSM returns quickly with a driveway near D.
+      void extractPromise.then(async (extract) => {
+        if (session !== routeSessionRef.current || !extract?.driveways.length) return
+        const curb = nearestDrivewayPointTo(extract, destination, 160)
+        if (!curb) return
+        try {
+          const onto = await planWalkOnly(curb, destination, extract)
+          if (session !== routeSessionRef.current) return
+          if (onto.segments[0]?.path?.length) {
+            drawPath(onto.segments[0].path, curb, destination, 'walk-dots', 23)
+          }
+        } catch {
+          /* Google path already shown */
+        }
+      })
     })()
   }, [mapReady, result, outdoorPlan])
 

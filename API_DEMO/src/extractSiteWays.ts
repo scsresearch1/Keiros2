@@ -1,6 +1,6 @@
 /**
  * Extract driveways + sidewalks from OpenStreetMap via same-origin Overpass proxy.
- * Netlify: /.netlify/functions/overpass (see netlify.toml redirects).
+ * Never blocks Google routing — caller should not await this before drawing the path.
  */
 
 export type SiteWayKind = 'driveway' | 'sidewalk'
@@ -28,12 +28,14 @@ type OverpassElement = {
   geometry?: { lat: number; lon: number }[]
 }
 
-const OVERPASS_URLS = ['/api/overpass', '/api/overpass-kumi']
+/** Single proxy path — function already races mirrors. */
+const OVERPASS_URL = '/api/overpass'
+const CLIENT_TIMEOUT_MS = 6000
 const cache = new Map<string, Promise<SiteWaysExtract>>()
 
 function padBbox(
   points: { lat: number; lng: number }[],
-  padDeg = 0.0025,
+  padDeg = 0.002,
 ): [number, number, number, number] {
   let south = Infinity
   let north = -Infinity
@@ -96,11 +98,10 @@ function classify(tags: Record<string, string> | undefined): SiteWayKind | null 
   return null
 }
 
-/** Tight query — fewer ways, less 429 from public Overpass. */
 function buildQuery(south: number, west: number, north: number, east: number) {
   const b = `${south},${west},${north},${east}`
   return `
-[out:json][timeout:18];
+[out:json][timeout:8];
 (
   way["highway"="service"](${b});
   way["service"="driveway"](${b});
@@ -116,25 +117,24 @@ out geom;
 }
 
 async function fetchOverpass(query: string): Promise<OverpassElement[]> {
-  let lastErr: Error | null = null
-  for (const url of OVERPASS_URLS) {
-    try {
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
-          Accept: '*/*',
-        },
-        body: `data=${encodeURIComponent(query)}`,
-      })
-      if (!res.ok) throw new Error(`Overpass ${res.status}`)
-      const json = (await res.json()) as { elements?: OverpassElement[] }
-      return json.elements ?? []
-    } catch (err) {
-      lastErr = err instanceof Error ? err : new Error(String(err))
-    }
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), CLIENT_TIMEOUT_MS)
+  try {
+    const res = await fetch(OVERPASS_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+        Accept: '*/*',
+      },
+      body: `data=${encodeURIComponent(query)}`,
+      signal: controller.signal,
+    })
+    if (!res.ok) throw new Error(`Overpass ${res.status}`)
+    const json = (await res.json()) as { elements?: OverpassElement[] }
+    return json.elements ?? []
+  } finally {
+    clearTimeout(timer)
   }
-  throw lastErr ?? new Error('Overpass failed')
 }
 
 function elementToWay(el: OverpassElement): SiteWay | null {
@@ -154,7 +154,7 @@ function elementToWay(el: OverpassElement): SiteWay | null {
   }
 }
 
-/** Always attempts extract; on failure returns empty (Google drive fallback). */
+/** Always resolves (empty on failure). Safe to fire-and-forget beside Google routing. */
 export function extractSiteWays(points: { lat: number; lng: number }[]): Promise<SiteWaysExtract> {
   const valid = points.filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lng))
   const bbox = padBbox(valid.length ? valid : [{ lat: 0, lng: 0 }])
