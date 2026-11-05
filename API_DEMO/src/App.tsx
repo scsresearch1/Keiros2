@@ -262,6 +262,12 @@ export default function App() {
     setError('')
     try {
       const explicit = mode !== 'demo' && origin
+      const dbParking = viaParking ? databaseParking : null
+      if (viaParking && !dbParking) {
+        setError('No parking is marked in the database for this property. Add a Parking location (e.g. Black truck) or turn off Via parking.')
+        setLoading(false)
+        return
+      }
       const nav = await navigate(apiKey, {
         complexId,
         buildingId,
@@ -269,6 +275,14 @@ export default function App() {
         unitId,
         startMode: mode,
         viaParking,
+        ...(dbParking
+          ? {
+              parkingId: dbParking.id,
+              parkingLatitude: dbParking.latitude,
+              parkingLongitude: dbParking.longitude,
+              parkingLabel: dbParking.label,
+            }
+          : {}),
         ...(explicit
           ? {
               originLatitude: origin.latitude,
@@ -277,19 +291,61 @@ export default function App() {
             }
           : {}),
       })
-      // Parking rebuild only when opted in; otherwise keep server point-to-point path.
-      const routed = viaParking
-        ? explicit
-          ? await withLiveDrive(nav, origin, {
-              label: origin.label,
+      // Prefer DB parking pin. Skip OSM lot align when we already have Keiros parking.
+      let routed = nav
+      if (viaParking && dbParking) {
+        routed = {
+          ...nav,
+          parking: {
+            latitude: dbParking.latitude,
+            longitude: dbParking.longitude,
+            label: dbParking.label,
+            offsetMeters: nav.parking?.offsetMeters ?? 0,
+            mode: 'database',
+          },
+        }
+        if (explicit && origin) {
+          routed = await withLiveDrive(routed, origin, {
+            label: origin.label,
+            startMode: mode === 'custom' ? 'custom' : 'live',
+          })
+          // withLiveDrive may rewrite parking for on-site — restore DB spot when still driving.
+          if (routed.origin.viaParking !== false && routed.parking?.mode !== 'on-site' && routed.parking?.mode !== 'walk-from-origin') {
+            routed = {
+              ...routed,
+              parking: {
+                latitude: dbParking.latitude,
+                longitude: dbParking.longitude,
+                label: dbParking.label,
+                offsetMeters: routed.parking?.offsetMeters ?? 0,
+                mode: 'database',
+              },
+            }
+          }
+        }
+      } else if (viaParking) {
+        routed = explicit
+          ? await withLiveDrive(nav, origin!, {
+              label: origin?.label,
               startMode: mode === 'custom' ? 'custom' : 'live',
             })
           : await attachLotToResult(nav)
-        : nav
+      }
       // Stamp so outdoor map knows to drive → parking → walk pathways.
       setResult({
         ...routed,
         origin: { ...routed.origin, viaParking },
+        ...(dbParking && routed.parking?.mode === 'database'
+          ? {
+              parking: {
+                latitude: dbParking.latitude,
+                longitude: dbParking.longitude,
+                label: dbParking.label,
+                offsetMeters: routed.parking?.offsetMeters ?? 0,
+                mode: 'database',
+              },
+            }
+          : {}),
       })
       // Point-to-point starts at the first step (origin → destination).
       setJourneyIndex(0)
@@ -526,6 +582,31 @@ export default function App() {
   const firstIndoorIndex = steps.findIndex((s) => s.phase === 'indoor')
   const indoorStepCount = steps.filter((s) => s.phase === 'indoor').length
   const canNavigate = Boolean(complexId && buildingId && floorId && unitId)
+  const databaseParking = useMemo(() => {
+    if (!hierarchy || !buildingId) return null
+    const near =
+      hierarchy.units.find((u) => u.id === unitId) ||
+      hierarchy.units.find((u) => u.buildingId === buildingId && /entry/i.test(u.type))
+    const pool = hierarchy.units.filter((u) => {
+      if (!/^parking$/i.test(u.type)) return false
+      if (!Number.isFinite(u.latitude) || !Number.isFinite(u.longitude)) return false
+      if (u.buildingId === buildingId) return true
+      if (complexId && u.complexId === complexId) return true
+      return false
+    })
+    if (!pool.length) return null
+    const ranked = [...pool].sort((a, b) => {
+      const aB = a.buildingId === buildingId ? 0 : 1
+      const bB = b.buildingId === buildingId ? 0 : 1
+      if (aB !== bB) return aB - bB
+      if (!near) return a.name.localeCompare(b.name)
+      const dA = Math.hypot(a.latitude - near.latitude, a.longitude - near.longitude)
+      const dB = Math.hypot(b.latitude - near.latitude, b.longitude - near.longitude)
+      return dA - dB
+    })
+    const p = ranked[0]
+    return { id: p.id, latitude: p.latitude, longitude: p.longitude, label: p.name || 'Parking' }
+  }, [hierarchy, buildingId, complexId, unitId])
 
   function jumpToPhase(target: 'drive' | 'walk' | 'indoor') {
     const idx = steps.findIndex((s) => {
@@ -724,7 +805,9 @@ export default function App() {
           </div>
           <p className="demo-hint demo-hint--tight">
             {viaParking
-              ? 'Drive to parking → walk to entrance → indoor to the unit.'
+              ? databaseParking
+                ? `Drive to “${databaseParking.label}” (database parking) → walk pathways to entrance → indoor.`
+                : 'Via parking needs a Parking location in this property’s database (e.g. Black truck).'
               : 'Point-to-point: your start → entrance → unit (no parking stop).'}
           </p>
         </section>

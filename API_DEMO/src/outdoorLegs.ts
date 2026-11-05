@@ -62,6 +62,7 @@ function isRealParkingStop(result: NavigateResult, origin: LatLngLit): LatLngLit
   if (metersBetween(origin, pos) <= 40) return null
   // Only when Navigate "Via parking" is on (stamped on origin by the demo app).
   if (result.origin.viaParking !== true) return null
+  // Prefer Keiros DB parking (mode=database); still accept server parking when stamped viaParking.
   return pos
 }
 

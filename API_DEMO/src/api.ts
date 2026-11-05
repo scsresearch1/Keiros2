@@ -233,6 +233,11 @@ export async function navigate(
     startMode?: 'demo' | 'live' | 'custom'
     /** When true, include drive → parking → walk. Default is direct indoor to the unit. */
     viaParking?: boolean
+    /** Keiros DB Parking location (not Google/OSM amenity parking). */
+    parkingId?: string
+    parkingLatitude?: number
+    parkingLongitude?: number
+    parkingLabel?: string
     originLatitude?: number
     originLongitude?: number
     originLabel?: string

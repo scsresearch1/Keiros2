@@ -537,7 +537,60 @@ app.post('/api/v1/navigate', (req, res) =>
     let arrivalMode
     let outdoorNote
     if (viaParking) {
-      const arrival = await chooseArrival(entrancePoint, origin)
+      // Prefer Parking locations from our database (e.g. "Black truck"), not Google/OSM lots.
+      const complexKey = complex?.id || building.complexId || unit.complexId || null
+      const bodyParkId = req.body?.parkingId ? String(req.body.parkingId) : ''
+      const bodyParkLat = Number(req.body?.parkingLatitude)
+      const bodyParkLng = Number(req.body?.parkingLongitude)
+      let dbParking = null
+      if (
+        Number.isFinite(bodyParkLat) &&
+        Number.isFinite(bodyParkLng) &&
+        Math.abs(bodyParkLat) <= 90 &&
+        Math.abs(bodyParkLng) <= 180
+      ) {
+        dbParking = {
+          id: bodyParkId || null,
+          latitude: bodyParkLat,
+          longitude: bodyParkLng,
+          label: cleanOriginLabel(req.body?.parkingLabel) || 'Parking',
+        }
+      } else {
+        const parkPool = locations.filter((l) => {
+          if (String(l.type || '') !== 'Parking') return false
+          if (!Number.isFinite(l.latitude) || !Number.isFinite(l.longitude)) return false
+          if (bodyParkId && l.id === bodyParkId) return true
+          if (l.buildingId === building.id) return true
+          if (complexKey && l.complexId === complexKey) return true
+          return false
+        })
+        const preferred = bodyParkId ? parkPool.find((l) => l.id === bodyParkId) : null
+        const ranked = (preferred ? [preferred] : parkPool)
+          .map((l) => ({
+            id: l.id,
+            latitude: l.latitude,
+            longitude: l.longitude,
+            label: l.name || 'Parking',
+            buildingMatch: l.buildingId === building.id ? 0 : 1,
+            dist: Math.hypot(
+              (l.latitude - entrancePoint.latitude) * 111320,
+              (l.longitude - entrancePoint.longitude) *
+                111320 *
+                Math.cos((entrancePoint.latitude * Math.PI) / 180),
+            ),
+          }))
+          .sort((a, b) => a.buildingMatch - b.buildingMatch || a.dist - b.dist)
+        if (ranked[0]) {
+          dbParking = {
+            id: ranked[0].id,
+            latitude: ranked[0].latitude,
+            longitude: ranked[0].longitude,
+            label: ranked[0].label,
+          }
+        }
+      }
+
+      const arrival = await chooseArrival(entrancePoint, origin, dbParking)
       parking = arrival.parking
       drive = arrival.drive
       walk = arrival.walk
@@ -547,7 +600,9 @@ app.post('/api/v1/navigate', (req, res) =>
           ? 'You are already at the entrance — continue indoors.'
           : arrivalMode === 'walk-from-origin'
             ? 'Close enough to walk from your start to the entrance (no parking detour).'
-            : 'Drive ends at parking. Walk from parking to entrance, then continue indoors.'
+            : dbParking
+              ? `Drive to ${dbParking.label} (database parking). Walk pathways to entrance, then indoors.`
+              : 'Drive ends at parking. Walk from parking to entrance, then continue indoors.'
     } else {
       const arrival = await choosePointToPoint(origin, routeTarget, {
         destLabel: unit.name || entrancePoint.name,

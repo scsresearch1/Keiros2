@@ -825,12 +825,10 @@ const AT_ENTRANCE_M = 100
 const WALK_FROM_HERE_M = 900
 
 /**
- * Arrival plan:
- * - Already at entrance → no drive / no parking loop
- * - Nearby → walk from current position to entrance (road-snapped)
- * - Far away → drive to nearest parking, then walk
+ * Prefer Keiros DB Parking locations (e.g. "Black truck") over OSM/Google amenity search.
+ * @param {{ latitude:number, longitude:number, label?:string, id?:string } | null} preferredParking
  */
-export async function chooseArrival(entrance, origin) {
+export async function chooseArrival(entrance, origin, preferredParking = null) {
   const toEntrance = metersBetween(origin, entrance)
 
   if (toEntrance <= AT_ENTRANCE_M) {
@@ -848,7 +846,9 @@ export async function chooseArrival(entrance, origin) {
     }
   }
 
-  if (toEntrance <= WALK_FROM_HERE_M) {
+  // With a mapped DB parking spot, always drive there (don't invent OSM "nearest parking").
+  // Only skip the car when already very close to the door.
+  if (!preferredParking && toEntrance <= WALK_FROM_HERE_M) {
     let walk = await fetchOsrm('foot', origin, entrance, {
       phase: 'walk',
       idPrefix: 'wlk',
@@ -864,7 +864,6 @@ export async function chooseArrival(entrance, origin) {
       })
       if (isRoadSnapped(viaRoads)) walk = { ...viaRoads, profile: 'foot' }
     }
-    // Still refuse a parking detour if it would send the user farther away.
     return {
       parking: {
         latitude: origin.latitude,
@@ -879,7 +878,17 @@ export async function chooseArrival(entrance, origin) {
     }
   }
 
-  const spot = await selectParking(entrance, origin)
+  const spot =
+    preferredParking &&
+    Number.isFinite(preferredParking.latitude) &&
+    Number.isFinite(preferredParking.longitude)
+      ? {
+          latitude: preferredParking.latitude,
+          longitude: preferredParking.longitude,
+          label: preferredParking.label || preferredParking.name || 'Parking',
+          source: 'database',
+        }
+      : await selectParking(entrance, origin)
   const [drive, walk] = await Promise.all([
     fetchDriveRoute(origin, spot),
     fetchWalkRoute(spot, entrance),
