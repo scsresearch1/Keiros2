@@ -9,7 +9,7 @@ import {
   mapOptions,
   setAdvancedMarkerSvg,
 } from '../googleMaps'
-import { planDrivePlusWalk } from '../driveWalkHandoff'
+import { planDrivePlusWalk, planWalkOnly } from '../driveWalkHandoff'
 import { extractSiteWays, type SiteWaysExtract } from '../extractSiteWays'
 import { pinPathToEndpoints } from '../googleRoute'
 import type { LiveFix } from '../liveNavigation'
@@ -513,8 +513,11 @@ export function OutdoorMap({
       await Promise.all(
         outdoorPlan.legs.map(async (leg, index) => {
           try {
-            // Always: drive to closest driveable point → walk sidewalks to entry door.
-            const plan = await planDrivePlusWalk(leg.from, leg.to, extract)
+            // DRIVE legs: car to entry. WALK legs: foot only (E→D) — never drive from the door.
+            const plan =
+              leg.mode === 'WALK'
+                ? await planWalkOnly(leg.from, leg.to, extract)
+                : await planDrivePlusWalk(leg.from, leg.to, extract)
 
             if (session !== routeSessionRef.current) return
             if (!plan.segments.length) {

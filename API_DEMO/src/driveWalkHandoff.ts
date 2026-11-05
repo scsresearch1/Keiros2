@@ -36,6 +36,25 @@ function meters(a: google.maps.LatLngLiteral, b: google.maps.LatLngLiteral) {
   return 2 * R * Math.asin(Math.min(1, Math.sqrt(s)))
 }
 
+/** Stop the drive at the vertex closest to the entry door (no blue continuing past E). */
+function truncateAtClosest(
+  path: google.maps.LatLngLiteral[],
+  target: google.maps.LatLngLiteral,
+): google.maps.LatLngLiteral[] {
+  if (path.length < 2) return path
+  let bestI = 0
+  let bestD = Infinity
+  for (let i = 0; i < path.length; i++) {
+    const d = meters(path[i], target)
+    if (d < bestD) {
+      bestD = d
+      bestI = i
+    }
+  }
+  const cut = Math.max(1, bestI)
+  return path.slice(0, cut + 1)
+}
+
 async function bestDriveRoute(
   from: google.maps.LatLngLiteral,
   to: google.maps.LatLngLiteral,
@@ -164,16 +183,18 @@ export async function planDrivePlusWalk(
     return { segments: [], handoff: null, label: 'walk' }
   }
 
-  const handoff = drive.path[drive.path.length - 1]
+  // Never let blue run past the entry door toward the unit / out the other side.
+  const drivePath = truncateAtClosest(drive.path, to)
+  const handoff = drivePath[drivePath.length - 1]
   const endGap = meters(handoff, to)
 
-  // Vehicle network reaches the door — solid blue all the way.
+  // Vehicle network reaches the door — solid blue all the way to E.
   if (endGap <= LAST_MILE_WALK_M) {
     return {
       segments: [
         {
           mode: 'DRIVE',
-          path: drive.path,
+          path: drivePath,
           dashed: false,
           distanceM: drive.distanceM,
           source: drive.source,
@@ -184,12 +205,12 @@ export async function planDrivePlusWalk(
     }
   }
 
-  // Natural end of driveway/road — walk only the remaining gap to the entry door.
+  // Closest driveable point → walk pathways to the entry door.
   const walk = await bestSidewalkWalk(handoff, to, extract)
   const segments: HandoffSegment[] = [
     {
       mode: 'DRIVE',
-      path: drive.path,
+      path: drivePath,
       dashed: false,
       distanceM: drive.distanceM,
       source: drive.source,
@@ -210,10 +231,46 @@ export async function planDrivePlusWalk(
   return { segments, handoff, label: 'drive' }
 }
 
+/**
+ * Walk-only (Entry → Unit). Never requests DRIVE — that was routing a car from E away from D.
+ */
 export async function planWalkOnly(
   from: google.maps.LatLngLiteral,
   to: google.maps.LatLngLiteral,
   extract: SiteWaysExtract | null,
 ): Promise<DriveWalkPlan> {
-  return planDrivePlusWalk(from, to, extract)
+  const walk = await bestSidewalkWalk(from, to, extract)
+  if (walk && walk.path.length >= 2) {
+    return {
+      segments: [
+        {
+          mode: 'WALK',
+          path: walk.path,
+          dashed: true,
+          distanceM: walk.distanceM,
+          source: walk.source,
+        },
+      ],
+      handoff: null,
+      label: 'walk',
+    }
+  }
+  // Short on-site connector when graphs have no path (still never DRIVE).
+  const gap = meters(from, to)
+  if (gap > 2 && gap < 250) {
+    return {
+      segments: [
+        {
+          mode: 'WALK',
+          path: [from, to],
+          dashed: true,
+          distanceM: Math.round(gap),
+          source: 'entry-to-unit-direct',
+        },
+      ],
+      handoff: null,
+      label: 'walk',
+    }
+  }
+  return { segments: [], handoff: null, label: 'walk' }
 }

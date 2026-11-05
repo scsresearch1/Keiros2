@@ -26,8 +26,10 @@ export type OutdoorPlan = {
   toEntranceM: number
 }
 
-/** Already at the entry door — outdoor done. */
+/** Already at the entry door — skip long outdoor drive. */
 export const AT_ENTRANCE_M = 40
+/** Entry door → unit pin: always walk (never drive onto the building). */
+export const ENTRANCE_TO_UNIT_WALK_M = 6
 
 export const DRIVE_COLOR = '#1a73e8'
 export const WALK_COLOR = '#0d9488'
@@ -48,11 +50,9 @@ function lit(lat: number, lng: number): LatLngLit {
 }
 
 /**
- * Outdoor rule (indoor aside):
- * One DRIVE request to the **entry door**.
- * OutdoorMap / planDrivePlusWalk then:
- *   1) Drive on roads/driveways to the **closest driveable point**
- *   2) Walk on sidewalks/paths from that handoff to the **entry door** coordinates
+ * Outdoor:
+ * 1) Drive origin → entry door (closest driveable, then walk to door if needed)
+ * 2) Walk entry door → unit pin when they differ (red dots) — never drive E→D
  */
 export function resolveOutdoorLegs(result: NavigateResult): OutdoorPlan {
   const origin = lit(result.origin.latitude, result.origin.longitude)
@@ -60,12 +60,12 @@ export function resolveOutdoorLegs(result: NavigateResult): OutdoorPlan {
     Number(result.destination.latitude ?? result.selection?.unit?.latitude),
     Number(result.destination.longitude ?? result.selection?.unit?.longitude),
   )
-  // Prefer real entry-door coordinates when the API provides them.
   const entrance = result.entrance
     ? lit(result.entrance.latitude, result.entrance.longitude)
     : unit
 
   const toEntranceM = Math.round(metersBetween(origin, entrance))
+  const entranceToUnitM = Math.round(metersBetween(entrance, unit))
 
   const entranceWp: OutdoorWaypoint = {
     kind: 'entrance',
@@ -89,28 +89,42 @@ export function resolveOutdoorLegs(result: NavigateResult): OutdoorPlan {
     })
   }
 
-  if (toEntranceM <= AT_ENTRANCE_M) {
-    return {
-      legs: [],
-      waypoints,
-      policy: 'at-entry-door',
-      toEntranceM,
-    }
+  const legs: OutdoorLeg[] = []
+
+  if (toEntranceM > AT_ENTRANCE_M) {
+    legs.push({
+      id: 'drive-to-entry-door',
+      mode: 'DRIVE',
+      from: origin,
+      to: entrance,
+      label: 'Drive to entry door',
+      color: DRIVE_COLOR,
+    })
+  }
+
+  // Connect Entry (E) → Destination unit (D) on foot — this was missing / wrongly driven.
+  if (entranceToUnitM > ENTRANCE_TO_UNIT_WALK_M) {
+    legs.push({
+      id: 'walk-entry-to-unit',
+      mode: 'WALK',
+      from: entrance,
+      to: unit,
+      label: 'Walk entry door → unit',
+      color: WALK_COLOR,
+    })
   }
 
   return {
-    legs: [
-      {
-        id: 'drive-closest-then-walk-to-door',
-        mode: 'DRIVE',
-        from: origin,
-        to: entrance,
-        label: 'Drive to closest drive → walk sidewalk to entry door',
-        color: DRIVE_COLOR,
-      },
-    ],
+    legs,
     waypoints,
-    policy: 'drive-closest-then-walk-sidewalk-to-door',
+    policy:
+      legs.length === 0
+        ? 'at-entry-door'
+        : legs.some((l) => l.mode === 'DRIVE') && legs.some((l) => l.mode === 'WALK')
+          ? 'drive-to-entry-then-walk-to-unit'
+          : legs[0]?.mode === 'WALK'
+            ? 'walk-entry-to-unit'
+            : 'drive-to-entry-door',
     toEntranceM,
   }
 }
