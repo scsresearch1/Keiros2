@@ -4,6 +4,7 @@
  *
  * Do NOT artificially peel ~55m of drive — that stopped blue early while driveway remained.
  */
+import type { JourneyStep } from './api'
 import type { SiteWaysExtract } from './extractSiteWays'
 import { fetchRoadRoute, pathEndGapM, type RoadRoute, type RouteTravelMode } from './googleRoute'
 import { routeOnSiteWays } from './siteGraphRoute'
@@ -17,12 +18,16 @@ export type HandoffSegment = {
   dashed: boolean
   distanceM: number
   source: string
+  /** Turn-by-turn for THIS drawn path (same Google route as the blue/red line). */
+  steps?: JourneyStep[]
 }
 
 export type DriveWalkPlan = {
   segments: HandoffSegment[]
   handoff: google.maps.LatLngLiteral | null
   label: 'drive' | 'walk' | 'drive+walk'
+  /** Flattened guidance steps matching the painted corridor. */
+  guidanceSteps?: JourneyStep[]
 }
 
 function meters(a: google.maps.LatLngLiteral, b: google.maps.LatLngLiteral) {
@@ -59,9 +64,19 @@ async function bestDriveRoute(
   from: google.maps.LatLngLiteral,
   to: google.maps.LatLngLiteral,
   extract: SiteWaysExtract | null,
-): Promise<{ path: google.maps.LatLngLiteral[]; distanceM: number; source: string } | null> {
-  const candidates: { path: google.maps.LatLngLiteral[]; distanceM: number; source: string; gap: number }[] =
-    []
+): Promise<{
+  path: google.maps.LatLngLiteral[]
+  distanceM: number
+  source: string
+  steps?: JourneyStep[]
+} | null> {
+  const candidates: {
+    path: google.maps.LatLngLiteral[]
+    distanceM: number
+    source: string
+    gap: number
+    steps?: JourneyStep[]
+  }[] = []
 
   if (extract?.driveways.length) {
     const site = routeOnSiteWays(extract, from, to, 'DRIVE')
@@ -84,6 +99,7 @@ async function bestDriveRoute(
       let distanceM = g.distanceM
       let source = 'google-drive'
       let gap = pathEndGapM(g.path, to)
+      let steps = g.steps
 
       if (extract?.driveways.length && gap > LAST_MILE_WALK_M) {
         const googleEnd = g.path[g.path.length - 1]
@@ -99,7 +115,7 @@ async function bestDriveRoute(
         }
       }
 
-      candidates.push({ path, distanceM, source, gap })
+      candidates.push({ path, distanceM, source, gap, steps })
     }
   } catch {
     /* ignore */
@@ -133,9 +149,19 @@ async function bestSidewalkWalk(
   from: google.maps.LatLngLiteral,
   to: google.maps.LatLngLiteral,
   extract: SiteWaysExtract | null,
-): Promise<{ path: google.maps.LatLngLiteral[]; distanceM: number; source: string } | null> {
-  const candidates: { path: google.maps.LatLngLiteral[]; distanceM: number; source: string; gap: number }[] =
-    []
+): Promise<{
+  path: google.maps.LatLngLiteral[]
+  distanceM: number
+  source: string
+  steps?: JourneyStep[]
+} | null> {
+  const candidates: {
+    path: google.maps.LatLngLiteral[]
+    distanceM: number
+    source: string
+    gap: number
+    steps?: JourneyStep[]
+  }[] = []
 
   if (extract) {
     const sidewalksOnly = routeOnSiteWays(extract, from, to, 'WALK', { sidewalksOnly: true })
@@ -166,6 +192,7 @@ async function bestSidewalkWalk(
         distanceM: g.distanceM,
         source: 'google-walk',
         gap: pathEndGapM(g.path, to),
+        steps: g.steps,
       })
     }
   } catch {
@@ -183,6 +210,17 @@ async function bestSidewalkWalk(
   return candidates[0]
 }
 
+function collectGuidance(segments: HandoffSegment[]): JourneyStep[] {
+  const out: JourneyStep[] = []
+  for (const seg of segments) {
+    if (!seg.steps?.length) continue
+    for (const step of seg.steps) {
+      out.push({ ...step, phase: seg.mode === 'WALK' ? 'walk' : 'drive', index: out.length })
+    }
+  }
+  return out
+}
+
 /**
  * Drive the full driveway/road path Google (or OSM) returns toward the entry door.
  * Walk (red dots) only for the leftover gap after the vehicle network ends — never cut drive early.
@@ -198,33 +236,33 @@ export async function planDrivePlusWalk(
     const walkOnly = await bestSidewalkWalk(from, to, extract)
     if (walkOnly) {
       const path = forceReach(walkOnly.path, to)
-      return {
-        segments: [
-          {
-            mode: 'WALK',
-            path,
-            dashed: true,
-            distanceM: Math.round(walkOnly.distanceM + meters(walkOnly.path[walkOnly.path.length - 1], to)),
-            source: walkOnly.source,
-          },
-        ],
-        handoff: null,
-        label: 'walk',
-      }
-    }
-    return {
-      segments: [
+      const segments: HandoffSegment[] = [
         {
           mode: 'WALK',
-          path: forceReach([from], to),
+          path,
           dashed: true,
-          distanceM: Math.round(meters(from, to)),
-          source: 'direct-to-destination',
+          distanceM: Math.round(walkOnly.distanceM + meters(walkOnly.path[walkOnly.path.length - 1], to)),
+          source: walkOnly.source,
+          steps: walkOnly.steps,
         },
-      ],
-      handoff: null,
-      label: 'walk',
+      ]
+      return {
+        segments,
+        handoff: null,
+        label: 'walk',
+        guidanceSteps: collectGuidance(segments),
+      }
     }
+    const segments: HandoffSegment[] = [
+      {
+        mode: 'WALK',
+        path: forceReach([from], to),
+        dashed: true,
+        distanceM: Math.round(meters(from, to)),
+        source: 'direct-to-destination',
+      },
+    ]
+    return { segments, handoff: null, label: 'walk', guidanceSteps: [] }
   }
 
   // Never let blue run past the destination pin.
@@ -238,45 +276,56 @@ export async function planDrivePlusWalk(
     dashed: false,
     distanceM: drive.distanceM,
     source: drive.source,
+    steps: drive.steps,
   }
 
   // Vehicle network close enough — still walk any leftover meters to exact D.
   if (endGap <= LAST_MILE_WALK_M) {
     if (endGap <= 2) {
-      return { segments: [driveSeg], handoff: null, label: 'drive' }
+      return {
+        segments: [driveSeg],
+        handoff: null,
+        label: 'drive',
+        guidanceSteps: collectGuidance([driveSeg]),
+      }
     }
+    const segments: HandoffSegment[] = [
+      driveSeg,
+      {
+        mode: 'WALK',
+        path: forceReach([handoff], to),
+        dashed: true,
+        distanceM: Math.round(endGap),
+        source: 'last-meters-to-destination',
+      },
+    ]
     return {
-      segments: [
-        driveSeg,
-        {
-          mode: 'WALK',
-          path: forceReach([handoff], to),
-          dashed: true,
-          distanceM: Math.round(endGap),
-          source: 'last-meters-to-destination',
-        },
-      ],
+      segments,
       handoff,
       label: 'drive+walk',
+      guidanceSteps: collectGuidance(segments),
     }
   }
 
   // Closest driveable point → walk pathways all the way to destination.
   const walk = await bestSidewalkWalk(handoff, to, extract)
   const walkPath = forceReach(walk && walk.path.length >= 2 ? walk.path : [handoff], to)
+  const segments: HandoffSegment[] = [
+    driveSeg,
+    {
+      mode: 'WALK',
+      path: walkPath,
+      dashed: true,
+      distanceM: walk?.distanceM ?? Math.round(meters(handoff, to)),
+      source: walk?.source ?? 'walk-to-destination',
+      steps: walk?.steps,
+    },
+  ]
   return {
-    segments: [
-      driveSeg,
-      {
-        mode: 'WALK',
-        path: walkPath,
-        dashed: true,
-        distanceM: walk?.distanceM ?? Math.round(meters(handoff, to)),
-        source: walk?.source ?? 'walk-to-destination',
-      },
-    ],
+    segments,
     handoff,
     label: 'drive+walk',
+    guidanceSteps: collectGuidance(segments),
   }
 }
 
@@ -290,18 +339,21 @@ export async function planWalkOnly(
 ): Promise<DriveWalkPlan> {
   const walk = await bestSidewalkWalk(from, to, extract)
   if (walk && walk.path.length >= 2) {
+    const segments: HandoffSegment[] = [
+      {
+        mode: 'WALK',
+        path: forceReach(walk.path, to),
+        dashed: true,
+        distanceM: walk.distanceM,
+        source: walk.source,
+        steps: walk.steps,
+      },
+    ]
     return {
-      segments: [
-        {
-          mode: 'WALK',
-          path: forceReach(walk.path, to),
-          dashed: true,
-          distanceM: walk.distanceM,
-          source: walk.source,
-        },
-      ],
+      segments,
       handoff: null,
       label: 'walk',
+      guidanceSteps: collectGuidance(segments),
     }
   }
   const gap = meters(from, to)
@@ -318,7 +370,8 @@ export async function planWalkOnly(
       ],
       handoff: null,
       label: 'walk',
+      guidanceSteps: [],
     }
   }
-  return { segments: [], handoff: null, label: 'walk' }
+  return { segments: [], handoff: null, label: 'walk', guidanceSteps: [] }
 }

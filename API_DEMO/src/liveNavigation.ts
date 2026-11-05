@@ -273,13 +273,25 @@ export function formatEta(sec: number) {
 
 export function maneuverIcon(instruction: string, phase?: string) {
   const t = instruction.toLowerCase()
-  if (phase === 'walk' || /walk|pedestrian|leave the car|entrance/i.test(t)) return 'walk'
+  // Walk phase still shows turn arrows when the text is a turn (not "Walk to entrance").
   if (/u-?turn|uturn/i.test(t)) return 'uturn'
-  if (/sharp right|turn right|bear right|right onto/i.test(t)) return 'right'
-  if (/sharp left|turn left|bear left|left onto/i.test(t)) return 'left'
+  const hasLeft = /\bleft\b/.test(t)
+  const hasRight = /\bright\b/.test(t)
+  if (hasLeft && !hasRight) return 'left'
+  if (hasRight && !hasLeft) return 'right'
+  if (hasLeft && hasRight) {
+    return t.indexOf('left') <= t.indexOf('right') ? 'left' : 'right'
+  }
   if (/roundabout|rotary/i.test(t)) return 'roundabout'
   if (/arrive|park|reached/i.test(t)) return 'arrive'
-  if (/head|start|depart|continue|straight/i.test(t)) return 'straight'
+  if (
+    phase === 'walk' &&
+    /walk to|leave the car|entrance|pedestrian|continue inside/i.test(t)
+  ) {
+    return 'walk'
+  }
+  if (/head|start|depart|continue|straight|keep going/i.test(t)) return 'straight'
+  if (phase === 'walk') return 'walk'
   return 'straight'
 }
 

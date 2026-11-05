@@ -131,6 +131,59 @@ function fallbackSteps(
   ]
 }
 
+/** Bearing degrees [0,360) along a short segment. */
+function bearingOf(
+  a: { lat: number; lng: number },
+  b: { lat: number; lng: number },
+): number {
+  const toRad = (d: number) => (d * Math.PI) / 180
+  const φ1 = toRad(a.lat)
+  const φ2 = toRad(b.lat)
+  const Δλ = toRad(b.lng - a.lng)
+  const y = Math.sin(Δλ) * Math.cos(φ2)
+  const x = Math.cos(φ1) * Math.sin(φ2) - Math.sin(φ1) * Math.cos(φ2) * Math.cos(Δλ)
+  return ((Math.atan2(y, x) * 180) / Math.PI + 360) % 360
+}
+
+/**
+ * Infer left / right / straight from the step polyline (source of truth for the blue path).
+ * Positive turn = right (clockwise from north).
+ */
+export function turnSideFromGeometry(
+  geometry: [number, number][],
+): 'left' | 'right' | 'straight' | null {
+  if (!geometry || geometry.length < 3) return null
+  const pts = geometry.map(([lng, lat]) => ({ lat, lng }))
+  // Use early segment vs late segment around the bend.
+  const i1 = Math.min(1, pts.length - 1)
+  const i2 = Math.max(i1 + 1, Math.floor(pts.length * 0.35))
+  const i3 = Math.max(i2 + 1, Math.floor(pts.length * 0.7))
+  const i4 = pts.length - 1
+  if (i2 >= i4) return null
+  const inB = bearingOf(pts[0], pts[Math.min(i2, pts.length - 1)])
+  const outB = bearingOf(pts[Math.min(i3, pts.length - 1)], pts[i4])
+  let delta = ((outB - inB + 540) % 360) - 180
+  if (Math.abs(delta) < 28) return 'straight'
+  return delta > 0 ? 'right' : 'left'
+}
+
+/** Fix Google/OSRM wording when the drawn geometry clearly turns the other way. */
+export function alignTurnInstruction(
+  instruction: string,
+  geometry?: [number, number][] | null,
+): string {
+  const side = geometry ? turnSideFromGeometry(geometry) : null
+  if (!side || side === 'straight') return instruction
+  const t = instruction
+  if (side === 'left' && /\bright\b/i.test(t) && !/\bleft\b/i.test(t)) {
+    return t.replace(/\bright\b/gi, (m) => (m[0] === 'R' ? 'Left' : 'left'))
+  }
+  if (side === 'right' && /\bleft\b/i.test(t) && !/\bright\b/i.test(t)) {
+    return t.replace(/\bleft\b/gi, (m) => (m[0] === 'L' ? 'Right' : 'right'))
+  }
+  return instruction
+}
+
 function stepsFromGoogleRest(
   steps: Array<{
     navigationInstruction?: { maneuver?: string; instructions?: string }
@@ -146,7 +199,7 @@ function stepsFromGoogleRest(
   return steps.map((step, index) => {
     const lat = Number(step.startLocation?.latLng?.latitude)
     const lng = Number(step.startLocation?.latLng?.longitude)
-    const instr =
+    const rawInstr =
       step.navigationInstruction?.instructions?.trim() ||
       (mode === 'WALK' ? 'Continue walking' : 'Continue driving')
     const poly = step.polyline?.encodedPolyline
@@ -154,6 +207,9 @@ function stepsFromGoogleRest(
       : Number.isFinite(lat) && Number.isFinite(lng)
         ? [[lng, lat] as [number, number]]
         : []
+    // Prefer geometry for left/right — matches the blue line the user sees.
+    const instr = alignTurnInstruction(rawInstr, poly)
+    const maneuver = step.navigationInstruction?.maneuver || undefined
     return {
       id: `${idPrefix}-${index}`,
       phase,
@@ -166,6 +222,7 @@ function stepsFromGoogleRest(
       latitude: Number.isFinite(lat) ? lat : 0,
       longitude: Number.isFinite(lng) ? lng : 0,
       geometry: poly,
+      ...(maneuver ? { maneuver } : {}),
     }
   })
 }

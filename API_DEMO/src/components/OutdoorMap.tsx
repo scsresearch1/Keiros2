@@ -36,6 +36,8 @@ type Props = {
     drive?: [number, number][]
     walk?: [number, number][]
   }) => void
+  /** Turn-by-turn for the painted blue/red path (keeps left/right in sync with the map). */
+  onRouteGuidance?: (steps: JourneyStep[]) => void
 }
 
 function escapeHtml(value: string) {
@@ -121,6 +123,7 @@ export function OutdoorMap({
   liveFix = null,
   followLive = false,
   onRouteCorridor,
+  onRouteGuidance,
 }: Props) {
   const hostRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<google.maps.Map | null>(null)
@@ -555,6 +558,7 @@ export function OutdoorMap({
       const sources = new Set<string>()
       const corridorDrive: google.maps.LatLngLiteral[] = []
       const corridorWalk: google.maps.LatLngLiteral[] = []
+      const guidanceAcc: JourneyStep[] = []
 
       // Via parking: drive → lot, then walk pathways to entrance.
       // Otherwise: Google drive toward D (may add last-meter walk).
@@ -594,6 +598,16 @@ export function OutdoorMap({
         if (!plan.segments.length) {
           serverFallbackForLeg(leg)
           return
+        }
+
+        if (plan.guidanceSteps?.length) {
+          for (const step of plan.guidanceSteps) {
+            guidanceAcc.push({
+              ...step,
+              index: guidanceAcc.length,
+              id: `${leg.id}-${step.id}`,
+            })
+          }
         }
 
         if (plan.label === 'drive+walk') driveWalkCount += 1
@@ -677,6 +691,9 @@ export function OutdoorMap({
             ? corridorWalk.map((p) => [p.lng, p.lat] as [number, number])
             : undefined,
         })
+      }
+      if (onRouteGuidance && guidanceAcc.length) {
+        onRouteGuidance(guidanceAcc)
       }
 
       // When OSM pathways arrive, redraw walk legs on sidewalks/footways.

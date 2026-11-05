@@ -143,6 +143,9 @@ export default function App() {
     drive?: [number, number][]
     walk?: [number, number][]
   }>({})
+  /** Guidance steps that match the painted blue/red path (fixes left/right vs map). */
+  const [mapGuidance, setMapGuidance] = useState<NavigateResult['journey']['steps'] | null>(null)
+  const mapGuidanceSig = useRef('')
 
   useEffect(() => {
     void fetchHealth()
@@ -451,6 +454,8 @@ export default function App() {
       setLiveNav(mode === 'live' || mode === 'custom')
       setLiveProgress(null)
       setRecalculating(false)
+      setMapGuidance(null)
+      mapGuidanceSig.current = ''
       offRouteStreak.current = 0
       rerouteInFlight.current = false
       // Short hold so step voice settles — do not block off-route recalculation for long.
@@ -557,7 +562,15 @@ export default function App() {
     await chooseStartMode(liveSelected ? 'live' : 'demo')
   }
 
-  const voiceSteps = result?.journey.steps ?? []
+  const voiceSteps = useMemo(() => {
+    const base = result?.journey.steps ?? []
+    if (!mapGuidance?.length) return base
+    const indoor = base.filter((s) => s.phase === 'indoor')
+    return [
+      ...mapGuidance.map((s, i) => ({ ...s, index: i })),
+      ...indoor.map((s, i) => ({ ...s, index: mapGuidance.length + i })),
+    ]
+  }, [result, mapGuidance])
   const voiceCurrent = voiceSteps[journeyIndex]
     ? { ...voiceSteps[journeyIndex], id: `${result?.sessionId ?? 'route'}:${voiceSteps[journeyIndex].id}` }
     : null
@@ -707,7 +720,18 @@ export default function App() {
     )
   }
 
-  const steps = result?.journey.steps ?? []
+  // Prefer turn-by-turn from the painted Google path so left/right matches the blue line.
+  // (Plain const — must stay after the gate return; do not use hooks here.)
+  const baseSteps = result?.journey.steps ?? []
+  const steps =
+    mapGuidance?.length && result
+      ? [
+          ...mapGuidance.map((s, i) => ({ ...s, index: i })),
+          ...baseSteps
+            .filter((s) => s.phase === 'indoor')
+            .map((s, i) => ({ ...s, index: mapGuidance.length + i })),
+        ]
+      : baseSteps
   const active = steps[journeyIndex] ?? null
   const phase = active?.phase === 'outdoor' ? 'drive' : (active?.phase ?? 'drive')
   const indoorStep = active?.phase === 'indoor' ? (active.indoorIndex ?? 0) : 0
@@ -1044,10 +1068,17 @@ export default function App() {
                     : null
                 }
                 followLive={wantsLiveGps}
-                onRouteCorridor={(corridor) => {
-                  routeCorridorRef.current = corridor
-                }}
-              />
+              onRouteCorridor={(corridor) => {
+                routeCorridorRef.current = corridor
+              }}
+              onRouteGuidance={(guideSteps) => {
+                const sig = guideSteps.map((s) => `${s.instruction}|${s.distanceM ?? 0}`).join('·')
+                if (sig === mapGuidanceSig.current) return
+                mapGuidanceSig.current = sig
+                setMapGuidance(guideSteps)
+                setJourneyIndex(0)
+              }}
+            />
             </>
           ) : (
             <div className="demo-indoor-wrap">
