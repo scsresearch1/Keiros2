@@ -25,12 +25,18 @@ function nodeKey(lat: number, lng: number, precision = 5) {
   return `${lat.toFixed(precision)},${lng.toFixed(precision)}`
 }
 
-function waysForMode(extract: SiteWaysExtract, mode: GraphMode): SiteWay[] {
+function waysForMode(
+  extract: SiteWaysExtract,
+  mode: GraphMode,
+  opts?: { sidewalksOnly?: boolean },
+): SiteWay[] {
   if (mode === 'DRIVE') {
-    // Vehicle network only (no footway-only edges).
+    // Vehicle network only (roads / driveways / service).
     return extract.driveways
   }
-  // Pedestrians can use sidewalks AND service driveways inside a complex.
+  // Prefer pure sidewalks/footways to the entry door when available.
+  if (opts?.sidewalksOnly) return extract.sidewalks
+  // Fallback: sidewalks + service drives (apartment loops people walk on).
   return [...extract.sidewalks, ...extract.driveways]
 }
 
@@ -149,7 +155,7 @@ export type SiteRouteResult = {
   path: google.maps.LatLngLiteral[]
   distanceM: number
   mode: GraphMode
-  source: 'osm-site-graph'
+  source: 'osm-site-graph' | 'osm-sidewalks'
 }
 
 /**
@@ -160,8 +166,9 @@ export function routeOnSiteWays(
   origin: { lat: number; lng: number },
   destination: { lat: number; lng: number },
   mode: GraphMode,
+  opts?: { sidewalksOnly?: boolean },
 ): SiteRouteResult | null {
-  const ways = waysForMode(extract, mode)
+  const ways = waysForMode(extract, mode, opts)
   if (ways.length < 1) return null
 
   const graph = buildGraph(ways, mode === 'WALK' ? 12 : 10)
@@ -188,6 +195,6 @@ export function routeOnSiteWays(
     path,
     distanceM: Math.round(solved.distanceM),
     mode,
-    source: 'osm-site-graph',
+    source: opts?.sidewalksOnly ? 'osm-sidewalks' : 'osm-site-graph',
   }
 }

@@ -1,18 +1,16 @@
 /**
- * Google Maps–style “Drive + Walk” last mile:
- * drive as far as the road/driveway network allows, then walk the remainder.
+ * Outdoor rule: drive to the closest driveable point, then walk sidewalks to the entry door.
  */
 import type { SiteWaysExtract } from './extractSiteWays'
 import { fetchRoadRoute, pathEndGapM, type RoadRoute, type RouteTravelMode } from './googleRoute'
 import { routeOnSiteWays } from './siteGraphRoute'
 
-/** If the drive path ends farther than this from the pin, add a walk leg (like Google Maps). */
-export const LAST_MILE_WALK_M = 35
+/** If drive ends farther than this from the entry door → add sidewalk walk leg. */
+export const LAST_MILE_WALK_M = 25
 
 export type HandoffSegment = {
   mode: RouteTravelMode
   path: google.maps.LatLngLiteral[]
-  /** Match Google Maps: solid = drive, dashed = walk last mile */
   dashed: boolean
   distanceM: number
   source: string
@@ -20,15 +18,11 @@ export type HandoffSegment = {
 
 export type DriveWalkPlan = {
   segments: HandoffSegment[]
-  /** Where the user leaves the car / ends the drive network. */
   handoff: google.maps.LatLngLiteral | null
   label: 'drive' | 'walk' | 'drive+walk'
 }
 
-function meters(
-  a: google.maps.LatLngLiteral,
-  b: google.maps.LatLngLiteral,
-) {
+function meters(a: google.maps.LatLngLiteral, b: google.maps.LatLngLiteral) {
   const R = 6371000
   const toRad = (d: number) => (d * Math.PI) / 180
   const dLat = toRad(b.lat - a.lat)
@@ -39,34 +33,33 @@ function meters(
   return 2 * R * Math.asin(Math.min(1, Math.sqrt(s)))
 }
 
-async function bestNetworkRoute(
+async function bestDriveRoute(
   from: google.maps.LatLngLiteral,
   to: google.maps.LatLngLiteral,
-  mode: RouteTravelMode,
   extract: SiteWaysExtract | null,
 ): Promise<{ path: google.maps.LatLngLiteral[]; distanceM: number; source: string } | null> {
   const candidates: { path: google.maps.LatLngLiteral[]; distanceM: number; source: string; gap: number }[] =
     []
 
   if (extract) {
-    const site = routeOnSiteWays(extract, from, to, mode)
-    if (site?.path.length && site.path.length >= 2) {
+    const site = routeOnSiteWays(extract, from, to, 'DRIVE')
+    if (site && site.path.length >= 2) {
       candidates.push({
         path: site.path,
         distanceM: site.distanceM,
-        source: 'osm',
+        source: 'osm-driveways',
         gap: pathEndGapM(site.path, to),
       })
     }
   }
 
   try {
-    const g: RoadRoute = await fetchRoadRoute(from, to, mode)
+    const g: RoadRoute = await fetchRoadRoute(from, to, 'DRIVE')
     if (g.path.length >= 2) {
       candidates.push({
         path: g.path,
         distanceM: g.distanceM,
-        source: 'google',
+        source: 'google-drive',
         gap: pathEndGapM(g.path, to),
       })
     }
@@ -75,28 +68,82 @@ async function bestNetworkRoute(
   }
 
   if (!candidates.length) return null
+  // Prefer the drive path that gets closest to the entry door on the vehicle network.
   candidates.sort((a, b) => {
-    if (Math.abs(a.gap - b.gap) > 12) return a.gap - b.gap
+    if (Math.abs(a.gap - b.gap) > 10) return a.gap - b.gap
     return a.distanceM - b.distanceM
   })
-  const best = candidates[0]
-  return { path: best.path, distanceM: best.distanceM, source: best.source }
+  return candidates[0]
+}
+
+async function bestSidewalkWalk(
+  from: google.maps.LatLngLiteral,
+  to: google.maps.LatLngLiteral,
+  extract: SiteWaysExtract | null,
+): Promise<{ path: google.maps.LatLngLiteral[]; distanceM: number; source: string } | null> {
+  const candidates: { path: google.maps.LatLngLiteral[]; distanceM: number; source: string; gap: number }[] =
+    []
+
+  if (extract) {
+    const sidewalksOnly = routeOnSiteWays(extract, from, to, 'WALK', { sidewalksOnly: true })
+    if (sidewalksOnly && sidewalksOnly.path.length >= 2) {
+      candidates.push({
+        path: sidewalksOnly.path,
+        distanceM: sidewalksOnly.distanceM,
+        source: 'osm-sidewalks',
+        gap: pathEndGapM(sidewalksOnly.path, to),
+      })
+    }
+    const mixed = routeOnSiteWays(extract, from, to, 'WALK')
+    if (mixed && mixed.path.length >= 2) {
+      candidates.push({
+        path: mixed.path,
+        distanceM: mixed.distanceM,
+        source: 'osm-walk',
+        gap: pathEndGapM(mixed.path, to),
+      })
+    }
+  }
+
+  try {
+    const g: RoadRoute = await fetchRoadRoute(from, to, 'WALK')
+    if (g.path.length >= 2) {
+      candidates.push({
+        path: g.path,
+        distanceM: g.distanceM,
+        source: 'google-walk',
+        gap: pathEndGapM(g.path, to),
+      })
+    }
+  } catch {
+    /* ignore */
+  }
+
+  if (!candidates.length) return null
+  // Prefer sidewalk-tagged OSM, then closest gap to the door.
+  candidates.sort((a, b) => {
+    const aSide = a.source === 'osm-sidewalks' ? 0 : 1
+    const bSide = b.source === 'osm-sidewalks' ? 0 : 1
+    if (aSide !== bSide && Math.abs(a.gap - b.gap) < 40) return aSide - bSide
+    if (Math.abs(a.gap - b.gap) > 10) return a.gap - b.gap
+    return a.distanceM - b.distanceM
+  })
+  return candidates[0]
 }
 
 /**
- * For a DRIVE request to a pin that may be off-road:
- * solid drive to nearest on-network point, then dashed walk to the pin (Google Maps pattern).
+ * Drive as far as roads/driveways allow toward the entry door,
+ * then walk on sidewalks from that handoff to the door coordinates.
  */
 export async function planDrivePlusWalk(
   from: google.maps.LatLngLiteral,
   to: google.maps.LatLngLiteral,
   extract: SiteWaysExtract | null,
 ): Promise<DriveWalkPlan> {
-  const drive = await bestNetworkRoute(from, to, 'DRIVE', extract)
+  const drive = await bestDriveRoute(from, to, extract)
 
-  // No drive network → walk the whole way if possible.
   if (!drive) {
-    const walkOnly = await bestNetworkRoute(from, to, 'WALK', extract)
+    const walkOnly = await bestSidewalkWalk(from, to, extract)
     if (walkOnly) {
       return {
         segments: [
@@ -118,7 +165,7 @@ export async function planDrivePlusWalk(
   const gap = pathEndGapM(drive.path, to)
   const handoff = drive.path[drive.path.length - 1]
 
-  // Drive reaches the pin (on or very near the network).
+  // Drive network reaches the door.
   if (gap <= LAST_MILE_WALK_M) {
     return {
       segments: [
@@ -135,18 +182,9 @@ export async function planDrivePlusWalk(
     }
   }
 
-  // Last mile: walk from end of drive network to the pin.
-  let walk = await bestNetworkRoute(handoff, to, 'WALK', extract)
-  if (!walk || walk.path.length < 2) {
-    // Pedestrian graph may also be empty off-road — short honest connector only if small.
-    if (gap <= 120) {
-      walk = {
-        path: [handoff, to],
-        distanceM: Math.round(gap),
-        source: 'direct-last-mile',
-      }
-    }
-  }
+  // Closest driveable point → real sidewalk / pedestrian network to entry door.
+  // Never invent a curved chord across dirt — only mapped sidewalks / Google walk graph.
+  const walk = await bestSidewalkWalk(handoff, to, extract)
 
   const segments: HandoffSegment[] = [
     {
@@ -169,32 +207,15 @@ export async function planDrivePlusWalk(
     return { segments, handoff, label: 'drive+walk' }
   }
 
-  return {
-    segments,
-    handoff,
-    label: 'drive',
-  }
+  // Drive drawn; walk omitted if no sidewalk/pedestrian path exists in the graphs.
+  return { segments, handoff, label: 'drive' }
 }
 
-/** Walk-only leg (no drive+walk split). */
+/** @deprecated Outdoor always uses planDrivePlusWalk to the entry door. */
 export async function planWalkOnly(
   from: google.maps.LatLngLiteral,
   to: google.maps.LatLngLiteral,
   extract: SiteWaysExtract | null,
 ): Promise<DriveWalkPlan> {
-  const walk = await bestNetworkRoute(from, to, 'WALK', extract)
-  if (!walk) return { segments: [], handoff: null, label: 'walk' }
-  return {
-    segments: [
-      {
-        mode: 'WALK',
-        path: walk.path,
-        dashed: true,
-        distanceM: walk.distanceM,
-        source: walk.source,
-      },
-    ],
-    handoff: null,
-    label: 'walk',
-  }
+  return planDrivePlusWalk(from, to, extract)
 }

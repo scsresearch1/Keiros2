@@ -9,20 +9,19 @@ import {
   mapOptions,
   setAdvancedMarkerSvg,
 } from '../googleMaps'
-import { planDrivePlusWalk, planWalkOnly } from '../driveWalkHandoff'
+import { planDrivePlusWalk } from '../driveWalkHandoff'
 import { extractSiteWays, type SiteWaysExtract } from '../extractSiteWays'
 import { pinPathToEndpoints } from '../googleRoute'
 import type { LiveFix } from '../liveNavigation'
 import { bearingDeg } from '../liveNavigation'
-import {
-  DRIVE_COLOR,
-  WALK_COLOR,
-  resolveOutdoorLegs,
-  type OutdoorLeg,
-} from '../outdoorLegs'
+import { resolveOutdoorLegs, type OutdoorLeg } from '../outdoorLegs'
 
 const DRIVEWAY_LAYER = '#64748b'
 const SIDEWALK_LAYER = '#14b8a6'
+/** Firm drive line (closest driveable point). */
+const ROUTE_DRIVE_BLUE = '#1a73e8'
+/** Walk to entry door — round red dots on sidewalks. */
+const ROUTE_WALK_DOT = '#ea4335'
 
 type Props = {
   result: NavigateResult
@@ -331,39 +330,52 @@ export function OutdoorMap({
       path: google.maps.LatLngLiteral[],
       from: google.maps.LatLngLiteral,
       to: google.maps.LatLngLiteral,
-      color: string,
+      style: 'drive' | 'walk-dots',
       zIndex: number,
-      dashed = false,
     ) {
-      const pinned = pinPathToEndpoints(path, from, to)
+      // Keep network snap — don't invent long chords across dirt lots.
+      const pinned = pinPathToEndpoints(path, from, to, 12, 22)
       if (pinned.length < 2) return
-      track(
-        new google.maps.Polyline({
-          map,
-          path: pinned,
-          strokeColor: color,
-          strokeOpacity: dashed ? 0 : 0.95,
-          strokeWeight: 6,
-          zIndex,
-          geodesic: false,
-          ...(dashed
-            ? {
-                icons: [
-                  {
-                    icon: {
-                      path: 'M 0,-1 0,1',
-                      strokeOpacity: 0.95,
-                      strokeColor: color,
-                      scale: 3,
-                    },
-                    offset: '0',
-                    repeat: '14px',
-                  },
-                ],
-              }
-            : {}),
-        }),
-      )
+
+      if (style === 'walk-dots') {
+        track(
+          new google.maps.Polyline({
+            map,
+            path: pinned,
+            strokeOpacity: 0,
+            strokeWeight: 0,
+            zIndex,
+            geodesic: false,
+            icons: [
+              {
+                icon: {
+                  path: google.maps.SymbolPath.CIRCLE,
+                  fillColor: ROUTE_WALK_DOT,
+                  fillOpacity: 1,
+                  strokeColor: ROUTE_WALK_DOT,
+                  strokeWeight: 1,
+                  strokeOpacity: 1,
+                  scale: 3.5,
+                },
+                offset: '0',
+                repeat: '11px',
+              },
+            ],
+          }),
+        )
+      } else {
+        track(
+          new google.maps.Polyline({
+            map,
+            path: pinned,
+            strokeColor: ROUTE_DRIVE_BLUE,
+            strokeOpacity: 1,
+            strokeWeight: 8,
+            zIndex,
+            geodesic: false,
+          }),
+        )
+      }
       pinned.forEach((p) => bounds.extend(p))
     }
 
@@ -404,13 +416,13 @@ export function OutdoorMap({
       if (leg.mode === 'DRIVE') {
         const outdoorPath = geoJsonToLatLngs(result.outdoor?.geometry?.coordinates)
         if (outdoorPath.length > 1) {
-          drawPath(outdoorPath, leg.from, leg.to, leg.color, 20, false)
+          drawPath(outdoorPath, leg.from, leg.to, 'drive', 20)
           return
         }
       }
       const walkPath = geoJsonToLatLngs(result.walk?.geometry?.coordinates)
       if (walkPath.length > 1) {
-        drawPath(walkPath, leg.from, leg.to, WALK_COLOR, 22, true)
+        drawPath(walkPath, leg.from, leg.to, 'walk-dots', 22)
         return
       }
     }
@@ -474,11 +486,8 @@ export function OutdoorMap({
       await Promise.all(
         outdoorPlan.legs.map(async (leg, index) => {
           try {
-            // Google Maps pattern: DRIVE legs become Drive + Walk when the car can't reach the pin.
-            const plan =
-              leg.mode === 'DRIVE'
-                ? await planDrivePlusWalk(leg.from, leg.to, extract)
-                : await planWalkOnly(leg.from, leg.to, extract)
+            // Always: drive to closest driveable point → walk sidewalks to entry door.
+            const plan = await planDrivePlusWalk(leg.from, leg.to, extract)
 
             if (session !== routeSessionRef.current) return
             if (!plan.segments.length) {
@@ -493,9 +502,8 @@ export function OutdoorMap({
                 seg.path,
                 seg.path[0],
                 seg.path[seg.path.length - 1],
-                seg.mode === 'WALK' ? WALK_COLOR : DRIVE_COLOR,
+                seg.mode === 'WALK' ? 'walk-dots' : 'drive',
                 seg.mode === 'WALK' ? 22 : 20 + index,
-                seg.dashed,
               )
             }
 
@@ -641,9 +649,9 @@ export function OutdoorMap({
               <br />
               <span style={{ color: SIDEWALK_LAYER }}>···</span> Extracted sidewalks (OSM)
               <br />
-              <span style={{ color: DRIVE_COLOR }}>━━</span> Drive (to nearest road point)
+              <span style={{ color: ROUTE_DRIVE_BLUE }}>━━</span> Drive (firm blue) to closest driveable point
               <br />
-              <span style={{ color: WALK_COLOR }}>···</span> Walk last mile (dashed)
+              <span style={{ color: ROUTE_WALK_DOT }}>●●●</span> Walk (red dots) on sidewalks to entry door
               <br />
               <span style={{ color: '#0ea5e9' }}>●</span> Start ·{' '}
               <span style={{ color: '#a855f7' }}>●</span> Parking ·{' '}
