@@ -24,6 +24,8 @@ export type OutdoorPlan = {
   waypoints: OutdoorWaypoint[]
   policy: string
   toEntranceM: number
+  /** True when Navigate used Via parking and a real parking stop exists. */
+  viaParking: boolean
 }
 
 /** Already at the destination pin — no outdoor route. */
@@ -50,16 +52,23 @@ function lit(lat: number, lng: number): LatLngLit {
   return { lat: Number(lat), lng: Number(lng) }
 }
 
+function isRealParkingStop(result: NavigateResult, origin: LatLngLit): LatLngLit | null {
+  const p = result.parking
+  if (!p || !Number.isFinite(p.latitude) || !Number.isFinite(p.longitude)) return null
+  const label = p.label || ''
+  // Client on-site shortcuts — not a drive-to-parking stop.
+  if (/already on site|start here|walk to entrance/i.test(label)) return null
+  const pos = lit(p.latitude, p.longitude)
+  if (metersBetween(origin, pos) <= 40) return null
+  // Only when Navigate "Via parking" is on (stamped on origin by the demo app).
+  if (result.origin.viaParking !== true) return null
+  return pos
+}
+
 /**
- * Outdoor goal = the actual destination coordinate (unit / D).
- *
- * Default plan (before OSM driveway extract):
- * walk origin → D. Driveway drive is decided in OutdoorMap after extract:
- *   driveway near D → drive onto it, then walk to exact D
- *   no driveway → walk to D
- *
- * Entry door (E) is shown as a waypoint only — never the drive target that
- * sends the blue line away from D.
+ * Outdoor legs:
+ * - Via parking (real lot marked): drive origin → parking, then walk pathways to entrance/unit
+ * - Otherwise: placeholder walk leg; OutdoorMap draws Google drive → walk to D
  */
 export function resolveOutdoorLegs(result: NavigateResult): OutdoorPlan {
   const origin = lit(result.origin.latitude, result.origin.longitude)
@@ -71,48 +80,79 @@ export function resolveOutdoorLegs(result: NavigateResult): OutdoorPlan {
     ? lit(result.entrance.latitude, result.entrance.longitude)
     : unit
 
-  const toDestM = Math.round(metersBetween(origin, unit))
   const toEntranceM = Math.round(metersBetween(origin, entrance))
+  const parking = isRealParkingStop(result, origin)
+  const viaParking = Boolean(parking)
 
-  const waypoints: OutdoorWaypoint[] = [
-    {
-      kind: 'entrance',
-      position: entrance,
-      label: result.entrance?.label || 'Entry door',
-      fill: '#22c55e',
-    },
-  ]
-
-  if (
-    result.parking &&
-    Number.isFinite(result.parking.latitude) &&
-    Number.isFinite(result.parking.longitude) &&
-    metersBetween(origin, lit(result.parking.latitude, result.parking.longitude)) > 40
-  ) {
-    waypoints.unshift({
+  const waypoints: OutdoorWaypoint[] = []
+  if (parking) {
+    waypoints.push({
       kind: 'parking',
-      position: lit(result.parking.latitude, result.parking.longitude),
-      label: result.parking.label || 'Parking',
+      position: parking,
+      label: result.parking?.label || 'Parking',
       fill: '#a855f7',
     })
   }
+  waypoints.push({
+    kind: 'entrance',
+    position: entrance,
+    label: result.entrance?.label || 'Entry door',
+    fill: '#22c55e',
+  })
 
   const legs: OutdoorLeg[] = []
-  if (toDestM > AT_DESTINATION_M) {
+
+  if (viaParking && parking) {
     legs.push({
-      id: 'walk-to-destination',
-      mode: 'WALK',
+      id: 'drive-to-parking',
+      mode: 'DRIVE',
+      from: origin,
+      to: parking,
+      label: 'Drive to parking',
+      color: DRIVE_COLOR,
+    })
+    // Walk on pathways from parking → entrance (indoor continues to unit).
+    if (metersBetween(parking, entrance) > AT_DESTINATION_M) {
+      legs.push({
+        id: 'walk-parking-to-entrance',
+        mode: 'WALK',
+        from: parking,
+        to: entrance,
+        label: 'Walk pathways to entrance',
+        color: WALK_COLOR,
+      })
+    }
+    // If unit pin differs from entrance, short walk to exact D outdoors too.
+    if (metersBetween(entrance, unit) > 6) {
+      legs.push({
+        id: 'walk-entrance-to-unit',
+        mode: 'WALK',
+        from: entrance,
+        to: unit,
+        label: 'Walk to unit',
+        color: WALK_COLOR,
+      })
+    }
+  } else if (metersBetween(origin, unit) > AT_DESTINATION_M) {
+    legs.push({
+      id: 'route-to-destination',
+      mode: 'DRIVE',
       from: origin,
       to: unit,
-      label: 'Walk to destination (no driveway yet)',
-      color: WALK_COLOR,
+      label: 'Drive toward destination',
+      color: DRIVE_COLOR,
     })
   }
 
   return {
     legs,
     waypoints,
-    policy: legs.length === 0 ? 'at-destination' : 'walk-to-destination',
+    viaParking,
+    policy: viaParking
+      ? 'drive-to-parking-then-walk-pathways'
+      : legs.length === 0
+        ? 'at-destination'
+        : 'drive-then-walk-to-destination',
     toEntranceM,
   }
 }

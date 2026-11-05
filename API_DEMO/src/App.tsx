@@ -286,7 +286,11 @@ export default function App() {
             })
           : await attachLotToResult(nav)
         : nav
-      setResult(routed)
+      // Stamp so outdoor map knows to drive → parking → walk pathways.
+      setResult({
+        ...routed,
+        origin: { ...routed.origin, viaParking },
+      })
       // Point-to-point starts at the first step (origin → destination).
       setJourneyIndex(0)
       setIndoorView('floor')

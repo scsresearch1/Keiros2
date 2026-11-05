@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+﻿import { useEffect, useMemo, useRef, useState } from 'react'
 import type { JourneyStep, NavigateResult } from '../api'
 import {
   type AdvMarker,
@@ -9,7 +9,6 @@ import {
   mapOptions,
   setAdvancedMarkerSvg,
 } from '../googleMaps'
-import { nearestDrivewayPointTo } from '../drivewayApproach'
 import { planDrivePlusWalk, planWalkOnly } from '../driveWalkHandoff'
 import { extractSiteWays, type SiteWaysExtract } from '../extractSiteWays'
 import { pinPathToEndpoints } from '../googleRoute'
@@ -206,6 +205,7 @@ export function OutdoorMap({
   useEffect(() => {
     const map = mapRef.current
     if (!map || !mapReady) return
+    const gmap = map
 
     const session = ++routeSessionRef.current
     clearOverlays()
@@ -271,16 +271,16 @@ export function OutdoorMap({
       )
       // AdvancedMarker anchor (needs gmpClickable). Position fallback if anchor fails.
       try {
-        info.open({ map, anchor: marker })
+        info.open({ map: gmap, anchor: marker })
       } catch {
         info.setPosition(coords)
-        info.open({ map })
+        info.open({ map: gmap })
       }
     }
 
     const startMarker = track(
       createAdvancedMarker({
-        map,
+        map: gmap,
         position: origin,
         title: `Start · ${result.origin.label}`,
         zIndex: 40,
@@ -307,7 +307,7 @@ export function OutdoorMap({
       null
     const destMarker = track(
       createAdvancedMarker({
-        map,
+        map: gmap,
         position: destination,
         title: `Destination · ${destName}`,
         zIndex: 45,
@@ -324,7 +324,7 @@ export function OutdoorMap({
       if (wp.kind !== 'parking') continue
       const marker = track(
         createAdvancedMarker({
-          map,
+          map: gmap,
           position: wp.position,
           title: `Parking · ${wp.label}`,
           zIndex: 42,
@@ -341,7 +341,7 @@ export function OutdoorMap({
     fitRouteView()
 
     const trafficLayer = new google.maps.TrafficLayer()
-    trafficLayer.setMap(map)
+    trafficLayer.setMap(gmap)
     track(trafficLayer)
 
     function drawPath(
@@ -508,61 +508,90 @@ export function OutdoorMap({
       let driveWalkCount = 0
       const sources = new Set<string>()
 
-      // Immediate Google drive → walk to D (path shows in ~1s, not after Overpass timeout).
-      const legsToDraw: OutdoorLeg[] = [
-        {
-          id: 'drive-toward-destination',
-          mode: 'DRIVE',
-          from: origin,
-          to: destination,
-          label: 'Drive toward destination (Google roads)',
-          color: ROUTE_DRIVE_BLUE,
-        },
-      ]
+      // Via parking: drive → lot, then walk pathways to entrance.
+      // Otherwise: Google drive toward D (may add last-meter walk).
+      const legsToDraw: OutdoorLeg[] = outdoorPlan.viaParking
+        ? outdoorPlan.legs
+        : [
+            {
+              id: 'drive-toward-destination',
+              mode: 'DRIVE',
+              from: origin,
+              to: destination,
+              label: 'Drive toward destination (Google roads)',
+              color: ROUTE_DRIVE_BLUE,
+            },
+          ]
 
-      setSiteNet({ driveways: 0, sidewalks: 0, routedOn: 'Google drive → walk to D' })
+      setSiteNet({
+        driveways: 0,
+        sidewalks: 0,
+        routedOn: outdoorPlan.viaParking
+          ? 'Drive to parking → walk pathways'
+          : 'Google drive → walk to D',
+      })
 
+      async function drawLegPlan(
+        leg: OutdoorLeg,
+        index: number,
+        extract: SiteWaysExtract | null,
+      ) {
+        // Drive legs stay on roads. Walk legs prefer sidewalks/pathways when OSM is ready.
+        const plan =
+          leg.mode === 'WALK'
+            ? await planWalkOnly(leg.from, leg.to, extract)
+            : outdoorPlan.viaParking && leg.id === 'drive-to-parking'
+              ? await planDrivePlusWalk(leg.from, leg.to, extract)
+              : await planDrivePlusWalk(leg.from, leg.to, extract)
+
+        if (session !== routeSessionRef.current) return
+        if (!plan.segments.length) {
+          serverFallbackForLeg(leg)
+          return
+        }
+
+        if (plan.label === 'drive+walk') driveWalkCount += 1
+        for (const seg of plan.segments) {
+          // Via-parking drive leg: never paint a walk stub past the lot as "drive".
+          if (
+            outdoorPlan.viaParking &&
+            leg.id === 'drive-to-parking' &&
+            seg.mode === 'WALK'
+          ) {
+            continue
+          }
+          sources.add(seg.source)
+          const pinFrom = seg.path[0] ?? leg.from
+          const pinTo =
+            seg.mode === 'WALK' ? leg.to : (seg.path[seg.path.length - 1] ?? leg.to)
+          drawPath(
+            seg.path,
+            pinFrom,
+            pinTo,
+            seg.mode === 'WALK' ? 'walk-dots' : 'drive',
+            seg.mode === 'WALK' ? 22 : 20 + index,
+          )
+        }
+
+        if (plan.handoff && !(outdoorPlan.viaParking && leg.id === 'drive-to-parking')) {
+          track(
+            createAdvancedMarker({
+              map: gmap,
+              position: plan.handoff,
+              title: 'Leave vehicle — walk from here',
+              zIndex: 50,
+              svg: pinSvg('#f59e0b', 'W'),
+            }),
+          )
+          bounds.extend(plan.handoff)
+        }
+      }
+
+      // Fast first paint with Google only (no Overpass wait).
       await Promise.all(
         legsToDraw.map(async (leg, index) => {
           try {
-            const plan =
-              leg.mode === 'WALK'
-                ? await planWalkOnly(leg.from, leg.to, null)
-                : await planDrivePlusWalk(leg.from, leg.to, null)
-
-            if (session !== routeSessionRef.current) return
-            if (!plan.segments.length) {
-              serverFallbackForLeg(leg)
-              return
-            }
-
-            if (plan.label === 'drive+walk') driveWalkCount += 1
-            for (const seg of plan.segments) {
-              sources.add(seg.source)
-              const pinFrom = seg.path[0] ?? leg.from
-              const pinTo =
-                seg.mode === 'WALK' ? leg.to : (seg.path[seg.path.length - 1] ?? leg.to)
-              drawPath(
-                seg.path,
-                pinFrom,
-                pinTo,
-                seg.mode === 'WALK' ? 'walk-dots' : 'drive',
-                seg.mode === 'WALK' ? 22 : 20 + index,
-              )
-            }
-
-            if (plan.handoff) {
-              track(
-                createAdvancedMarker({
-                  map,
-                  position: plan.handoff,
-                  title: 'Leave vehicle — walk from here',
-                  zIndex: 50,
-                  svg: pinSvg('#f59e0b', 'W'),
-                }),
-              )
-              bounds.extend(plan.handoff)
-            }
+            await drawLegPlan(leg, index, null)
           } catch (err) {
             if (session !== routeSessionRef.current) return
             serverFallbackForLeg(leg)
@@ -576,9 +605,11 @@ export function OutdoorMap({
       setSiteNet((prev) => ({
         driveways: prev?.driveways ?? 0,
         sidewalks: prev?.sidewalks ?? 0,
-        routedOn: driveWalkCount
-          ? `Drive + Walk · ${src}`
-          : `routed · ${src}`,
+        routedOn: outdoorPlan.viaParking
+          ? `Parking route · ${src}`
+          : driveWalkCount
+            ? `Drive + Walk · ${src}`
+            : `routed · ${src}`,
       }))
       if (errors.some((m) => /REQUEST_DENIED|PERMISSION|API|403|Routes/i.test(m))) {
         setMapError(
@@ -589,19 +620,17 @@ export function OutdoorMap({
       }
       fitRouteView()
 
-      // Optional curb snap only if OSM returns quickly with a driveway near D.
+      // When OSM pathways arrive, redraw walk legs on sidewalks/footways.
       void extractPromise.then(async (extract) => {
-        if (session !== routeSessionRef.current || !extract?.driveways.length) return
-        const curb = nearestDrivewayPointTo(extract, destination, 160)
-        if (!curb) return
-        try {
-          const onto = await planWalkOnly(curb, destination, extract)
-          if (session !== routeSessionRef.current) return
-          if (onto.segments[0]?.path?.length) {
-            drawPath(onto.segments[0].path, curb, destination, 'walk-dots', 23)
+        if (session !== routeSessionRef.current || !extract) return
+        const walkLegs = legsToDraw.filter((l) => l.mode === 'WALK')
+        if (!walkLegs.length || !extract.sidewalks.length) return
+        for (let i = 0; i < walkLegs.length; i++) {
+          try {
+            await drawLegPlan(walkLegs[i], 30 + i, extract)
+          } catch {
+            /* keep Google walk */
           }
-        } catch {
-          /* Google path already shown */
         }
       })
     })()
@@ -796,3 +825,4 @@ export function OutdoorMap({
     </div>
   )
 }
+
