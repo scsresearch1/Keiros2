@@ -85,11 +85,15 @@ function pinSvg(fill: string, label: string) {
 
 /**
  * Google Maps–style “you are here” puck.
- * Arrow points to top of SVG (= north) before rotation; GPS heading is degrees clockwise from north.
+ * - headingUp: map already rotated to travel direction → arrow always points up (screen forward)
+ * - otherwise: north-up map → rotate arrow by absolute GPS bearing (0 = north)
  */
-function livePuckSvg(heading: number | null) {
+function livePuckSvg(heading: number | null, opts?: { headingUp?: boolean }) {
   const hasHeading = heading != null && Number.isFinite(heading)
-  const rot = hasHeading ? Number(heading) : 0
+  const headingUp = Boolean(opts?.headingUp)
+  // Heading-up nav: arrow points to top of screen. North-up: rotate by true bearing.
+  const rot = headingUp ? 0 : hasHeading ? Number(heading) : 0
+  const showArrow = hasHeading || headingUp
   return `<svg xmlns="http://www.w3.org/2000/svg" width="80" height="80" viewBox="0 0 80 80">
   <defs>
     <filter id="keirosPuckShadow" x="-50%" y="-50%" width="200%" height="200%">
@@ -98,7 +102,7 @@ function livePuckSvg(heading: number | null) {
   </defs>
   <g transform="rotate(${rot.toFixed(1)} 40 40)" filter="url(#keirosPuckShadow)">
     ${
-      hasHeading
+      showArrow
         ? `<path d="M40 6 L54 32 L40 27 L26 32 Z" fill="#1a73e8" stroke="#ffffff" stroke-width="3" stroke-linejoin="round"/>`
         : ''
     }
@@ -106,6 +110,10 @@ function livePuckSvg(heading: number | null) {
     <circle cx="40" cy="42" r="6.5" fill="#ffffff"/>
   </g>
 </svg>`
+}
+
+function normalizeDeg(d: number) {
+  return ((d % 360) + 360) % 360
 }
 
 /** Shortest-path blend so the arrow doesn't spin wildly on noisy GPS. */
@@ -152,6 +160,8 @@ export function OutdoorMap({
     weather: readCollapsed('weather'),
     traffic: readCollapsed('traffic'),
   }))
+  /** Map camera heading (0 = north up). Used for compass chip. */
+  const [mapHeading, setMapHeading] = useState(0)
 
   const outdoorPlan = useMemo(() => resolveOutdoorLegs(result), [result])
 
@@ -748,8 +758,7 @@ export function OutdoorMap({
               Math.cos((liveFix.latitude * Math.PI) / 180),
           )
         : 0
-    const moving = movedM > 2.5 || (liveFix.speed != null && liveFix.speed > 0.8)
-    if ((rawHeading == null || !moving) && prev && movedM > 2.5) {
+    if ((rawHeading == null || (liveFix.speed == null || liveFix.speed < 0.5)) && prev && movedM > 2.5) {
       rawHeading = bearingDeg(prev.latitude, prev.longitude, liveFix.latitude, liveFix.longitude)
     }
     if (rawHeading != null && Number.isFinite(rawHeading)) {
@@ -759,21 +768,31 @@ export function OutdoorMap({
     lastLiveRef.current = liveFix
     const pos = latLngLiteral(liveFix.latitude, liveFix.longitude)
 
+    // Live follow = heading-up (Google Maps navigation): rotate the map so travel direction is up.
+    // Then the puck arrow always points to the top of the screen — N/E/S/W stay consistent with the map.
+    const routeLat = Number(result.origin.latitude)
+    const routeLng = Number(result.origin.longitude)
+    const nearRouteM = Math.hypot(
+      (liveFix.latitude - routeLat) * 111_320,
+      (liveFix.longitude - routeLng) * 111_320 * Math.cos((routeLat * Math.PI) / 180),
+    )
+    const headingUp =
+      followLive && !userPanningRef.current && nearRouteM < 8000 && heading != null
+
     if (!liveMarkerRef.current) {
       const puck = createAdvancedMarker({
         map,
         position: pos,
         zIndex: 1000,
-        svg: livePuckSvg(heading),
+        svg: livePuckSvg(heading, { headingUp }),
         title: 'You (live)',
       })
-      // Center the puck on GPS (default Advanced Marker anchor is bottom-center).
       puck.anchorTop = '50%'
       puck.anchorLeft = '50%'
       liveMarkerRef.current = puck
     } else {
       liveMarkerRef.current.position = pos
-      setAdvancedMarkerSvg(liveMarkerRef.current, livePuckSvg(heading))
+      setAdvancedMarkerSvg(liveMarkerRef.current, livePuckSvg(heading, { headingUp }))
       liveMarkerRef.current.anchorTop = '50%'
       liveMarkerRef.current.anchorLeft = '50%'
     }
@@ -795,14 +814,28 @@ export function OutdoorMap({
       accuracyRef.current.setRadius(Math.max(8, liveFix.accuracy || 20))
     }
 
-    // Follow GPS when near the planned start (same metro). Snap hard on first fix.
-    const routeLat = Number(result.origin.latitude)
-    const routeLng = Number(result.origin.longitude)
-    const nearRouteM = Math.hypot(
-      (liveFix.latitude - routeLat) * 111_320,
-      (liveFix.longitude - routeLng) * 111_320 * Math.cos((routeLat * Math.PI) / 180),
-    )
-    if (followLive && !userPanningRef.current && nearRouteM < 8000) {
+    if (headingUp) {
+      const driving = liveFix.speed != null && liveFix.speed > 8
+      const targetZoom = driving ? 16 : 18
+      const zoom = !liveSnapDoneRef.current || (map.getZoom() ?? 0) < 16 ? targetZoom : (map.getZoom() ?? targetZoom)
+      try {
+        map.moveCamera({
+          center: pos,
+          zoom,
+          heading: normalizeDeg(heading),
+          tilt: 0,
+        })
+      } catch {
+        map.setCenter(pos)
+        map.setZoom(zoom)
+        if (typeof map.setHeading === 'function') map.setHeading(normalizeDeg(heading))
+      }
+      liveSnapDoneRef.current = true
+      setMapHeading(normalizeDeg(heading))
+    } else if (followLive && !userPanningRef.current && nearRouteM < 8000) {
+      // No heading yet — keep north-up, still follow position.
+      if (typeof map.setHeading === 'function') map.setHeading(0)
+      setMapHeading(0)
       const driving = liveFix.speed != null && liveFix.speed > 8
       const targetZoom = driving ? 16 : 18
       if (!liveSnapDoneRef.current || (map.getZoom() ?? 0) < 16) {
@@ -811,10 +844,18 @@ export function OutdoorMap({
         liveSnapDoneRef.current = true
       } else {
         map.panTo(pos)
-        if ((map.getZoom() ?? 0) < targetZoom - 0.5) map.setZoom(targetZoom)
       }
     }
   }, [liveFix, followLive, mapReady, result.origin.latitude, result.origin.longitude])
+
+  // When Live GPS turns off, restore north-up so the map isn't left rotated.
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !mapReady) return
+    if (followLive) return
+    if (typeof map.setHeading === 'function') map.setHeading(0)
+    setMapHeading(0)
+  }, [followLive, mapReady])
 
   return (
     <div className={`demo-map-shell${followLive && liveFix ? ' is-live' : ''}`}>
@@ -823,6 +864,33 @@ export function OutdoorMap({
         <div className="demo-map-error" role="alert">
           {mapError}
         </div>
+      ) : null}
+      {mapReady ? (
+        <button
+          type="button"
+          className="demo-map-compass"
+          title="North — tap to reset north-up"
+          aria-label="Compass — reset north up"
+          onClick={() => {
+            const map = mapRef.current
+            if (!map) return
+            userPanningRef.current = true
+            if (panTimerRef.current) window.clearTimeout(panTimerRef.current)
+            panTimerRef.current = window.setTimeout(() => {
+              userPanningRef.current = false
+            }, 8000)
+            if (typeof map.setHeading === 'function') map.setHeading(0)
+            setMapHeading(0)
+          }}
+        >
+          <span
+            className="demo-map-compass__needle"
+            style={{ transform: `rotate(${(-mapHeading).toFixed(1)}deg)` }}
+            aria-hidden
+          >
+            <b>N</b>
+          </span>
+        </button>
       ) : null}
       {mapReady ? (
         <div className="demo-map-overlay">
@@ -911,10 +979,23 @@ export function OutdoorMap({
           aria-label="Recenter on my location"
           onClick={() => {
             userPanningRef.current = false
+            liveSnapDoneRef.current = false
             const map = mapRef.current
             if (!map || !liveFix) return
-            map.setCenter(latLngLiteral(liveFix.latitude, liveFix.longitude))
-            map.setZoom(Math.max(map.getZoom() ?? 16, 16))
+            const pos = latLngLiteral(liveFix.latitude, liveFix.longitude)
+            const h = smoothHeadingRef.current
+            if (h != null && typeof map.moveCamera === 'function') {
+              map.moveCamera({
+                center: pos,
+                zoom: Math.max(map.getZoom() ?? 17, 17),
+                heading: normalizeDeg(h),
+                tilt: 0,
+              })
+              setMapHeading(normalizeDeg(h))
+            } else {
+              map.setCenter(pos)
+              map.setZoom(Math.max(map.getZoom() ?? 17, 17))
+            }
           }}
         >
           <span className="demo-recenter__dot" />
