@@ -340,7 +340,65 @@ export async function requestCompassPermission(): Promise<boolean> {
   return true
 }
 
-export function useGeolocationWatch(enabled: boolean): {
+export type GeoWatchAnchor = { latitude: number; longitude: number }
+
+/**
+ * Drop Wi‑Fi / cached “city center” jumps that claim ±20 m but land kilometers away.
+ * If several rejected samples agree, accept them (phone really moved / reroute).
+ */
+function shouldAcceptFix(
+  prev: LiveFix | null,
+  next: LiveFix,
+  anchor: GeoWatchAnchor | null,
+  rejectCluster: { lat: number; lng: number; count: number } | null,
+): { accept: boolean; cluster: { lat: number; lng: number; count: number } | null } {
+  if (!Number.isFinite(next.latitude) || !Number.isFinite(next.longitude)) {
+    return { accept: false, cluster: rejectCluster }
+  }
+
+  // Very coarse network location — wait for a tighter sample.
+  if (next.accuracy > 200) {
+    return { accept: false, cluster: rejectCluster }
+  }
+
+  const near = (aLat: number, aLng: number, bLat: number, bLng: number, m: number) =>
+    haversineM(aLat, aLng, bLat, bLng) <= m
+
+  // First fix far from the Live route start → almost always a bad Wi‑Fi centroid.
+  if (!prev && anchor) {
+    const dAnchor = haversineM(anchor.latitude, anchor.longitude, next.latitude, next.longitude)
+    if (dAnchor > 2500) {
+      const cluster =
+        rejectCluster && near(rejectCluster.lat, rejectCluster.lng, next.latitude, next.longitude, 400)
+          ? { ...rejectCluster, count: rejectCluster.count + 1 }
+          : { lat: next.latitude, lng: next.longitude, count: 1 }
+      return { accept: cluster.count >= 5, cluster: cluster.count >= 5 ? null : cluster }
+    }
+  }
+
+  if (prev) {
+    const dt = Math.max(0.2, (next.timestamp - prev.timestamp) / 1000)
+    const dist = haversineM(prev.latitude, prev.longitude, next.latitude, next.longitude)
+    // Physically impossible jump (keeps a wrong city pin from replacing a good street fix).
+    if (dist / dt > 85) {
+      return { accept: false, cluster: rejectCluster }
+    }
+    if (dist > 2000 && dt < 90 && next.accuracy <= 75) {
+      const cluster =
+        rejectCluster && near(rejectCluster.lat, rejectCluster.lng, next.latitude, next.longitude, 400)
+          ? { ...rejectCluster, count: rejectCluster.count + 1 }
+          : { lat: next.latitude, lng: next.longitude, count: 1 }
+      return { accept: cluster.count >= 5, cluster: cluster.count >= 5 ? null : cluster }
+    }
+  }
+
+  return { accept: true, cluster: null }
+}
+
+export function useGeolocationWatch(
+  enabled: boolean,
+  anchor: GeoWatchAnchor | null = null,
+): {
   fix: LiveFix | null
   error: string | null
   watching: boolean
@@ -351,6 +409,9 @@ export function useGeolocationWatch(enabled: boolean): {
   const lastGpsHeading = useRef<number | null>(null)
   const lastCompassHeading = useRef<number | null>(null)
   const lastFixRef = useRef<LiveFix | null>(null)
+  const rejectClusterRef = useRef<{ lat: number; lng: number; count: number } | null>(null)
+  const anchorRef = useRef(anchor)
+  anchorRef.current = anchor
 
   useEffect(() => {
     if (!enabled) {
@@ -365,6 +426,23 @@ export function useGeolocationWatch(enabled: boolean): {
 
     setError(null)
     setWatching(true)
+    rejectClusterRef.current = null
+
+    // Hold the puck at the planned Live start until a real nearby GPS sample arrives.
+    // Stops the first Wi‑Fi “city center” reading from teleporting the marker across town.
+    const seedAnchor = anchorRef.current
+    if (seedAnchor) {
+      const seed: LiveFix = {
+        latitude: seedAnchor.latitude,
+        longitude: seedAnchor.longitude,
+        accuracy: 45,
+        heading: lastCompassHeading.current,
+        speed: null,
+        timestamp: Date.now(),
+      }
+      lastFixRef.current = seed
+      setFix(seed)
+    }
 
     const pickHeading = (gpsHeading: number | null, speed: number | null): number | null => {
       const compass = lastCompassHeading.current
@@ -384,7 +462,7 @@ export function useGeolocationWatch(enabled: boolean): {
             : null
         if (gpsHeading != null) lastGpsHeading.current = gpsHeading
         const speed = typeof pos.coords.speed === 'number' ? pos.coords.speed : null
-        const next: LiveFix = {
+        const candidate: LiveFix = {
           latitude: pos.coords.latitude,
           longitude: pos.coords.longitude,
           accuracy: pos.coords.accuracy,
@@ -392,8 +470,17 @@ export function useGeolocationWatch(enabled: boolean): {
           speed,
           timestamp: pos.timestamp,
         }
-        lastFixRef.current = next
-        setFix(next)
+        const verdict = shouldAcceptFix(
+          lastFixRef.current,
+          candidate,
+          anchorRef.current,
+          rejectClusterRef.current,
+        )
+        rejectClusterRef.current = verdict.cluster
+        if (!verdict.accept) return
+
+        lastFixRef.current = candidate
+        setFix(candidate)
         setError(null)
       },
       (err) => {
@@ -406,7 +493,8 @@ export function useGeolocationWatch(enabled: boolean): {
       },
       {
         enableHighAccuracy: true,
-        maximumAge: 1000,
+        // Cached Wi‑Fi centroids often land kilometers away with a fake ±15 m accuracy.
+        maximumAge: 0,
         timeout: 20000,
       },
     )

@@ -766,21 +766,20 @@ export function OutdoorMap({
     lastLiveRef.current = liveFix
     const pos = latLngLiteral(liveFix.latitude, liveFix.longitude)
 
-    const routeLat = Number(result.origin.latitude)
-    const routeLng = Number(result.origin.longitude)
-    const nearRouteM = Math.hypot(
-      (liveFix.latitude - routeLat) * 111_320,
-      (liveFix.longitude - routeLng) * 111_320 * Math.cos((routeLat * Math.PI) / 180),
-    )
-    const shouldFollow =
-      followLive && !userPanningRef.current && nearRouteM < 8000
+    // Always track the phone in Live mode (do not gate on distance to S — that left the
+    // puck stranded across the city when the overview zoomed out to the full trip).
+    const shouldFollow = followLive && !userPanningRef.current
 
     // Rotate map toward phone-top when following (heading-up). Hybrid may ignore heading —
     // puck still uses map.getHeading() so the arrow matches the phone.
     if (shouldFollow && heading != null) {
       const driving = liveFix.speed != null && liveFix.speed > 8
       const targetZoom = driving ? 16 : 18
-      const zoom = !liveSnapDoneRef.current || (map.getZoom() ?? 0) < 16 ? targetZoom : (map.getZoom() ?? targetZoom)
+      // Keep street zoom while following — never leave the camera on a city-wide fitBounds.
+      const zoom =
+        !liveSnapDoneRef.current || (map.getZoom() ?? 0) < 16
+          ? targetZoom
+          : Math.max(map.getZoom() ?? targetZoom, 15)
       try {
         map.moveCamera({
           center: pos,
@@ -797,7 +796,7 @@ export function OutdoorMap({
     } else if (shouldFollow) {
       const driving = liveFix.speed != null && liveFix.speed > 8
       const targetZoom = driving ? 16 : 18
-      if (!liveSnapDoneRef.current || (map.getZoom() ?? 0) < 16) {
+      if (!liveSnapDoneRef.current || (map.getZoom() ?? 0) < 15) {
         map.setCenter(pos)
         map.setZoom(targetZoom)
         liveSnapDoneRef.current = true
@@ -849,7 +848,7 @@ export function OutdoorMap({
       accuracyRef.current.setCenter(pos)
       accuracyRef.current.setRadius(Math.max(8, liveFix.accuracy || 20))
     }
-  }, [liveFix, followLive, mapReady, result.origin.latitude, result.origin.longitude])
+  }, [liveFix, followLive, mapReady])
 
   // When Live GPS turns off, restore north-up so the map isn't left rotated.
   useEffect(() => {

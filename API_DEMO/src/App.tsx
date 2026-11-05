@@ -587,7 +587,17 @@ export default function App() {
   const wantsLiveGps =
     liveNav || startMode === 'live' || (startMode === 'custom' && liveSelected)
   const liveWatchOn = Boolean(result && wantsLiveGps && outdoorActive)
-  const { fix: liveFix, error: liveGpsError, watching: liveWatching } = useGeolocationWatch(liveWatchOn)
+  const liveGpsAnchor = useMemo(
+    () =>
+      result
+        ? { latitude: result.origin.latitude, longitude: result.origin.longitude }
+        : null,
+    [result],
+  )
+  const { fix: liveFix, error: liveGpsError, watching: liveWatching } = useGeolocationWatch(
+    liveWatchOn,
+    liveGpsAnchor,
+  )
 
   // Keep the toggle in sync when user chose Live as the start mode.
   useEffect(() => {
@@ -1060,17 +1070,7 @@ export default function App() {
                 activeStep={active}
                 weather={result.weather}
                 traffic={result.outdoor.traffic}
-                liveFix={
-                  wantsLiveGps && liveFix
-                    ? liveProgress?.snapped && !liveProgress.offRoute
-                      ? {
-                          ...liveFix,
-                          latitude: liveProgress.snapped.latitude,
-                          longitude: liveProgress.snapped.longitude,
-                        }
-                      : liveFix
-                    : null
-                }
+                liveFix={wantsLiveGps ? liveFix : null}
                 followLive={wantsLiveGps}
               onRouteCorridor={(corridor) => {
                 routeCorridorRef.current = corridor
