@@ -11,7 +11,15 @@ export function googleMapsApiKey(): string {
   return String(import.meta.env.VITE_GOOGLE_MAPS_API_KEY || '').trim()
 }
 
-/** Load Maps JS API once (Map, Marker, Directions, Geometry). */
+/**
+ * Map ID enables vector maps + AdvancedMarkerElement (current Google Maps rendering).
+ * Create one in Google Cloud → Map Management, or use DEMO_MAP_ID for testing.
+ */
+export function googleMapsMapId(): string {
+  return String(import.meta.env.VITE_GOOGLE_MAPS_MAP_ID || 'DEMO_MAP_ID').trim() || 'DEMO_MAP_ID'
+}
+
+/** Load Maps JS API once (Map, Advanced Markers, Geometry, Routes). */
 export function loadGoogleMaps(): Promise<typeof google> {
   if (typeof window === 'undefined') {
     return Promise.reject(new Error('Google Maps requires a browser'))
@@ -23,7 +31,7 @@ export function loadGoogleMaps(): Promise<typeof google> {
   if (!apiKey) {
     return Promise.reject(
       new Error(
-        'Missing VITE_GOOGLE_MAPS_API_KEY. Add a Google Maps JavaScript API key (with Directions API enabled) in Netlify / local .env.',
+        'Missing VITE_GOOGLE_MAPS_API_KEY. Add a Google Maps JavaScript API key (Maps JS + Routes API) in Netlify / local .env.',
       ),
     )
   }
@@ -38,7 +46,6 @@ export function loadGoogleMaps(): Promise<typeof google> {
     await importLibrary('marker')
     await importLibrary('geometry')
     try {
-      // New Routes library (legacy DirectionsService is blocked on many keys)
       await importLibrary('routes')
     } catch {
       /* REST Routes API fallback in googleRoute.ts */
@@ -53,6 +60,26 @@ export function latLngLiteral(lat: number, lng: number): google.maps.LatLngLiter
   return { lat, lng }
 }
 
+/** Default Map options for current Google vector rendering + Advanced Markers. */
+export function mapOptions(
+  center: google.maps.LatLngLiteral,
+  zoom: number,
+  extra: google.maps.MapOptions = {},
+): google.maps.MapOptions {
+  return {
+    center,
+    zoom,
+    mapId: googleMapsMapId(),
+    mapTypeControl: false,
+    streetViewControl: false,
+    fullscreenControl: true,
+    zoomControl: true,
+    clickableIcons: false,
+    gestureHandling: 'greedy',
+    ...extra,
+  }
+}
+
 /** GeoJSON [lng, lat][] → Google LatLngLiteral[] */
 export function geoJsonToLatLngs(
   coordinates: [number, number][] | undefined | null,
@@ -61,4 +88,54 @@ export function geoJsonToLatLngs(
   return coordinates
     .filter((c) => Array.isArray(c) && c.length >= 2 && Number.isFinite(c[0]) && Number.isFinite(c[1]))
     .map(([lng, lat]) => ({ lat, lng }))
+}
+
+function htmlFromSvg(svg: string, className?: string) {
+  const wrap = document.createElement('div')
+  if (className) wrap.className = className
+  wrap.innerHTML = svg
+  wrap.style.display = 'flex'
+  wrap.style.alignItems = 'center'
+  wrap.style.justifyContent = 'center'
+  return wrap
+}
+
+export type AdvMarker = google.maps.marker.AdvancedMarkerElement
+
+/** Create an AdvancedMarkerElement with SVG/HTML content (replaces deprecated Marker). */
+export function createAdvancedMarker(opts: {
+  map: google.maps.Map
+  position: google.maps.LatLngLiteral
+  title?: string
+  zIndex?: number
+  svg?: string
+  content?: HTMLElement
+  gmpDraggable?: boolean
+}): AdvMarker {
+  const AdvancedMarkerElement = google.maps.marker.AdvancedMarkerElement
+  const content = opts.content ?? (opts.svg ? htmlFromSvg(opts.svg) : undefined)
+  return new AdvancedMarkerElement({
+    map: opts.map,
+    position: opts.position,
+    title: opts.title,
+    zIndex: opts.zIndex,
+    content,
+    gmpDraggable: opts.gmpDraggable,
+  })
+}
+
+export function setAdvancedMarkerSvg(marker: AdvMarker, svg: string) {
+  marker.content = htmlFromSvg(svg)
+}
+
+export function markerLatLng(marker: AdvMarker): google.maps.LatLngLiteral | null {
+  const pos = marker.position
+  if (!pos) return null
+  if (typeof (pos as google.maps.LatLng).lat === 'function') {
+    const ll = pos as google.maps.LatLng
+    return { lat: ll.lat(), lng: ll.lng() }
+  }
+  const lit = pos as google.maps.LatLngLiteral
+  if (Number.isFinite(lit.lat) && Number.isFinite(lit.lng)) return { lat: lit.lat, lng: lit.lng }
+  return null
 }

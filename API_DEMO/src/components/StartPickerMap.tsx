@@ -1,5 +1,12 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
-import { latLngLiteral, loadGoogleMaps } from '../googleMaps'
+import {
+  type AdvMarker,
+  createAdvancedMarker,
+  latLngLiteral,
+  loadGoogleMaps,
+  mapOptions,
+  markerLatLng,
+} from '../googleMaps'
 
 export type MapFocus = {
   latitude: number
@@ -22,14 +29,28 @@ function round6(value: number) {
   return Math.round(value * 1e6) / 1e6
 }
 
+function startPinSvg() {
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="36" height="44" viewBox="0 0 36 44">
+  <path d="M18 1c-8.3 0-15 6.7-15 15 0 11.2 15 27 15 27s15-15.8 15-27C33 7.7 26.3 1 18 1z" fill="#ea4335" stroke="#fff" stroke-width="2"/>
+  <circle cx="18" cy="16" r="7" fill="#fff"/>
+  <text x="18" y="20" text-anchor="middle" font-size="11" font-family="Arial,sans-serif" font-weight="700" fill="#ea4335">S</text>
+</svg>`
+}
+
+function unitDotSvg() {
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 18 18">
+  <circle cx="9" cy="9" r="7" fill="#fbbf24" stroke="#f59e0b" stroke-width="2"/>
+</svg>`
+}
+
 export const StartPickerMap = forwardRef<StartPickerMapHandle, Props>(function StartPickerMap(
   { latitude, longitude, focus, onPick },
   ref,
 ) {
   const hostRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<google.maps.Map | null>(null)
-  const markerRef = useRef<google.maps.Marker | null>(null)
-  const unitRef = useRef<google.maps.Marker | null>(null)
+  const markerRef = useRef<AdvMarker | null>(null)
+  const unitRef = useRef<AdvMarker | null>(null)
   const onPickRef = useRef(onPick)
   const skipFlyRef = useRef(false)
   const pointRef = useRef({ latitude, longitude })
@@ -71,15 +92,10 @@ export const StartPickerMap = forwardRef<StartPickerMapHandle, Props>(function S
               ? latLngLiteral(target.latitude, target.longitude)
               : latLngLiteral(20, 0)
         const zoom = initial.latitude != null || target ? 14 : 2
-        const map = new google.maps.Map(hostRef.current, {
-          center,
-          zoom,
-          mapTypeControl: false,
-          streetViewControl: false,
-          fullscreenControl: false,
-          clickableIcons: false,
-          gestureHandling: 'greedy',
-        })
+        const map = new google.maps.Map(
+          hostRef.current,
+          mapOptions(center, zoom, { fullscreenControl: false }),
+        )
         mapRef.current = map
         setError('')
         clickListener = map.addListener('click', (event: google.maps.MapMouseEvent) => {
@@ -97,8 +113,8 @@ export const StartPickerMap = forwardRef<StartPickerMapHandle, Props>(function S
     return () => {
       cancelled = true
       clickListener?.remove()
-      markerRef.current?.setMap(null)
-      unitRef.current?.setMap(null)
+      if (markerRef.current) markerRef.current.map = null
+      if (unitRef.current) unitRef.current.map = null
       markerRef.current = null
       unitRef.current = null
       mapRef.current = null
@@ -108,22 +124,18 @@ export const StartPickerMap = forwardRef<StartPickerMapHandle, Props>(function S
   useEffect(() => {
     const map = mapRef.current
     if (!map) return
-    unitRef.current?.setMap(null)
+    if (unitRef.current) unitRef.current.map = null
     unitRef.current = null
     if (!focus) return
-    unitRef.current = new google.maps.Marker({
+    const marker = createAdvancedMarker({
       map,
       position: latLngLiteral(focus.latitude, focus.longitude),
       title: focus.label,
-      icon: {
-        path: google.maps.SymbolPath.CIRCLE,
-        scale: 8,
-        fillColor: '#fbbf24',
-        fillOpacity: 0.95,
-        strokeColor: '#f59e0b',
-        strokeWeight: 2,
-      },
+      svg: unitDotSvg(),
     })
+    marker.anchorTop = '50%'
+    marker.anchorLeft = '50%'
+    unitRef.current = marker
     if (pointRef.current.latitude == null) {
       map.setCenter(latLngLiteral(focus.latitude, focus.longitude))
       map.setZoom(14)
@@ -135,33 +147,29 @@ export const StartPickerMap = forwardRef<StartPickerMapHandle, Props>(function S
     if (!map || latitude == null || longitude == null) return
     const pos = latLngLiteral(latitude, longitude)
     if (!markerRef.current) {
-      const marker = new google.maps.Marker({
+      const marker = createAdvancedMarker({
         map,
         position: pos,
-        draggable: true,
         title: 'Start',
         zIndex: 600,
-        label: {
-          text: 'S',
-          color: '#fff',
-          fontWeight: '700',
-        },
+        svg: startPinSvg(),
+        gmpDraggable: true,
       })
       marker.addListener('dragend', () => {
-        const ll = marker.getPosition()
+        const ll = markerLatLng(marker)
         if (!ll) return
         skipFlyRef.current = true
-        onPickRef.current(round6(ll.lat()), round6(ll.lng()))
+        onPickRef.current(round6(ll.lat), round6(ll.lng))
       })
       markerRef.current = marker
     } else {
-      const current = markerRef.current.getPosition()
+      const current = markerLatLng(markerRef.current)
       if (
         !current ||
-        Math.abs(current.lat() - latitude) > 1e-7 ||
-        Math.abs(current.lng() - longitude) > 1e-7
+        Math.abs(current.lat - latitude) > 1e-7 ||
+        Math.abs(current.lng - longitude) > 1e-7
       ) {
-        markerRef.current.setPosition(pos)
+        markerRef.current.position = pos
       }
     }
     if (skipFlyRef.current) {

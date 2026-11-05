@@ -1,6 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { JourneyStep, NavigateResult } from '../api'
-import { geoJsonToLatLngs, latLngLiteral, loadGoogleMaps } from '../googleMaps'
+import {
+  type AdvMarker,
+  createAdvancedMarker,
+  geoJsonToLatLngs,
+  latLngLiteral,
+  loadGoogleMaps,
+  mapOptions,
+  setAdvancedMarkerSvg,
+} from '../googleMaps'
 import { fetchRoadPath, pinPathToEndpoints } from '../googleRoute'
 import type { LiveFix } from '../liveNavigation'
 import { bearingDeg } from '../liveNavigation'
@@ -83,8 +91,8 @@ export function OutdoorMap({
 }: Props) {
   const hostRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<google.maps.Map | null>(null)
-  const overlaysRef = useRef<Array<{ setMap?: (map: google.maps.Map | null) => void }>>([])
-  const liveMarkerRef = useRef<google.maps.Marker | null>(null)
+  const overlaysRef = useRef<Array<{ setMap?: (map: google.maps.Map | null) => void; map?: google.maps.Map | null }>>([])
+  const liveMarkerRef = useRef<AdvMarker | null>(null)
   const accuracyRef = useRef<google.maps.Circle | null>(null)
   const lastLiveRef = useRef<LiveFix | null>(null)
   const userPanningRef = useRef(false)
@@ -111,11 +119,14 @@ export function OutdoorMap({
   )
 
   function clearOverlays() {
-    for (const item of overlaysRef.current) item.setMap?.(null)
+    for (const item of overlaysRef.current) {
+      if (typeof item.setMap === 'function') item.setMap(null)
+      else item.map = null
+    }
     overlaysRef.current = []
   }
 
-  function track<T extends { setMap?: (map: google.maps.Map | null) => void }>(obj: T) {
+  function track<T extends { setMap?: (map: google.maps.Map | null) => void; map?: google.maps.Map | null }>(obj: T) {
     overlaysRef.current.push(obj)
     return obj
   }
@@ -137,17 +148,10 @@ export function OutdoorMap({
     loadGoogleMaps()
       .then(() => {
         if (cancelled || !hostRef.current) return
-        const map = new google.maps.Map(hostRef.current, {
-          center: latLngLiteral(result.origin.latitude, result.origin.longitude),
-          zoom: 14,
-          mapTypeControl: false,
-          streetViewControl: false,
-          fullscreenControl: true,
-          zoomControl: true,
-          clickableIcons: false,
-          gestureHandling: 'greedy',
-          styles: undefined,
-        })
+        const map = new google.maps.Map(
+          hostRef.current,
+          mapOptions(latLngLiteral(result.origin.latitude, result.origin.longitude), 14),
+        )
         mapRef.current = map
         setMapReady(true)
         setMapError('')
@@ -174,7 +178,7 @@ export function OutdoorMap({
       cancelled = true
       if (panTimerRef.current) window.clearTimeout(panTimerRef.current)
       clearOverlays()
-      liveMarkerRef.current?.setMap(null)
+      if (liveMarkerRef.current) liveMarkerRef.current.map = null
       accuracyRef.current?.setMap(null)
       liveMarkerRef.current = null
       accuracyRef.current = null
@@ -233,7 +237,7 @@ export function OutdoorMap({
     }
 
     function openPinInfo(
-      marker: google.maps.Marker,
+      marker: AdvMarker,
       kind: 'Start' | 'Destination',
       name: string,
       backendAddress: string | null | undefined,
@@ -250,24 +254,21 @@ export function OutdoorMap({
       info.open({ map, anchor: marker })
     }
 
-    const startMarker = new google.maps.Marker({
-      map,
-      position: origin,
-      title: `Start · ${result.origin.label}`,
-      zIndex: 40,
-      icon: {
-        url: `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(pinSvg('#0ea5e9', 'S'))}`,
-        scaledSize: new google.maps.Size(36, 44),
-        anchor: new google.maps.Point(18, 44),
-      },
-    })
-    track(startMarker)
+    const startMarker = track(
+      createAdvancedMarker({
+        map,
+        position: origin,
+        title: `Start · ${result.origin.label}`,
+        zIndex: 40,
+        svg: pinSvg('#0ea5e9', 'S'),
+      }),
+    )
     // Address from ERP/Firestore only (complex address for the destination property)
     const startAddress =
       result.origin.address ||
       result.selection?.complex?.address ||
       null
-    startMarker.addListener('click', () => {
+    startMarker.addListener('gmp-click', () => {
       openPinInfo(
         startMarker,
         'Start',
@@ -288,19 +289,16 @@ export function OutdoorMap({
       result.selection?.unit?.physicalAddress ||
       result.selection?.complex?.address ||
       null
-    const destMarker = new google.maps.Marker({
-      map,
-      position: destination,
-      title: `Destination · ${destName}`,
-      zIndex: 45,
-      icon: {
-        url: `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(pinSvg('#ea4335', 'D'))}`,
-        scaledSize: new google.maps.Size(36, 44),
-        anchor: new google.maps.Point(18, 44),
-      },
-    })
-    track(destMarker)
-    destMarker.addListener('click', () => {
+    const destMarker = track(
+      createAdvancedMarker({
+        map,
+        position: destination,
+        title: `Destination · ${destName}`,
+        zIndex: 45,
+        svg: pinSvg('#ea4335', 'D'),
+      }),
+    )
+    destMarker.addListener('gmp-click', () => {
       openPinInfo(destMarker, 'Destination', destName, destAddress, destination)
     })
     bounds.extend(destination)
@@ -401,7 +399,7 @@ export function OutdoorMap({
     if (!map || !mapReady) return
 
     if (!liveFix) {
-      liveMarkerRef.current?.setMap(null)
+      if (liveMarkerRef.current) liveMarkerRef.current.map = null
       accuracyRef.current?.setMap(null)
       liveMarkerRef.current = null
       accuracyRef.current = null
@@ -421,24 +419,20 @@ export function OutdoorMap({
     const pos = latLngLiteral(liveFix.latitude, liveFix.longitude)
 
     if (!liveMarkerRef.current) {
-      liveMarkerRef.current = new google.maps.Marker({
+      const puck = createAdvancedMarker({
         map,
         position: pos,
         zIndex: 1000,
-        icon: {
-          url: `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(livePuckSvg(heading))}`,
-          scaledSize: new google.maps.Size(48, 48),
-          anchor: new google.maps.Point(24, 24),
-        },
+        svg: livePuckSvg(heading),
         title: 'You (live)',
       })
+      // Center the live puck on GPS (pins default to bottom-center).
+      puck.anchorTop = '50%'
+      puck.anchorLeft = '50%'
+      liveMarkerRef.current = puck
     } else {
-      liveMarkerRef.current.setPosition(pos)
-      liveMarkerRef.current.setIcon({
-        url: `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(livePuckSvg(heading))}`,
-        scaledSize: new google.maps.Size(48, 48),
-        anchor: new google.maps.Point(24, 24),
-      })
+      liveMarkerRef.current.position = pos
+      setAdvancedMarkerSvg(liveMarkerRef.current, livePuckSvg(heading))
     }
 
     if (!accuracyRef.current) {
