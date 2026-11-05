@@ -91,8 +91,15 @@ function readCurrentLocation(): Promise<{ latitude: number; longitude: number }>
     }
     navigator.geolocation.getCurrentPosition(
       (pos) => resolve({ latitude: pos.coords.latitude, longitude: pos.coords.longitude }),
-      () => reject(new Error('Allow location access to use Live.')),
-      { enableHighAccuracy: true, timeout: 12000, maximumAge: 15000 },
+      (err) =>
+        reject(
+          new Error(
+            err.code === err.PERMISSION_DENIED
+              ? 'Allow location for this site in the phone browser, then tap Live again.'
+              : 'Could not read GPS. Turn on Location and try Live again.',
+          ),
+        ),
+      { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 },
     )
   })
 }
@@ -440,13 +447,16 @@ export default function App() {
       // Point-to-point starts at the first step (origin → destination).
       setJourneyIndex(0)
       setIndoorView('floor')
-      // Demo uses simulated Fresno start — do NOT attach live GPS (e.g. India) or the
-      // map jumps continents and shows "Off route" forever.
+      // Live / custom: keep GPS follow + re-route on. Demo: leave live off (simulated start).
       setLiveNav(mode === 'live' || mode === 'custom')
       setLiveProgress(null)
       setRecalculating(false)
-      manualHoldUntil.current = Date.now() + 8000
+      offRouteStreak.current = 0
+      rerouteInFlight.current = false
+      // Short hold so step voice settles — do not block off-route recalculation for long.
+      manualHoldUntil.current = Date.now() + (mode === 'demo' ? 4000 : 1500)
       rerouteLockUntil.current = 0
+      routeCorridorRef.current = {}
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Navigate failed')
     } finally {
@@ -557,9 +567,18 @@ export default function App() {
   const outdoorActive =
     activePhase === 'drive' || activePhase === 'walk' || activePhase === 'outdoor'
 
-  // Live GPS only while outdoors — indoor is manual (Next / phase strip).
-  const liveWatchOn = Boolean(result && liveNav && outdoorActive)
+  // Phone live: watch GPS whenever Live/Custom start is active (or toggle is on).
+  const wantsLiveGps =
+    liveNav || startMode === 'live' || (startMode === 'custom' && liveSelected)
+  const liveWatchOn = Boolean(result && wantsLiveGps && outdoorActive)
   const { fix: liveFix, error: liveGpsError, watching: liveWatching } = useGeolocationWatch(liveWatchOn)
+
+  // Keep the toggle in sync when user chose Live as the start mode.
+  useEffect(() => {
+    if (startMode === 'live' || (startMode === 'custom' && liveSelected)) {
+      setLiveNav(true)
+    }
+  }, [startMode, liveSelected])
 
   useEffect(() => {
     if (!liveWatchOn || !liveFix || !result) {
@@ -572,15 +591,18 @@ export default function App() {
     const matchSteps = enrichStepsWithRouteGeometry(result, routeCorridorRef.current)
     const progress = matchLiveProgress(matchSteps, liveFix, journeyIndex)
     setLiveProgress(progress)
-    if (Date.now() < manualHoldUntil.current) return
-
-    const target = result.journey.steps[progress.stepIndex]
-    if (target?.phase === 'indoor') return
-    if (progress.stepIndex !== journeyIndex && progress.distanceToRouteM < 120) {
-      setJourneyIndex(progress.stepIndex)
-    }
 
     const now = Date.now()
+    // Step auto-advance can wait; off-route recalculation must not.
+    if (now >= manualHoldUntil.current) {
+      const target = result.journey.steps[progress.stepIndex]
+      if (target?.phase !== 'indoor') {
+        if (progress.stepIndex !== journeyIndex && progress.distanceToRouteM < 120) {
+          setJourneyIndex(progress.stepIndex)
+        }
+      }
+    }
+
     const dest = {
       latitude: result.destination.latitude,
       longitude: result.destination.longitude,
@@ -591,7 +613,7 @@ export default function App() {
     }
     const toDestM = approxMeters(liveFix.latitude, liveFix.longitude, dest.latitude, dest.longitude)
     const toOriginM = approxMeters(liveFix.latitude, liveFix.longitude, origin.latitude, origin.longitude)
-    // Ignore GPS that is nowhere near this trip (e.g. wrong continent).
+    // Ignore GPS that is nowhere near this trip (e.g. wrong continent vs Fresno demo).
     if (toDestM > 25000 && toOriginM > 25000) return
 
     if (progress.offRoute) {
@@ -600,7 +622,7 @@ export default function App() {
       offRouteStreak.current = 0
     }
 
-    // Google-like: 2–3 consecutive off-route samples (~2–4 s), then recalculate.
+    // Google-like: 2 consecutive off-route samples, then recalculate from phone GPS.
     const confirmedOff = offRouteStreak.current >= 2
     if (
       confirmedOff &&
@@ -618,8 +640,8 @@ export default function App() {
           setJourneyIndex(0)
           manualHoldUntil.current = 0
           offRouteStreak.current = 0
-          // Short cool-down so a new path can settle; Google is ~3–5s.
-          rerouteLockUntil.current = Date.now() + 4500
+          routeCorridorRef.current = {}
+          rerouteLockUntil.current = Date.now() + 4000
         })
         .finally(() => {
           rerouteInFlight.current = false
@@ -910,14 +932,16 @@ export default function App() {
                   className={phase === 'drive' ? 'is-active phase-drive' : 'phase-drive'}
                   onClick={() => jumpToPhase('drive')}
                 >
-                  1 · Drive to parking
+                  {result.origin.viaParking
+                    ? '1 · Drive to parking'
+                    : '1 · Drive to destination'}
                 </button>
                 <button
                   type="button"
                   className={phase === 'walk' ? 'is-active phase-walk' : 'phase-walk'}
                   onClick={() => jumpToPhase('walk')}
                 >
-                  2 · Walk to entrance
+                  {result.origin.viaParking ? '2 · Walk to entrance' : '2 · Walk to door'}
                 </button>
                 <button
                   type="button"
@@ -973,27 +997,58 @@ export default function App() {
           ) : null}
 
           {showOutdoorMap ? (
-            <OutdoorMap
-              result={result}
-              activeStep={active}
-              weather={result.weather}
-              traffic={result.outdoor.traffic}
-              liveFix={
-                liveNav && liveFix
-                  ? liveProgress?.snapped && !liveProgress.offRoute
-                    ? {
-                        ...liveFix,
-                        latitude: liveProgress.snapped.latitude,
-                        longitude: liveProgress.snapped.longitude,
-                      }
-                    : liveFix
-                  : null
-              }
-              followLive={liveNav}
-              onRouteCorridor={(corridor) => {
-                routeCorridorRef.current = corridor
-              }}
-            />
+            <>
+              <div className="demo-live-bar demo-live-bar--top">
+                <button
+                  type="button"
+                  className={`demo-live-toggle${wantsLiveGps ? ' is-on' : ''}`}
+                  aria-pressed={wantsLiveGps}
+                  onClick={() => {
+                    unlockVoiceFromGesture()
+                    if (startMode === 'live') {
+                      setLiveNav(true)
+                      return
+                    }
+                    setLiveNav((v) => !v)
+                  }}
+                >
+                  <span className="demo-live-toggle__pulse" aria-hidden />
+                  {wantsLiveGps ? 'Live GPS on' : 'Live GPS off'}
+                </button>
+                <span className="demo-hint">
+                  {recalculating
+                    ? 'Recalculating from your phone…'
+                    : wantsLiveGps
+                      ? liveWatching && liveFix
+                        ? liveProgress?.offRoute
+                          ? 'Off route — finding a better path…'
+                          : `Following you · ±${Math.round(liveFix.accuracy)} m`
+                        : liveGpsError || 'Waiting for GPS — allow location in the browser'
+                      : 'Turn on to follow GPS and re-route when you leave the path'}
+                </span>
+              </div>
+              <OutdoorMap
+                result={result}
+                activeStep={active}
+                weather={result.weather}
+                traffic={result.outdoor.traffic}
+                liveFix={
+                  wantsLiveGps && liveFix
+                    ? liveProgress?.snapped && !liveProgress.offRoute
+                      ? {
+                          ...liveFix,
+                          latitude: liveProgress.snapped.latitude,
+                          longitude: liveProgress.snapped.longitude,
+                        }
+                      : liveFix
+                    : null
+                }
+                followLive={wantsLiveGps}
+                onRouteCorridor={(corridor) => {
+                  routeCorridorRef.current = corridor
+                }}
+              />
+            </>
           ) : (
             <div className="demo-indoor-wrap">
               <div className="demo-indoor-head">
@@ -1054,34 +1109,10 @@ export default function App() {
               <NavGuidanceBanner
                 active={active}
                 upcoming={steps[journeyIndex + 1] ?? null}
-                progress={liveNav ? liveProgress : null}
+                progress={wantsLiveGps ? liveProgress : null}
                 recalculating={recalculating}
-                live={liveNav && Boolean(liveFix)}
+                live={wantsLiveGps && Boolean(liveFix)}
               />
-              <div className="demo-live-bar">
-                <button
-                  type="button"
-                  className={`demo-live-toggle${liveNav ? ' is-on' : ''}`}
-                  aria-pressed={liveNav}
-                  onClick={() => setLiveNav((v) => !v)}
-                >
-                  <span className="demo-live-toggle__pulse" aria-hidden />
-                  {liveNav ? 'Live navigation on' : 'Live navigation off'}
-                </button>
-                <span className="demo-hint">
-                  {recalculating
-                    ? 'Recalculating route from your position…'
-                    : liveNav
-                      ? liveWatching && liveFix
-                        ? liveProgress?.offRoute
-                          ? 'Off the planned path — finding a better route…'
-                          : `Tracking you · ±${Math.round(liveFix.accuracy)} m · ETA updates as you move`
-                        : liveGpsError
-                          ? liveGpsError
-                          : 'Waiting for GPS… allow location on this device'
-                      : 'Turn on for outdoor GPS follow. Indoor is manual (Next / Inside building).'}
-                </span>
-              </div>
             </div>
           ) : null}
 
@@ -1093,7 +1124,7 @@ export default function App() {
               <span>
                 Step {journeyIndex + 1} / {steps.length}
                 {active ? ` · ${phaseLabel(active.phase)}` : ''}
-                {liveNav ? ' · auto' : ''}
+                {wantsLiveGps ? ' · auto' : ''}
               </span>
               <button
                 type="button"

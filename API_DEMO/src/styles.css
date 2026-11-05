@@ -817,6 +817,19 @@ button:disabled {
   margin-bottom: 0.15rem;
 }
 
+/* Phone live nav: status above the map so it is not buried under the map. */
+.demo-live-bar--top {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  margin: 0.35rem 0 0.5rem;
+  padding: 0.55rem 0.7rem;
+  border-radius: 12px;
+  border: 1px solid rgba(26, 115, 232, 0.35);
+  background: rgba(7, 18, 42, 0.92);
+  backdrop-filter: blur(8px);
+}
+
 .demo-live-toggle {
   display: inline-flex;
   align-items: center;

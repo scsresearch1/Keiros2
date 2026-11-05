@@ -335,8 +335,8 @@ export function useGeolocationWatch(enabled: boolean): {
       },
       {
         enableHighAccuracy: true,
-        maximumAge: 1000,
-        timeout: 15000,
+        maximumAge: 2000,
+        timeout: 20000,
       },
     )
 
