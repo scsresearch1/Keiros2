@@ -81,14 +81,18 @@ export function stopVoice() {
   window.speechSynthesis?.cancel()
 }
 
-export function spokenCue(current: SpeakStep, upcoming?: SpeakStep | null) {
-  const now = soften(current.instruction)
-  const next = upcoming ? soften(upcoming.instruction) : ''
-  const arriving = /reached the parking|you're at the entrance|you're inside|you've arrived|park here/i.test(now)
-  const span = arriving ? '' : distancePhrase(current.distanceM ?? 0)
-  if (next && span) return `${finish(now)} Follow this for ${span}. Then, ${lowerFirst(next)}.`
-  if (next) return `${finish(now)} Then, ${lowerFirst(next)}.`
-  return finish(now)
+/**
+ * Google Maps–style: one short line for the current step only.
+ * Do not stack “then / follow this for / next maneuver” in the same utterance.
+ */
+export function spokenCue(current: SpeakStep, _upcoming?: SpeakStep | null) {
+  const line = shortenForVoice(current.instruction)
+  if (!line) return ''
+  const dist = approachingDistance(current.distanceM)
+  if (dist && !/^(in |after |you have arrived|arrived|park here)/i.test(line)) {
+    return `${dist}, ${lowerFirst(line)}`
+  }
+  return capitalize(line)
 }
 
 export function speakDirection(text: string, opts?: { force?: boolean }) {
@@ -110,8 +114,8 @@ export function speakDirection(text: string, opts?: { force?: boolean }) {
   }
 
   const utterance = new SpeechSynthesisUtterance(trimmed)
-  utterance.rate = 0.92
-  utterance.pitch = 1.04
+  utterance.rate = 1.05
+  utterance.pitch = 1
   utterance.lang = preferredLang()
   utterance.volume = 1
   const voice = chooseVoice()
@@ -263,24 +267,34 @@ function chooseVoice() {
   return candidates.find((voice) => !/david|male|daniel/i.test(voice.name)) ?? candidates[0] ?? null
 }
 
-function soften(instruction: string) {
-  let text = instruction.replace(/\s+/g, ' ').replace(/\s*[—–]\s*/g, '. ').trim()
-  text = text.replace(/visitor\s*\/\s*garage parking/gi, 'the visitor parking')
+/** Compress long ERP / OSRM lines into a single Google-like cue. */
+function shortenForVoice(instruction: string) {
+  let text = instruction.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').replace(/[—–]/g, ' ').trim()
+  // One clause only — drop everything after the first sentence break.
+  text = (text.split(/[.!?]/)[0] || text).trim()
+
   const swaps: Array<[RegExp, string]> = [
-    [/^Start driving toward /i, "Let's head toward "],
-    [/^Start driving onto /i, "Let's head onto "],
-    [/^Start driving\b/i, "Let's get going"],
-    [/^Depart via /i, "Let's head out via "],
-    [/^Arrive at the nearest parking\. leave the car here\.?$/i, "You've reached the parking. You can leave the car here"],
-    [/^Arrive at building entrance\. continue inside\.?$/i, "You're at the entrance. We'll continue inside"],
-    [/^Park and leave the vehicle\. walk the rest of the way\.?$/i, "Park here, and we'll walk the rest of the way"],
-    [/^Leave the car and walk to the entrance\.?$/i, 'Leave the car, and walk over to the entrance'],
-    [/^Leave parking and walk toward /i, 'From the parking, walk toward '],
-    [/^Drive into the nearest parking and leave the car\.?$/i, 'Drive into the nearest parking, and leave the car there'],
-    [/^Enter building at (.+?)\. indoor navigation$/i, "You're inside. Head toward $1"],
-    [/^Take vertical access to ([^,]+), then to (.+)$/i, 'Take the stairs or elevator to $1, then continue to $2'],
-    [/^Go to /i, 'Continue to '],
-    [/^Arrive at /i, "You've arrived at "],
+    [/^Start driving toward\s+/i, 'Head toward '],
+    [/^Start driving onto\s+/i, 'Head onto '],
+    [/^Start driving\b.*$/i, 'Continue straight'],
+    [/^Depart via\s+/i, 'Head out on '],
+    [/^Drive into the nearest parking.*$/i, 'Enter parking'],
+    [/^Arrive at the nearest parking.*$/i, 'You have arrived at parking'],
+    [/^Arrive at building entrance.*$/i, 'You have arrived'],
+    [/^Park and leave the vehicle.*$/i, 'Park here'],
+    [/^Leave the car and walk to the entrance.*$/i, 'Walk to the entrance'],
+    [/^Leave parking and walk toward\s+/i, 'Walk toward '],
+    [/^Walk toward\s+/i, 'Walk toward '],
+    [/^Walk via\s+/i, 'Walk on '],
+    [/^Walk along the path.*$/i, 'Continue on the path'],
+    [/^Drive along the route.*$/i, 'Continue on the route'],
+    [/^Continue walking.*$/i, 'Continue straight'],
+    [/^Continue driving.*$/i, 'Continue straight'],
+    [/^You're already at the entrance.*$/i, 'You have arrived'],
+    [/^Enter building at\s+(.+?)(?:\.|$)/i, 'Enter $1'],
+    [/^Take vertical access to\s+([^,]+).*$/i, 'Take stairs or elevator to $1'],
+    [/^Go to\s+/i, 'Go to '],
+    [/^Arrive at\s+/i, 'Arrive at '],
   ]
   for (const [pattern, replacement] of swaps) {
     if (pattern.test(text)) {
@@ -288,27 +302,44 @@ function soften(instruction: string) {
       break
     }
   }
-  return text.replace(/\s+\./g, '.').replace(/\.+/g, '.').replace(/\.\s*\./g, '.').trim()
+
+  text = text
+    .replace(/\bvisitor\s*\/\s*garage parking\b/gi, 'parking')
+    .replace(/\bnearest parking\b/gi, 'parking')
+    .replace(/\s{2,}/g, ' ')
+    .replace(/[.\s]+$/g, '')
+    .trim()
+
+  // Hard cap so TTS stays short (~Google cue length).
+  if (text.length > 72) {
+    text = text.slice(0, 72).replace(/\s+\S*$/, '').trim()
+  }
+  return text
 }
 
-function finish(text: string) {
+function capitalize(text: string) {
   const clean = text.replace(/[.\s]+$/, '')
-  return `${clean.charAt(0).toUpperCase()}${clean.slice(1)}.`
+  if (!clean) return ''
+  return `${clean.charAt(0).toUpperCase()}${clean.slice(1)}`
 }
 
 function lowerFirst(text: string) {
   const clean = text.replace(/[.\s]+$/, '')
-  const body = /^[A-Z][a-z]/.test(clean) ? `${clean.charAt(0).toLowerCase()}${clean.slice(1)}` : clean
-  return body
+  if (!clean) return ''
+  return `${clean.charAt(0).toLowerCase()}${clean.slice(1)}`
 }
 
-function distancePhrase(meters: number) {
-  if (meters < 80) return ''
-  if (meters < 950) {
-    const rounded = Math.max(50, Math.round(meters / 50) * 50)
-    return `about ${rounded} meters`
+/** “In 200 meters” — only when the leg is long enough to matter. */
+function approachingDistance(meters?: number | null) {
+  if (meters == null || !Number.isFinite(meters) || meters < 120) return ''
+  if (meters < 1000) {
+    const rounded = Math.max(100, Math.round(meters / 50) * 50)
+    return `In ${rounded} meters`
   }
   const miles = meters / 1609.344
-  if (miles < 10) return `about ${miles < 1.25 ? miles.toFixed(1) : Math.round(miles * 2) / 2} miles`
-  return `about ${Math.round(miles)} miles`
+  if (miles < 10) {
+    const shown = miles < 1.5 ? miles.toFixed(1) : String(Math.round(miles * 2) / 2)
+    return `In ${shown} miles`
+  }
+  return `In ${Math.round(miles)} miles`
 }
