@@ -28,13 +28,12 @@ type OverpassElement = {
   geometry?: { lat: number; lon: number }[]
 }
 
-/** Prefer Netlify function; keep kumi path as secondary rewrite if configured. */
 const OVERPASS_URLS = ['/api/overpass', '/api/overpass-kumi']
 const cache = new Map<string, Promise<SiteWaysExtract>>()
 
 function padBbox(
   points: { lat: number; lng: number }[],
-  padDeg = 0.004,
+  padDeg = 0.0025,
 ): [number, number, number, number] {
   let south = Infinity
   let north = -Infinity
@@ -80,7 +79,6 @@ function classify(tags: Record<string, string> | undefined): SiteWayKind | null 
     return 'sidewalk'
   }
 
-  // Private apartment / site driveways and parking aisles — what satellite shows but Google often skips.
   if (
     service === 'driveway' ||
     service === 'parking_aisle' ||
@@ -98,21 +96,20 @@ function classify(tags: Record<string, string> | undefined): SiteWayKind | null 
   return null
 }
 
+/** Tight query — fewer ways, less 429 from public Overpass. */
 function buildQuery(south: number, west: number, north: number, east: number) {
   const b = `${south},${west},${north},${east}`
   return `
-[out:json][timeout:25];
+[out:json][timeout:18];
 (
   way["highway"="service"](${b});
   way["service"="driveway"](${b});
   way["service"="parking_aisle"](${b});
   way["highway"="living_street"](${b});
   way["highway"="residential"](${b});
-  way["highway"="unclassified"](${b});
   way["highway"="footway"](${b});
   way["highway"="path"](${b});
   way["highway"="pedestrian"](${b});
-  way["footway"="sidewalk"](${b});
 );
 out geom;
 `.trim()
@@ -126,7 +123,7 @@ async function fetchOverpass(query: string): Promise<OverpassElement[]> {
         method: 'POST',
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
-          Accept: 'application/json',
+          Accept: '*/*',
         },
         body: `data=${encodeURIComponent(query)}`,
       })
@@ -157,7 +154,7 @@ function elementToWay(el: OverpassElement): SiteWay | null {
   }
 }
 
-/** Always attempts extract; on failure returns empty (Google-only fallback). */
+/** Always attempts extract; on failure returns empty (Google drive fallback). */
 export function extractSiteWays(points: { lat: number; lng: number }[]): Promise<SiteWaysExtract> {
   const valid = points.filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lng))
   const bbox = padBbox(valid.length ? valid : [{ lat: 0, lng: 0 }])

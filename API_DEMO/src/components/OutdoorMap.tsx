@@ -512,10 +512,12 @@ export function OutdoorMap({
       let driveWalkCount = 0
       const sources = new Set<string>()
 
-      // Rule: always end at the actual destination coordinate (D).
-      // Driveway near D → drive onto it, then walk to D.
-      // No driveway → walk to D. Never drive to E and away from D.
+      // Always finish at actual destination D.
+      // OSM driveway near D → drive to that curb, walk to D.
+      // No OSM (or Overpass down) → Google DRIVE toward D, walk last meters.
+      // Never full-walk a driveable approach just because Overpass 429'd.
       const drivewayCurb = nearestDrivewayPointTo(extract, destination, 160)
+      const hasOsmDriveways = Boolean(extract?.driveways.length)
 
       const legsToDraw: OutdoorLeg[] = drivewayCurb
         ? [
@@ -538,12 +540,14 @@ export function OutdoorMap({
           ]
         : [
             {
-              id: 'walk-to-destination',
-              mode: 'WALK',
+              id: 'drive-toward-destination',
+              mode: 'DRIVE',
               from: origin,
               to: destination,
-              label: 'Walk to actual destination (no driveway)',
-              color: ROUTE_WALK_DOT,
+              label: hasOsmDriveways
+                ? 'Drive toward destination (no curb snap)'
+                : 'Drive toward destination (Google roads)',
+              color: ROUTE_DRIVE_BLUE,
             },
           ]
 
@@ -565,7 +569,14 @@ export function OutdoorMap({
         )
       } else {
         setSiteNet((prev) =>
-          prev ? { ...prev, routedOn: 'Walk to D (no driveway)' } : prev,
+          prev
+            ? {
+                ...prev,
+                routedOn: hasOsmDriveways
+                  ? 'Google drive → walk to D'
+                  : 'Google drive (OSM extract unavailable)',
+              }
+            : prev,
         )
       }
 
