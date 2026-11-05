@@ -1,103 +1,21 @@
 import type { JourneyStep, NavigateResult } from './api'
+import { fetchRoadRoute } from './googleRoute'
+import { AT_ENTRANCE_M, metersBetween, resolveOutdoorLegs } from './outdoorLegs'
 
 type LatLng = { latitude: number; longitude: number }
 
-type OsrmStep = {
-  distance: number
-  duration: number
-  name?: string
-  maneuver: { location: [number, number]; type: string; modifier?: string }
-  geometry?: { coordinates: [number, number][] }
+function toLit(p: LatLng) {
+  return { lat: p.latitude, lng: p.longitude }
 }
 
-type OsrmRoute = {
-  distance: number
-  duration: number
-  geometry: { coordinates: [number, number][] }
-  legs?: { steps?: OsrmStep[] }[]
-}
-
-const DRIVING = [
-  'https://router.project-osrm.org/route/v1/driving',
-  'https://routing.openstreetmap.de/routed-car/route/v1/driving',
-]
-const FOOT = [
-  'https://router.project-osrm.org/route/v1/foot',
-  'https://routing.openstreetmap.de/routed-foot/route/v1/foot',
-  ...DRIVING,
-]
-
-async function fetchRoute(bases: string[], from: LatLng, to: LatLng) {
-  let last: Error | null = null
-  for (const base of bases) {
-    try {
-      const url =
-        `${base}/${from.longitude},${from.latitude};${to.longitude},${to.latitude}` +
-        `?overview=full&geometries=geojson&steps=true&continue_straight=true`
-      const res = await fetch(url)
-      if (!res.ok) throw new Error(`OSRM ${res.status}`)
-      const json = (await res.json()) as { routes?: OsrmRoute[]; message?: string }
-      const route = json.routes?.[0]
-      if (!route?.geometry?.coordinates?.length) throw new Error(json.message || 'No route')
-      return route
-    } catch (err) {
-      last = err instanceof Error ? err : new Error(String(err))
-    }
-  }
-  throw last ?? new Error('Reroute failed')
-}
-
-function stepsFromOsrm(route: OsrmRoute, phase: 'drive' | 'walk', idPrefix: string): JourneyStep[] {
-  const raw = route.legs?.[0]?.steps ?? []
-  if (!raw.length) {
-    const [lng, lat] = route.geometry.coordinates[0] ?? [0, 0]
-    return [
-      {
-        id: `${idPrefix}-0`,
-        phase,
-        index: 0,
-        instruction: phase === 'walk' ? 'Continue walking' : 'Continue driving',
-        latitude: lat,
-        longitude: lng,
-        distanceM: Math.round(route.distance),
-        durationSec: Math.round(route.duration),
-        geometry: route.geometry.coordinates,
-      },
-    ]
-  }
-  return raw.map((step, index) => {
-    const [lng, lat] = step.maneuver.location
-    const type = step.maneuver.type.replaceAll('_', ' ')
-    const modifier = step.maneuver.modifier ? ` ${step.maneuver.modifier}` : ''
-    const road = step.name ? ` onto ${step.name}` : ''
-    let instruction = `${type}${modifier}${road}`
-    if (step.maneuver.type === 'depart') {
-      instruction = phase === 'walk' ? 'Continue on foot' : 'Continue driving'
-    }
-    if (step.maneuver.type === 'arrive') {
-      instruction =
-        phase === 'walk'
-          ? 'Arrive at building entrance — continue inside'
-          : 'Arrive at parking — leave the car and walk'
-    }
-    return {
-      id: `${idPrefix}-${index}`,
-      phase,
-      index,
-      title: `${phase === 'walk' ? 'Walk' : 'Drive'} · Step ${index + 1}`,
-      instruction,
-      roadName: step.name || null,
-      distanceM: Math.round(step.distance),
-      durationSec: Math.round(step.duration),
-      latitude: lat,
-      longitude: lng,
-      geometry: step.geometry?.coordinates ?? [],
-    }
-  })
+function pathToGeoJson(path: { lat: number; lng: number }[]): [number, number][] {
+  return path.map((p) => [p.lng, p.lat])
 }
 
 /**
- * Recalculate the remaining outdoor path from the live GPS (Google Maps “recalculating…”).
+ * Recalculate from live GPS using Google Routes map networks:
+ * DRIVE → roads / driveways, WALK → sidewalks / paths.
+ * Mode follows the current journey phase + outdoor plan (not crow-fly distance).
  */
 export async function rerouteFromLiveFix(
   result: NavigateResult,
@@ -107,35 +25,45 @@ export async function rerouteFromLiveFix(
   const phaseNow =
     result.journey.steps.find((s) => s.phase === 'drive' || s.phase === 'outdoor' || s.phase === 'walk')
       ?.phase ?? 'drive'
-  const walking =
-    phaseNow === 'walk' ||
-    !result.outdoor.steps?.length ||
-    /on-site|walk/i.test(result.outdoor.provider || '')
 
-  const destination: LatLng = walking
-    ? {
-        latitude: result.entrance?.latitude ?? result.destination.latitude,
-        longitude: result.entrance?.longitude ?? result.destination.longitude,
-      }
-    : {
-        latitude: result.parking?.latitude ?? result.entrance?.latitude ?? result.destination.latitude,
-        longitude:
-          result.parking?.longitude ?? result.entrance?.longitude ?? result.destination.longitude,
-      }
+  const plan = resolveOutdoorLegs({
+    ...result,
+    origin: {
+      ...result.origin,
+      latitude: fix.latitude,
+      longitude: fix.longitude,
+    },
+  })
+
+  const entrance: LatLng = {
+    latitude: result.entrance?.latitude ?? result.destination.latitude,
+    longitude: result.entrance?.longitude ?? result.destination.longitude,
+  }
+  const parking: LatLng | null = result.parking
+    ? { latitude: result.parking.latitude, longitude: result.parking.longitude }
+    : null
+
+  const atDoor = metersBetween(toLit(fix), toLit(entrance)) <= AT_ENTRANCE_M
+  const walking =
+    atDoor ||
+    phaseNow === 'walk' ||
+    plan.policy.includes('walk') ||
+    !result.outdoor.steps?.length ||
+    /on-site/i.test(result.outdoor.provider || '')
 
   try {
     if (walking) {
-      const route = await fetchRoute(FOOT, fix, destination)
-      const walkSteps = stepsFromOsrm(route, 'walk', 'wlk')
+      const route = await fetchRoadRoute(toLit(fix), toLit(entrance), 'WALK')
+      const walkSteps = route.steps.map((s, i) => ({ ...s, index: i, phase: 'walk' as const }))
       const steps = [
-        ...walkSteps.map((s, i) => ({ ...s, index: i, phase: 'walk' as const })),
+        ...walkSteps,
         ...indoor.map((s, i) => ({ ...s, index: walkSteps.length + i })),
       ]
       return {
         ...result,
         outdoor: {
           ...result.outdoor,
-          provider: 'OSRM live recalculation',
+          provider: 'Google Routes map (walk paths)',
           distanceM: 0,
           distanceMiles: 0,
           durationMinutes: 0,
@@ -143,16 +71,16 @@ export async function rerouteFromLiveFix(
           steps: [],
           traffic: {
             ...result.outdoor.traffic,
-            note: 'Route recalculated from your live location (walking).',
+            note: 'Recalculated on Google pedestrian paths / sidewalks.',
             updatedAt: new Date().toISOString(),
           },
         },
         walk: {
-          provider: 'OSRM live recalculation',
-          distanceM: Math.round(route.distance),
-          distanceMiles: Math.round((route.distance / 1609.344) * 10) / 10,
-          durationMinutes: Math.round((route.duration / 60) * 10) / 10,
-          geometry: { type: 'LineString', coordinates: route.geometry.coordinates },
+          provider: 'Google Routes',
+          distanceM: route.distanceM,
+          distanceMiles: Math.round((route.distanceM / 1609.344) * 10) / 10,
+          durationMinutes: Math.round((route.durationSec / 60) * 10) / 10,
+          geometry: { type: 'LineString', coordinates: pathToGeoJson(route.path) },
           steps: walkSteps,
         },
         journey: {
@@ -162,35 +90,67 @@ export async function rerouteFromLiveFix(
           outdoorSteps: 0,
           walkSteps: walkSteps.length,
           steps,
-          summary: 'Recalculated walking route from your location.',
+          summary: 'Recalculated walking route on map pathways.',
         },
       }
     }
 
-    const route = await fetchRoute(DRIVING, fix, destination)
-    const driveSteps = stepsFromOsrm(route, 'drive', 'drv')
-    const walkSteps = result.journey.steps.filter((s) => s.phase === 'walk')
+    const driveTarget: LatLng =
+      plan.legs.find((l) => l.mode === 'DRIVE') != null && parking
+        ? parking
+        : entrance
+    const route = await fetchRoadRoute(toLit(fix), toLit(driveTarget), 'DRIVE')
+    const driveSteps = route.steps.map((s, i) => ({
+      ...s,
+      index: i,
+      phase: 'drive' as const,
+    })) as JourneyStep[]
+
+    let walkSteps = result.journey.steps.filter((s) => s.phase === 'walk')
+    if (parking && metersBetween(toLit(driveTarget), toLit(entrance)) > 25) {
+      try {
+        const foot = await fetchRoadRoute(toLit(parking), toLit(entrance), 'WALK')
+        walkSteps = foot.steps.map((s, i) => ({ ...s, index: i, phase: 'walk' as const }))
+      } catch {
+        /* keep previous walk steps */
+      }
+    }
+
     const steps = [
       ...driveSteps,
       ...walkSteps.map((s, i) => ({ ...s, index: driveSteps.length + i, phase: 'walk' as const })),
       ...indoor.map((s, i) => ({ ...s, index: driveSteps.length + walkSteps.length + i })),
     ]
+
     return {
       ...result,
       outdoor: {
         ...result.outdoor,
-        provider: 'OSRM live recalculation',
-        distanceM: Math.round(route.distance),
-        distanceMiles: Math.round((route.distance / 1609.344) * 10) / 10,
-        durationMinutes: Math.round((route.duration / 60) * 10) / 10,
-        geometry: { type: 'LineString', coordinates: route.geometry.coordinates },
+        provider: 'Google Routes map (roads)',
+        distanceM: route.distanceM,
+        distanceMiles: Math.round((route.distanceM / 1609.344) * 10) / 10,
+        durationMinutes: Math.round((route.durationSec / 60) * 10) / 10,
+        geometry: { type: 'LineString', coordinates: pathToGeoJson(route.path) },
         steps: driveSteps,
         traffic: {
           ...result.outdoor.traffic,
-          note: 'Route recalculated from your live location (driving).',
+          note: 'Recalculated on Google roads / driveways.',
           updatedAt: new Date().toISOString(),
         },
       },
+      walk: walkSteps.length
+        ? {
+            provider: 'Google Routes',
+            distanceM: walkSteps.reduce((n, s) => n + (s.distanceM || 0), 0),
+            distanceMiles: 0,
+            durationMinutes: 0,
+            geometry: {
+              type: 'LineString',
+              coordinates: walkSteps.flatMap((s) => s.geometry ?? []),
+            },
+            steps: walkSteps,
+          }
+        : result.walk,
       journey: {
         ...result.journey,
         totalSteps: steps.length,
@@ -198,7 +158,7 @@ export async function rerouteFromLiveFix(
         outdoorSteps: driveSteps.length,
         walkSteps: walkSteps.length,
         steps,
-        summary: 'Recalculated driving route from your location.',
+        summary: 'Recalculated driving route on map roads.',
       },
     }
   } catch {

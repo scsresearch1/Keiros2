@@ -1,6 +1,15 @@
 import { googleMapsApiKey, latLngLiteral } from './googleMaps'
+import type { JourneyStep } from './api'
 
 export type RouteTravelMode = 'DRIVE' | 'WALK'
+
+export type RoadRoute = {
+  path: google.maps.LatLngLiteral[]
+  distanceM: number
+  durationSec: number
+  mode: RouteTravelMode
+  steps: JourneyStep[]
+}
 
 function asLiteral(
   p: google.maps.LatLngLiteral | google.maps.LatLng | google.maps.LatLngAltitude | { lat: number | (() => number); lng: number | (() => number) },
@@ -26,31 +35,157 @@ function metersBetween(a: google.maps.LatLngLiteral, b: google.maps.LatLngLitera
   return 2 * R * Math.asin(Math.min(1, Math.sqrt(s)))
 }
 
-/** Ensure polyline starts at origin and ends at destination (exact unit / start pins). */
+/**
+ * Keep Google's road / pathway snap.
+ * Only nudge endpoints when already close — never invent long off-network
+ * diagonals across parcels (that looked like a "curved" shortcut vs a straight driveway).
+ */
 export function pinPathToEndpoints(
   path: google.maps.LatLngLiteral[],
   origin: google.maps.LatLngLiteral,
   destination: google.maps.LatLngLiteral,
-  snapMeters = 8,
+  snapMeters = 12,
+  maxConnectMeters = 28,
 ): google.maps.LatLngLiteral[] {
-  if (!path.length) return [origin, destination]
+  if (!path.length) return []
   const out = path.map((p) => ({ ...p }))
-  if (metersBetween(out[0], origin) > snapMeters) out.unshift(origin)
-  else out[0] = origin
-  if (metersBetween(out[out.length - 1], destination) > snapMeters) out.push(destination)
-  else out[out.length - 1] = destination
+
+  const startGap = metersBetween(out[0], origin)
+  if (startGap <= snapMeters) out[0] = origin
+  else if (startGap <= maxConnectMeters) out.unshift(origin)
+  // else: leave first point on the mapped network
+
+  const end = out[out.length - 1]
+  const endGap = metersBetween(end, destination)
+  if (endGap <= snapMeters) out[out.length - 1] = destination
+  else if (endGap <= maxConnectMeters) out.push(destination)
+  // else: leave last point on the mapped network (no fake chord to the pin)
+
   return out
 }
 
+/** How far the routed path ends from the requested target (meters). */
+export function pathEndGapM(
+  path: google.maps.LatLngLiteral[],
+  target: google.maps.LatLngLiteral,
+): number {
+  if (!path.length) return Number.POSITIVE_INFINITY
+  return metersBetween(path[path.length - 1], target)
+}
+
+function parseDurationSec(value: unknown): number {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    // JS library may return millis
+    return value > 10_000 ? Math.round(value / 1000) : Math.round(value)
+  }
+  if (typeof value === 'string') {
+    const m = value.match(/^(\d+(?:\.\d+)?)s$/i)
+    if (m) return Math.round(Number(m[1]))
+    const n = Number(value)
+    if (Number.isFinite(n)) return Math.round(n)
+  }
+  return 0
+}
+
+function phaseFor(mode: RouteTravelMode): 'drive' | 'walk' {
+  return mode === 'WALK' ? 'walk' : 'drive'
+}
+
+function fallbackSteps(
+  path: google.maps.LatLngLiteral[],
+  mode: RouteTravelMode,
+  distanceM: number,
+  durationSec: number,
+  idPrefix: string,
+): JourneyStep[] {
+  const start = path[0] ?? { lat: 0, lng: 0 }
+  const end = path[path.length - 1] ?? start
+  const phase = phaseFor(mode)
+  return [
+    {
+      id: `${idPrefix}-0`,
+      phase,
+      index: 0,
+      instruction: mode === 'WALK' ? 'Walk along the path' : 'Drive along the route',
+      latitude: start.lat,
+      longitude: start.lng,
+      distanceM,
+      durationSec,
+      geometry: path.map((p) => [p.lng, p.lat] as [number, number]),
+    },
+    {
+      id: `${idPrefix}-arrive`,
+      phase,
+      index: 1,
+      instruction:
+        mode === 'WALK'
+          ? 'Arrive at building entrance — continue inside'
+          : 'Arrive at parking — leave the car and walk',
+      latitude: end.lat,
+      longitude: end.lng,
+      distanceM: 0,
+      durationSec: 0,
+      geometry: [[end.lng, end.lat]],
+    },
+  ]
+}
+
+function stepsFromGoogleRest(
+  steps: Array<{
+    navigationInstruction?: { maneuver?: string; instructions?: string }
+    distanceMeters?: number
+    staticDuration?: string
+    startLocation?: { latLng?: { latitude?: number; longitude?: number } }
+    polyline?: { encodedPolyline?: string }
+  }>,
+  mode: RouteTravelMode,
+  idPrefix: string,
+): JourneyStep[] {
+  const phase = phaseFor(mode)
+  return steps.map((step, index) => {
+    const lat = Number(step.startLocation?.latLng?.latitude)
+    const lng = Number(step.startLocation?.latLng?.longitude)
+    const instr =
+      step.navigationInstruction?.instructions?.trim() ||
+      (mode === 'WALK' ? 'Continue walking' : 'Continue driving')
+    const poly = step.polyline?.encodedPolyline
+      ? decodePolyline(step.polyline.encodedPolyline).map((p) => [p.lng, p.lat] as [number, number])
+      : Number.isFinite(lat) && Number.isFinite(lng)
+        ? [[lng, lat] as [number, number]]
+        : []
+    return {
+      id: `${idPrefix}-${index}`,
+      phase,
+      index,
+      title: `${mode === 'WALK' ? 'Walk' : 'Drive'} · Step ${index + 1}`,
+      instruction: instr,
+      roadName: null,
+      distanceM: Math.round(step.distanceMeters ?? 0),
+      durationSec: parseDurationSec(step.staticDuration),
+      latitude: Number.isFinite(lat) ? lat : 0,
+      longitude: Number.isFinite(lng) ? lng : 0,
+      geometry: poly,
+    }
+  })
+}
+
 /**
- * Road-snapped path via the new Routes library (replaces legacy DirectionsService).
- * Requires Routes API enabled on the Google Cloud key.
+ * Road / sidewalk path via the Routes library (replaces legacy DirectionsService).
  */
 export async function computeRoadPath(
   origin: google.maps.LatLngLiteral,
   destination: google.maps.LatLngLiteral,
   mode: RouteTravelMode,
 ): Promise<google.maps.LatLngLiteral[]> {
+  const route = await computeRoadRouteJs(origin, destination, mode)
+  return route.path
+}
+
+async function computeRoadRouteJs(
+  origin: google.maps.LatLngLiteral,
+  destination: google.maps.LatLngLiteral,
+  mode: RouteTravelMode,
+): Promise<RoadRoute> {
   const maps = await google.maps.importLibrary('routes')
   const RouteCtor = (maps as google.maps.RoutesLibrary).Route
   if (!RouteCtor?.computeRoutes) {
@@ -58,7 +193,6 @@ export async function computeRoadPath(
   }
 
   const request: google.maps.routes.ComputeRoutesRequest = {
-    // Explicit lat/lng literals — exact coordinates from navigate result
     origin: { lat: origin.lat, lng: origin.lng },
     destination: { lat: destination.lat, lng: destination.lng },
     travelMode: mode === 'WALK' ? 'WALKING' : 'DRIVING',
@@ -70,26 +204,52 @@ export async function computeRoadPath(
   }
 
   const { routes } = await RouteCtor.computeRoutes(request)
-  const raw = routes?.[0]?.path
+  const first = routes?.[0]
+  const raw = first?.path
   if (!raw?.length) throw new Error('No route path returned')
 
-  const path = raw.map((p) => asLiteral(p))
-  return pinPathToEndpoints(path, origin, destination)
+  const path = pinPathToEndpoints(
+    raw.map((p) => asLiteral(p)),
+    origin,
+    destination,
+  )
+  const distanceM = Math.round(
+    Number((first as { distanceMeters?: number }).distanceMeters) ||
+      path.reduce((sum, p, i) => (i === 0 ? 0 : sum + metersBetween(path[i - 1], p)), 0),
+  )
+  const durationSec = parseDurationSec((first as { durationMillis?: number }).durationMillis)
+  return {
+    path,
+    distanceM,
+    durationSec: durationSec || Math.round(distanceM / (mode === 'WALK' ? 1.35 : 11)),
+    mode,
+    steps: fallbackSteps(path, mode, distanceM, durationSec, mode === 'WALK' ? 'wlk' : 'drv'),
+  }
 }
 
-/** REST fallback if JS Routes library is blocked. */
+/** REST fallback — includes turn-by-turn steps when available. */
 export async function computeRoadPathRest(
   origin: google.maps.LatLngLiteral,
   destination: google.maps.LatLngLiteral,
   mode: RouteTravelMode,
 ): Promise<google.maps.LatLngLiteral[]> {
+  const route = await computeRoadRouteRest(origin, destination, mode)
+  return route.path
+}
+
+async function computeRoadRouteRest(
+  origin: google.maps.LatLngLiteral,
+  destination: google.maps.LatLngLiteral,
+  mode: RouteTravelMode,
+): Promise<RoadRoute> {
   const key = googleMapsApiKey()
   const res = await fetch('https://routes.googleapis.com/directions/v2:computeRoutes', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'X-Goog-Api-Key': key,
-      'X-Goog-FieldMask': 'routes.polyline.encodedPolyline,routes.distanceMeters,routes.duration',
+      'X-Goog-FieldMask':
+        'routes.polyline.encodedPolyline,routes.distanceMeters,routes.duration,routes.legs.steps.navigationInstruction,routes.legs.steps.distanceMeters,routes.legs.steps.staticDuration,routes.legs.steps.startLocation,routes.legs.steps.polyline',
     },
     body: JSON.stringify({
       origin: { location: { latLng: { latitude: origin.lat, longitude: origin.lng } } },
@@ -99,6 +259,8 @@ export async function computeRoadPathRest(
       travelMode: mode === 'WALK' ? 'WALK' : 'DRIVE',
       routingPreference: mode === 'DRIVE' ? 'TRAFFIC_AWARE' : undefined,
       polylineQuality: 'HIGH_QUALITY',
+      languageCode: 'en-US',
+      units: 'IMPERIAL',
     }),
   })
   if (!res.ok) {
@@ -106,11 +268,40 @@ export async function computeRoadPathRest(
     throw new Error(`Routes API ${res.status}: ${text.slice(0, 180)}`)
   }
   const json = (await res.json()) as {
-    routes?: { polyline?: { encodedPolyline?: string } }[]
+    routes?: {
+      polyline?: { encodedPolyline?: string }
+      distanceMeters?: number
+      duration?: string
+      legs?: {
+        steps?: Array<{
+          navigationInstruction?: { maneuver?: string; instructions?: string }
+          distanceMeters?: number
+          staticDuration?: string
+          startLocation?: { latLng?: { latitude?: number; longitude?: number } }
+          polyline?: { encodedPolyline?: string }
+        }>
+      }[]
+    }[]
   }
-  const encoded = json.routes?.[0]?.polyline?.encodedPolyline
+  const route = json.routes?.[0]
+  const encoded = route?.polyline?.encodedPolyline
   if (!encoded) throw new Error('Routes API returned no polyline')
-  return pinPathToEndpoints(decodePolyline(encoded), origin, destination)
+  const path = pinPathToEndpoints(decodePolyline(encoded), origin, destination)
+  const distanceM = Math.round(route?.distanceMeters ?? 0)
+  const durationSec = parseDurationSec(route?.duration)
+  const rawSteps = route?.legs?.[0]?.steps ?? []
+  const steps = rawSteps.length
+    ? stepsFromGoogleRest(rawSteps, mode, mode === 'WALK' ? 'wlk' : 'drv')
+    : fallbackSteps(path, mode, distanceM, durationSec, mode === 'WALK' ? 'wlk' : 'drv')
+  return {
+    path,
+    distanceM: distanceM || Math.round(
+      path.reduce((sum, p, i) => (i === 0 ? 0 : sum + metersBetween(path[i - 1], p)), 0),
+    ),
+    durationSec: durationSec || Math.round(distanceM / (mode === 'WALK' ? 1.35 : 11)),
+    mode,
+    steps,
+  }
 }
 
 function decodePolyline(encoded: string): google.maps.LatLngLiteral[] {
@@ -149,17 +340,28 @@ export async function fetchRoadPath(
   destination: google.maps.LatLngLiteral,
   mode: RouteTravelMode,
 ): Promise<google.maps.LatLngLiteral[]> {
+  const route = await fetchRoadRoute(origin, destination, mode)
+  return route.path
+}
+
+/** Full Google road/sidewalk route (path + distance + turn steps). */
+export async function fetchRoadRoute(
+  origin: google.maps.LatLngLiteral,
+  destination: google.maps.LatLngLiteral,
+  mode: RouteTravelMode,
+): Promise<RoadRoute> {
   if (!Number.isFinite(origin.lat) || !Number.isFinite(origin.lng)) {
     throw new Error('Start coordinates are missing')
   }
   if (!Number.isFinite(destination.lat) || !Number.isFinite(destination.lng)) {
     throw new Error('Destination coordinates are missing')
   }
+  // Prefer REST first — richer turn-by-turn for navigation guidance.
   try {
-    return await computeRoadPath(origin, destination, mode)
+    return await computeRoadRouteRest(origin, destination, mode)
   } catch (first) {
     try {
-      return await computeRoadPathRest(origin, destination, mode)
+      return await computeRoadRouteJs(origin, destination, mode)
     } catch (second) {
       const a = first instanceof Error ? first.message : String(first)
       const b = second instanceof Error ? second.message : String(second)

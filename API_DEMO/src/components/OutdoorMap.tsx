@@ -9,9 +9,20 @@ import {
   mapOptions,
   setAdvancedMarkerSvg,
 } from '../googleMaps'
-import { fetchRoadPath, pinPathToEndpoints } from '../googleRoute'
+import { planDrivePlusWalk, planWalkOnly } from '../driveWalkHandoff'
+import { extractSiteWays, type SiteWaysExtract } from '../extractSiteWays'
+import { pinPathToEndpoints } from '../googleRoute'
 import type { LiveFix } from '../liveNavigation'
 import { bearingDeg } from '../liveNavigation'
+import {
+  DRIVE_COLOR,
+  WALK_COLOR,
+  resolveOutdoorLegs,
+  type OutdoorLeg,
+} from '../outdoorLegs'
+
+const DRIVEWAY_LAYER = '#64748b'
+const SIDEWALK_LAYER = '#14b8a6'
 
 type Props = {
   result: NavigateResult
@@ -38,9 +49,7 @@ function trafficColor(level?: string | null) {
   return '#94a3b8'
 }
 
-const WALK_COLOR = '#38bdf8'
 const LIVE_BLUE = '#1a73e8'
-const ROUTE_BLUE = '#1a73e8'
 
 function readCollapsed(key: string) {
   try {
@@ -101,22 +110,16 @@ export function OutdoorMap({
 
   const [mapError, setMapError] = useState('')
   const [mapReady, setMapReady] = useState(false)
+  const [siteNet, setSiteNet] = useState<{ driveways: number; sidewalks: number; routedOn: string } | null>(
+    null,
+  )
   const [collapsed, setCollapsed] = useState(() => ({
     legend: readCollapsed('legend'),
     weather: readCollapsed('weather'),
     traffic: readCollapsed('traffic'),
   }))
 
-  const isPointToPoint =
-    result.parking?.mode === 'point-to-point' ||
-    result.outdoor.arrivalMode === 'point-to-point' ||
-    result.outdoor.arrivalMode === 'walk-from-origin' ||
-    result.outdoor.arrivalMode === 'at-entrance'
-
-  const driveSteps = useMemo(
-    () => result.journey.steps.filter((s) => s.phase === 'drive' || s.phase === 'outdoor'),
-    [result],
-  )
+  const outdoorPlan = useMemo(() => resolveOutdoorLegs(result), [result])
 
   function clearOverlays() {
     for (const item of overlaysRef.current) {
@@ -189,7 +192,7 @@ export function OutdoorMap({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Start + Destination only; road path via Routes API (not legacy Directions).
+  // Multi-leg Google Routes: drive on roads, walk on sidewalks/paths.
   useEffect(() => {
     const map = mapRef.current
     if (!map || !mapReady) return
@@ -198,7 +201,6 @@ export function OutdoorMap({
     clearOverlays()
 
     const bounds = new google.maps.LatLngBounds()
-    // Exact navigate coordinates (unit pin for destination)
     const origin = latLngLiteral(
       Number(result.origin.latitude),
       Number(result.origin.longitude),
@@ -207,7 +209,12 @@ export function OutdoorMap({
       Number(result.destination.latitude ?? result.selection?.unit?.latitude),
       Number(result.destination.longitude ?? result.selection?.unit?.longitude),
     )
-    if (!Number.isFinite(origin.lat) || !Number.isFinite(origin.lng) || !Number.isFinite(destination.lat) || !Number.isFinite(destination.lng)) {
+    if (
+      !Number.isFinite(origin.lat) ||
+      !Number.isFinite(origin.lng) ||
+      !Number.isFinite(destination.lat) ||
+      !Number.isFinite(destination.lng)
+    ) {
       setMapError('Start or destination coordinates are missing from the navigate response.')
       return
     }
@@ -220,7 +227,7 @@ export function OutdoorMap({
     })
 
     function pinPopupHtml(opts: {
-      kind: 'Start' | 'Destination'
+      kind: string
       name: string
       address?: string | null
       coords: google.maps.LatLngLiteral
@@ -229,7 +236,7 @@ export function OutdoorMap({
         ? escapeHtml(opts.address)
         : '<em style="opacity:.75">No address in backend data</em>'
       return `<div style="max-width:260px;font:13px/1.35 system-ui,sans-serif;color:#0f172a">
-        <div style="font-weight:800;margin-bottom:4px">${opts.kind}</div>
+        <div style="font-weight:800;margin-bottom:4px">${escapeHtml(opts.kind)}</div>
         <div style="margin-bottom:6px">${escapeHtml(opts.name)}</div>
         <div style="margin-bottom:6px">${addr}</div>
         <div style="opacity:.65;font-size:11px">${opts.coords.lat.toFixed(5)}, ${opts.coords.lng.toFixed(5)}</div>
@@ -238,7 +245,7 @@ export function OutdoorMap({
 
     function openPinInfo(
       marker: AdvMarker,
-      kind: 'Start' | 'Destination',
+      kind: string,
       name: string,
       backendAddress: string | null | undefined,
       coords: google.maps.LatLngLiteral,
@@ -263,19 +270,12 @@ export function OutdoorMap({
         svg: pinSvg('#0ea5e9', 'S'),
       }),
     )
-    // Address from ERP/Firestore only (complex address for the destination property)
     const startAddress =
       result.origin.address ||
       result.selection?.complex?.address ||
       null
     startMarker.addListener('gmp-click', () => {
-      openPinInfo(
-        startMarker,
-        'Start',
-        result.origin.label || 'Start',
-        startAddress,
-        origin,
-      )
+      openPinInfo(startMarker, 'Start', result.origin.label || 'Start', startAddress, origin)
     })
     bounds.extend(origin)
 
@@ -283,7 +283,6 @@ export function OutdoorMap({
       result.destination.label ||
       result.selection?.unit?.name ||
       'Destination'
-    // Address from unit.physicalAddress / complex.address in navigate response
     const destAddress =
       result.destination.address ||
       result.selection?.unit?.physicalAddress ||
@@ -303,87 +302,240 @@ export function OutdoorMap({
     })
     bounds.extend(destination)
 
+    for (const wp of outdoorPlan.waypoints) {
+      const letter = wp.kind === 'parking' ? 'P' : 'E'
+      const kindLabel = wp.kind === 'parking' ? 'Parking' : 'Entrance'
+      const marker = track(
+        createAdvancedMarker({
+          map,
+          position: wp.position,
+          title: `${kindLabel} · ${wp.label}`,
+          zIndex: wp.kind === 'parking' ? 42 : 43,
+          svg: pinSvg(wp.fill, letter),
+        }),
+      )
+      marker.addListener('gmp-click', () => {
+        openPinInfo(marker, kindLabel, wp.label, null, wp.position)
+      })
+      bounds.extend(wp.position)
+    }
+
     const trafficLayer = new google.maps.TrafficLayer()
     trafficLayer.setMap(map)
     track(trafficLayer)
 
-    const outdoorPath = geoJsonToLatLngs(result.outdoor?.geometry?.coordinates)
-    const walkPath = geoJsonToLatLngs(result.walk?.geometry?.coordinates)
-    const outdoorIsReal =
-      outdoorPath.length > 1 &&
-      !(
-        outdoorPath.length <= 2 &&
-        outdoorPath.every(
-          (p) =>
-            Math.abs(p.lng - result.origin.longitude) < 1e-7 &&
-            Math.abs(p.lat - result.origin.latitude) < 1e-7,
-        )
-      )
-
-    function drawPath(path: google.maps.LatLngLiteral[], color: string) {
-      const pinned = pinPathToEndpoints(path, origin, destination)
+    function drawPath(
+      path: google.maps.LatLngLiteral[],
+      from: google.maps.LatLngLiteral,
+      to: google.maps.LatLngLiteral,
+      color: string,
+      zIndex: number,
+      dashed = false,
+    ) {
+      const pinned = pinPathToEndpoints(path, from, to)
       if (pinned.length < 2) return
       track(
         new google.maps.Polyline({
           map,
           path: pinned,
           strokeColor: color,
-          strokeOpacity: 0.95,
+          strokeOpacity: dashed ? 0 : 0.95,
           strokeWeight: 6,
-          zIndex: 20,
+          zIndex,
+          geodesic: false,
+          ...(dashed
+            ? {
+                icons: [
+                  {
+                    icon: {
+                      path: 'M 0,-1 0,1',
+                      strokeOpacity: 0.95,
+                      strokeColor: color,
+                      scale: 3,
+                    },
+                    offset: '0',
+                    repeat: '14px',
+                  },
+                ],
+              }
+            : {}),
         }),
       )
       pinned.forEach((p) => bounds.extend(p))
     }
 
-    function drawServerRoadFallback() {
-      if (outdoorIsReal) {
-        drawPath(outdoorPath, ROUTE_BLUE)
-        return
+    function drawExtractedNetworks(extract: SiteWaysExtract) {
+      for (const way of extract.driveways) {
+        const path = way.coordinates.map(([lng, lat]) => ({ lat, lng }))
+        if (path.length < 2) continue
+        track(
+          new google.maps.Polyline({
+            map,
+            path,
+            strokeColor: DRIVEWAY_LAYER,
+            strokeOpacity: 0.55,
+            strokeWeight: 4,
+            zIndex: 8,
+            geodesic: false,
+          }),
+        )
       }
-      if (walkPath.length > 1) {
-        drawPath(walkPath, WALK_COLOR)
-        return
+      for (const way of extract.sidewalks) {
+        const path = way.coordinates.map(([lng, lat]) => ({ lat, lng }))
+        if (path.length < 2) continue
+        track(
+          new google.maps.Polyline({
+            map,
+            path,
+            strokeColor: SIDEWALK_LAYER,
+            strokeOpacity: 0.75,
+            strokeWeight: 3,
+            zIndex: 9,
+            geodesic: false,
+          }),
+        )
       }
-      const merged: google.maps.LatLngLiteral[] = []
-      for (const step of driveSteps) {
-        const path = geoJsonToLatLngs(step.geometry)
-        if (path.length > 1) merged.push(...path)
-      }
-      if (merged.length > 1) drawPath(merged, ROUTE_BLUE)
-      else drawPath([origin, destination], ROUTE_BLUE)
     }
 
-    const preferWalk =
-      isPointToPoint &&
-      (driveSteps.length === 0 ||
-        (result.outdoor.distanceM ?? 0) <= 0 ||
-        /foot|walk|on-site/i.test(
-          `${result.outdoor.provider || ''} ${result.outdoor.profile || ''}`,
-        ))
-
-    void (async () => {
-      try {
-        const path = await fetchRoadPath(origin, destination, preferWalk ? 'WALK' : 'DRIVE')
-        if (session !== routeSessionRef.current) return
-        drawPath(path, preferWalk ? WALK_COLOR : ROUTE_BLUE)
-        setMapError('')
-      } catch (err) {
-        if (session !== routeSessionRef.current) return
-        drawServerRoadFallback()
-        const msg = err instanceof Error ? err.message : String(err)
-        if (/REQUEST_DENIED|PERMISSION|API|403|Routes/i.test(msg)) {
-          setMapError(
-            'Enable Routes API on your Google Cloud key (APIs & Services → enable “Routes API”), then hard-refresh. Showing server road path for now.',
-          )
+    function serverFallbackForLeg(leg: OutdoorLeg) {
+      if (leg.mode === 'DRIVE') {
+        const outdoorPath = geoJsonToLatLngs(result.outdoor?.geometry?.coordinates)
+        if (outdoorPath.length > 1) {
+          drawPath(outdoorPath, leg.from, leg.to, leg.color, 20, false)
+          return
         }
       }
-      if (session !== routeSessionRef.current) return
-      if (!bounds.isEmpty()) {
-        map.fitBounds(bounds, { top: 48, right: 280, bottom: 48, left: 48 })
+      const walkPath = geoJsonToLatLngs(result.walk?.geometry?.coordinates)
+      if (walkPath.length > 1) {
+        drawPath(walkPath, leg.from, leg.to, WALK_COLOR, 22, true)
+        return
       }
+    }
+
+    function fitRouteView() {
+      const gmap = mapRef.current
+      if (!gmap || bounds.isEmpty()) return
+      gmap.fitBounds(bounds, { top: 56, right: 280, bottom: 56, left: 56 })
+      google.maps.event.addListenerOnce(gmap, 'idle', () => {
+        if (session !== routeSessionRef.current) return
+        const z = gmap.getZoom() ?? 14
+        // Campus / sidewalk detail needs high zoom; driveways show ~17–19.
+        if (outdoorPlan.toEntranceM <= 2500 && z < 17) gmap.setZoom(17)
+        if (outdoorPlan.toEntranceM <= 600 && z < 18) gmap.setZoom(18)
+      })
+    }
+
+    void (async () => {
+      const seedPoints = [
+        origin,
+        destination,
+        ...outdoorPlan.waypoints.map((w) => w.position),
+        ...outdoorPlan.legs.flatMap((l) => [l.from, l.to]),
+      ]
+
+      let extract: SiteWaysExtract | null = null
+      try {
+        extract = await extractSiteWays(seedPoints)
+        if (session !== routeSessionRef.current) return
+        drawExtractedNetworks(extract)
+        setSiteNet({
+          driveways: extract.driveways.length,
+          sidewalks: extract.sidewalks.length,
+          routedOn: 'extracting…',
+        })
+      } catch {
+        if (session !== routeSessionRef.current) return
+        setSiteNet({ driveways: 0, sidewalks: 0, routedOn: 'OSM extract unavailable' })
+      }
+
+      if (!outdoorPlan.legs.length) {
+        if (session !== routeSessionRef.current) return
+        setMapError('')
+        if (extract) {
+          setSiteNet({
+            driveways: extract.driveways.length,
+            sidewalks: extract.sidewalks.length,
+            routedOn: 'networks only',
+          })
+        }
+        fitRouteView()
+        return
+      }
+
+      const errors: string[] = []
+      let driveWalkCount = 0
+      const sources = new Set<string>()
+
+      await Promise.all(
+        outdoorPlan.legs.map(async (leg, index) => {
+          try {
+            // Google Maps pattern: DRIVE legs become Drive + Walk when the car can't reach the pin.
+            const plan =
+              leg.mode === 'DRIVE'
+                ? await planDrivePlusWalk(leg.from, leg.to, extract)
+                : await planWalkOnly(leg.from, leg.to, extract)
+
+            if (session !== routeSessionRef.current) return
+            if (!plan.segments.length) {
+              serverFallbackForLeg(leg)
+              return
+            }
+
+            if (plan.label === 'drive+walk') driveWalkCount += 1
+            for (const seg of plan.segments) {
+              sources.add(seg.source)
+              drawPath(
+                seg.path,
+                seg.path[0],
+                seg.path[seg.path.length - 1],
+                seg.mode === 'WALK' ? WALK_COLOR : DRIVE_COLOR,
+                seg.mode === 'WALK' ? 22 : 20 + index,
+                seg.dashed,
+              )
+            }
+
+            // Mark the leave-vehicle / start-walk handoff (like Google’s mode switch).
+            if (plan.handoff) {
+              track(
+                createAdvancedMarker({
+                  map,
+                  position: plan.handoff,
+                  title: 'Leave vehicle — walk from here',
+                  zIndex: 50,
+                  svg: pinSvg('#f59e0b', 'W'),
+                }),
+              )
+              bounds.extend(plan.handoff)
+            }
+          } catch (err) {
+            if (session !== routeSessionRef.current) return
+            serverFallbackForLeg(leg)
+            errors.push(err instanceof Error ? err.message : String(err))
+          }
+        }),
+      )
+
+      if (session !== routeSessionRef.current) return
+      if (extract) {
+        const src = [...sources].join('+') || 'none'
+        setSiteNet({
+          driveways: extract.driveways.length,
+          sidewalks: extract.sidewalks.length,
+          routedOn: driveWalkCount
+            ? `Drive + Walk ×${driveWalkCount} · ${src}`
+            : `routed · ${src}`,
+        })
+      }
+      if (errors.some((m) => /REQUEST_DENIED|PERMISSION|API|403|Routes/i.test(m))) {
+        setMapError(
+          'Enable Routes API on your Google Cloud key (APIs & Services → enable “Routes API”), then hard-refresh. Showing fallback path for now.',
+        )
+      } else {
+        setMapError('')
+      }
+      fitRouteView()
     })()
-  }, [mapReady, result, isPointToPoint, driveSteps])
+  }, [mapReady, result, outdoorPlan])
 
   // Optional camera nudge for journey steps (no extra yellow waypoint markers)
   useEffect(() => {
@@ -480,11 +632,25 @@ export function OutdoorMap({
               <span className="demo-leaflet-card__chev" aria-hidden="true" />
             </button>
             <div className="demo-leaflet-card__body">
-              <span style={{ color: ROUTE_BLUE }}>━━</span> Road route (start → destination)
+              <span style={{ color: DRIVEWAY_LAYER }}>━━</span> Extracted driveways (OSM)
+              <br />
+              <span style={{ color: SIDEWALK_LAYER }}>···</span> Extracted sidewalks (OSM)
+              <br />
+              <span style={{ color: DRIVE_COLOR }}>━━</span> Drive (to nearest road point)
+              <br />
+              <span style={{ color: WALK_COLOR }}>···</span> Walk last mile (dashed)
               <br />
               <span style={{ color: '#0ea5e9' }}>●</span> Start ·{' '}
-              <span style={{ color: '#ea4335' }}>●</span> Destination ·{' '}
-              <span style={{ color: LIVE_BLUE }}>●</span> You (live)
+              <span style={{ color: '#a855f7' }}>●</span> Parking ·{' '}
+              <span style={{ color: '#22c55e' }}>●</span> Entrance ·{' '}
+              <span style={{ color: '#ea4335' }}>●</span> Unit ·{' '}
+              <span style={{ color: LIVE_BLUE }}>●</span> You
+              <br />
+              <span className="muted">
+                {siteNet
+                  ? `${siteNet.driveways} driveways · ${siteNet.sidewalks} sidewalks · ${siteNet.routedOn}`
+                  : outdoorPlan.policy.replaceAll('-', ' ')}
+              </span>
             </div>
           </div>
 

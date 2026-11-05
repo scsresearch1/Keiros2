@@ -558,8 +558,13 @@ export async function attachLotToResult(result: NavigateResult): Promise<Navigat
   }
 }
 
-const AT_ENTRANCE_M = 100
-const WALK_FROM_HERE_M = 700
+/** Already at the door — GPS noise only (not a crow-fly walk-vs-drive rule). */
+const AT_ENTRANCE_M = 40
+/**
+ * Client rebuild still uses a walk band when via-parking would send you away and back.
+ * Map polylines always come from Google Routes road/path networks in OutdoorMap.
+ */
+const WALK_FROM_HERE_M = 900
 
 /** Keep walk and indoor legs. Replace the drive when the API still used the simulated start. */
 export async function withLiveDrive(
