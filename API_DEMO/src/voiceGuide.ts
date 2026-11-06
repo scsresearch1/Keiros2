@@ -291,10 +291,23 @@ function shortenForVoice(instruction: string) {
     [/^Continue walking.*$/i, 'Continue straight'],
     [/^Continue driving.*$/i, 'Continue straight'],
     [/^You're already at the entrance.*$/i, 'You have arrived'],
+    // Indoor — keep ultra short
+    [/^Enter at\s+(.+?)(?:\s+and start.*)?$/i, 'Enter $1'],
     [/^Enter building at\s+(.+?)(?:\.|$)/i, 'Enter $1'],
-    [/^Take vertical access to\s+([^,]+).*$/i, 'Take stairs or elevator to $1'],
-    [/^Go to\s+/i, 'Go to '],
+    [/^Take the stairs to\s+(.+)$/i, 'Stairs to $1'],
+    [/^Take the elevator to\s+(.+)$/i, 'Elevator to $1'],
+    [/^Take vertical access to\s+([^,]+).*$/i, 'Stairs to $1'],
+    [/^Go to the stairs.*?(?:for|to)\s+(.+)$/i, 'Stairs to $1'],
+    [/^Go to the elevator.*?(?:for|to)\s+(.+)$/i, 'Elevator to $1'],
+    [/^Turn left and arrive at\s+/i, 'Arrive at '],
+    [/^Turn right and arrive at\s+/i, 'Arrive at '],
     [/^Arrive at\s+/i, 'Arrive at '],
+    [/^Continue to\s+/i, 'Continue to '],
+    [/^Turn left toward\s+/i, 'Turn left to '],
+    [/^Turn right toward\s+/i, 'Turn right to '],
+    [/^Bear left toward\s+/i, 'Bear left to '],
+    [/^Bear right toward\s+/i, 'Bear right to '],
+    [/^Go to\s+/i, 'Go to '],
   ]
   for (const [pattern, replacement] of swaps) {
     if (pattern.test(text)) {
@@ -310,11 +323,32 @@ function shortenForVoice(instruction: string) {
     .replace(/[.\s]+$/g, '')
     .trim()
 
+  // Drop parenthetical meters / floor tags voice doesn't need.
+  text = text
+    .replace(/\s*\(\d+\s*m\)/gi, '')
+    .replace(/\s*·\s*up\b/gi, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim()
+
   // Hard cap so TTS stays short (~Google cue length).
-  if (text.length > 72) {
-    text = text.slice(0, 72).replace(/\s+\S*$/, '').trim()
+  if (text.length > 48) {
+    text = text.slice(0, 48).replace(/\s+\S*$/, '').trim()
   }
   return text
+}
+
+/** Weak indoor/outdoor GPS — speak at most once per cooldown. */
+let lastWeakGpsAt = 0
+export function speakWeakGpsAlert(accuracyM: number, opts?: { force?: boolean }) {
+  if (!Number.isFinite(accuracyM) || accuracyM < 25) return
+  const now = Date.now()
+  if (!opts?.force && now - lastWeakGpsAt < 45000) return
+  lastWeakGpsAt = now
+  const meters = Math.round(accuracyM)
+  speakDirection(
+    meters >= 80 ? 'GPS signal is weak' : `GPS accuracy about ${meters} meters`,
+    opts,
+  )
 }
 
 function capitalize(text: string) {

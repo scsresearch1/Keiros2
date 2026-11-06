@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as RE } from 'react'
 import type { NavigateResult } from '../api'
+import type { LiveFix } from '../liveNavigation'
 
 type Props = {
   map3d: NavigateResult['map3d']
   activeStep: number
   instruction?: string
   complexName?: string
+  liveFix?: LiveFix | null
 }
 
 type Pt = { x: number; y: number }
@@ -48,12 +50,15 @@ function project(
   return { x: ox + rx * scale, y: oy - pz * scale + py * scale * 0.1 }
 }
 
-export function Indoor3D({ map3d, activeStep, instruction, complexName }: Props) {
+export function Indoor3D({ map3d, activeStep, instruction, complexName, liveFix = null }: Props) {
   const [cam, setCam] = useState<Cam>(DEFAULT)
   const drag = useRef<{ x: number; y: number; yaw: number; pitch: number } | null>(null)
   const svgRef = useRef<SVGSVGElement | null>(null)
 
-  const model = useMemo(() => buildModel(map3d, activeStep), [map3d, activeStep])
+  const model = useMemo(
+    () => buildModel(map3d, activeStep, liveFix),
+    [map3d, activeStep, liveFix?.latitude, liveFix?.longitude, liveFix?.accuracy],
+  )
   const hasModel = Boolean(model)
 
   // Non-passive wheel listener — React onWheel is passive and can't preventDefault.
@@ -246,6 +251,32 @@ export function Indoor3D({ map3d, activeStep, instruction, complexName }: Props)
           filter="url(#orion-glow)"
         />
 
+        {/* Live phone GPS on the active floor plane */}
+        {liveFix && model.liveXY ? (
+          (() => {
+            const c = p(model.liveXY.x, model.liveXY.y, activeZ + 10)
+            const weak = liveFix.accuracy >= 25
+            return (
+              <g>
+                <circle
+                  cx={c.x}
+                  cy={c.y}
+                  r={weak ? 18 : 14}
+                  fill={weak ? 'rgba(249,115,22,0.25)' : 'rgba(26,115,232,0.28)'}
+                />
+                <circle
+                  cx={c.x}
+                  cy={c.y}
+                  r={8}
+                  fill={weak ? '#ea580c' : '#1a73e8'}
+                  stroke="#fff"
+                  strokeWidth={2}
+                />
+              </g>
+            )
+          })()
+        ) : null}
+
         {/* Waypoints */}
         {model.waypoints.map((wp) => {
           const c = p(wp.x, wp.y, wp.z + 6)
@@ -319,7 +350,11 @@ export function Indoor3D({ map3d, activeStep, instruction, complexName }: Props)
   )
 }
 
-function buildModel(map3d: NavigateResult['map3d'], activeStep: number) {
+function buildModel(
+  map3d: NavigateResult['map3d'],
+  activeStep: number,
+  liveFix?: LiveFix | null,
+) {
   const locs = map3d.locations
   if (!locs.length && !map3d.routeStops.length) return null
 
@@ -337,6 +372,10 @@ function buildModel(map3d: NavigateResult['map3d'], activeStep: number) {
     x: ((lng - minLng) / spanLng) * (HALF * 1.5) - HALF * 0.75,
     y: ((maxLat - lat) / spanLat) * (HALF * 1.5) - HALF * 0.75,
   })
+  const liveXY =
+    liveFix && Number.isFinite(liveFix.latitude) && Number.isFinite(liveFix.longitude)
+      ? toXY(liveFix.latitude, liveFix.longitude)
+      : null
 
   const floors = [...map3d.floors].sort((a, b) => a.level - b.level)
   const floorZ = new Map(floors.map((floor, index) => [floor.id, index * FLOOR_GAP]))
@@ -402,6 +441,7 @@ function buildModel(map3d: NavigateResult['map3d'], activeStep: number) {
     floorLabel: floors.find((floor) => floor.id === activeFloorId)?.label || 'Floor',
     totalFloors: declaredFloors,
     mappedFloors: mappedFloorIds.size || floors.length,
+    liveXY,
     cx: 0,
     cy: 0,
     cz: ((floors.length - 1) * FLOOR_GAP) / 2,

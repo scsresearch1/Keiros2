@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as RE } from 'react'
 import type { NavigateResult } from '../api'
+import type { LiveFix } from '../liveNavigation'
 
 type Props = {
   map3d: NavigateResult['map3d']
   activeStep: number
   instruction?: string
+  liveFix?: LiveFix | null
   onSelectFloor?: (floorId: string) => void
   onSelectUnit?: (unitId: string) => void
 }
@@ -18,7 +20,14 @@ function clamp(n: number, min: number, max: number) {
   return Math.min(max, Math.max(min, n))
 }
 
-export function IndoorFloorMap({ map3d, activeStep, instruction, onSelectFloor, onSelectUnit }: Props) {
+export function IndoorFloorMap({
+  map3d,
+  activeStep,
+  instruction,
+  liveFix = null,
+  onSelectFloor,
+  onSelectUnit,
+}: Props) {
   const floors = useMemo(
     () => [...map3d.floors].sort((a, b) => a.level - b.level),
     [map3d.floors],
@@ -38,7 +47,9 @@ export function IndoorFloorMap({ map3d, activeStep, instruction, onSelectFloor, 
     setView({ x: 0, y: 0, zoom: 1 })
   }, [floorId, activeStep])
 
+  // Demo walker only when we do not have a live phone fix.
   useEffect(() => {
+    if (liveFix) return
     const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches
     if (reduce) {
       setProgress(0.22)
@@ -53,7 +64,7 @@ export function IndoorFloorMap({ map3d, activeStep, instruction, onSelectFloor, 
     }
     frame = requestAnimationFrame(tick)
     return () => cancelAnimationFrame(frame)
-  }, [activeStep, floorId])
+  }, [activeStep, floorId, liveFix])
 
   const scene = useMemo(() => buildScene(map3d, floorId, activeStep), [map3d, floorId, activeStep])
   const hasScene = Boolean(scene)
@@ -74,7 +85,26 @@ export function IndoorFloorMap({ map3d, activeStep, instruction, onSelectFloor, 
   }, [hasScene, floorId])
 
   const youAreHere = floorId === stepFloorId
-  const walker = scene && youAreHere ? pointAlong(scene.leg, progress) : null
+  const liveYou =
+    scene && liveFix
+      ? scene.toXY(liveFix.latitude, liveFix.longitude)
+      : null
+  const weakGps = Boolean(liveFix && liveFix.accuracy >= 25)
+  const walker =
+    liveYou != null
+      ? {
+          x: liveYou.x,
+          y: liveYou.y,
+          heading:
+            liveFix?.heading != null && Number.isFinite(liveFix.heading)
+              ? (liveFix.heading * Math.PI) / 180
+              : 0,
+          live: true as const,
+          weak: weakGps,
+        }
+      : scene && youAreHere
+        ? { ...pointAlong(scene.leg, progress), live: false as const, weak: false }
+        : null
 
   const onPointerDown = (event: RE<SVGSVGElement>) => {
     drag.current = { x: event.clientX, y: event.clientY, ox: view.x, oy: view.y }
@@ -166,9 +196,19 @@ export function IndoorFloorMap({ map3d, activeStep, instruction, onSelectFloor, 
               </>
             ) : null}
             {walker ? (
-              <g transform={`translate(${walker.x} ${walker.y}) rotate(${(walker.heading * 180) / Math.PI})`}>
-                <circle r={16} fill="#1d3557" />
-                <path d="M0 -8 L6.2 7 L0 3.2 L-6.2 7 Z" fill="#f7f4ef" />
+              <g transform={`translate(${walker.x} ${walker.y})`}>
+                {walker.live ? (
+                  <circle
+                    r={Math.max(14, Math.min(42, (liveFix?.accuracy || 12) * 0.55))}
+                    fill={walker.weak ? 'rgba(249, 115, 22, 0.18)' : 'rgba(26, 115, 232, 0.16)'}
+                    stroke={walker.weak ? 'rgba(249, 115, 22, 0.55)' : 'rgba(26, 115, 232, 0.35)'}
+                    strokeWidth={1}
+                  />
+                ) : null}
+                <g transform={`rotate(${((walker.heading ?? 0) * 180) / Math.PI})`}>
+                  <circle r={16} fill={walker.weak ? '#ea580c' : '#1a73e8'} stroke="#fff" strokeWidth={3} />
+                  <path d="M0 -10 L7 8 L0 4 L-7 8 Z" fill="#fff" />
+                </g>
               </g>
             ) : null}
           </g>
@@ -192,12 +232,31 @@ export function IndoorFloorMap({ map3d, activeStep, instruction, onSelectFloor, 
         </div>
         <p className="floor-map__then">
           <span aria-hidden>{scene.then.mark}</span>
-          {youAreHere ? scene.then.text : `Showing ${floors.find((item) => item.id === floorId)?.label || 'floor'}`}
+          {liveFix
+            ? weakGps
+              ? `Live GPS · weak ±${Math.round(liveFix.accuracy)} m`
+              : `Live GPS · ±${Math.round(liveFix.accuracy)} m`
+            : youAreHere
+              ? scene.then.text
+              : `Showing ${floors.find((item) => item.id === floorId)?.label || 'floor'}`}
         </p>
         <div className="floor-map__stats">
           <strong>{minutes > 0 ? `${minutes} min` : 'Here'}</strong>
           <span>{scene.remainM > 0 ? `${scene.remainM} m` : instruction || 'At the stop'}</span>
-          <button type="button" onClick={() => setView({ x: 0, y: 0, zoom: 1 })}>
+          <button
+            type="button"
+            onClick={() => {
+              if (liveYou) {
+                setView({
+                  x: frame.x + frame.w / 2 - liveYou.x,
+                  y: frame.y + frame.h / 2 - liveYou.y,
+                  zoom: Math.max(view.zoom, 1.2),
+                })
+                return
+              }
+              setView({ x: 0, y: 0, zoom: 1 })
+            }}
+          >
             Center
           </button>
         </div>
@@ -321,6 +380,7 @@ function buildScene(map3d: NavigateResult['map3d'], floorId: string, activeStep:
     legView,
     then,
     remainM: Math.round(remainM),
+    toXY,
   }
 }
 

@@ -356,29 +356,27 @@ export function estimateWalkMinutes(distanceM, floorChanges) {
   return Math.round(((distanceM / speedMps) / 60 + floorChanges * 0.55) * 10) / 10
 }
 
+/** Google Maps–style indoor cues — short, one action. */
 function instructionForStop(stops, i, destinationLabel) {
   const stop = stops[i]
   const prev = stops[i - 1]
   const next = stops[i + 1]
   const dist = prev ? Math.round(haversineMeters(prev, stop)) : 0
+  const floor = stop.floorLabel || 'this floor'
 
   if (i === 0) {
     return {
-      instruction: `Enter at ${stop.name} (${stop.floorLabel}) and start indoor navigation`,
+      instruction: `Enter at ${stop.name}`,
       title: 'Inside · Enter',
       maneuver: 'enter',
     }
   }
 
   if (prev && prev.floorId !== stop.floorId) {
-    const via = /elevator/i.test(`${prev.type} ${prev.name}`)
-      ? 'Take the elevator'
-      : /stair/i.test(`${prev.type} ${prev.name}`)
-        ? 'Take the stairs'
-        : 'Change floors'
+    const elev = /elevator/i.test(`${prev.type} ${prev.name}`)
     return {
-      instruction: `${via} to ${stop.floorLabel}, then continue toward ${next?.name || destinationLabel}`,
-      title: `Inside · ${stop.floorLabel}`,
+      instruction: elev ? `Take the elevator to ${floor}` : `Take the stairs to ${floor}`,
+      title: `Inside · ${floor}`,
       maneuver: 'vertical',
       distanceM: dist,
     }
@@ -386,32 +384,21 @@ function instructionForStop(stops, i, destinationLabel) {
 
   if (i === stops.length - 1) {
     const turn = prev && stops[i - 2] ? turnWord(bearingDeg(stops[i - 2], prev), bearingDeg(prev, stop)) : 'straight'
-    const cue =
-      turn === 'left' || turn === 'sharp-left'
-        ? 'Turn left and '
-        : turn === 'right' || turn === 'sharp-right'
-          ? 'Turn right and '
-          : turn === 'slight-left'
-            ? 'Bear left and '
-            : turn === 'slight-right'
-              ? 'Bear right and '
-              : ''
-    const destNote =
-      destinationLabel && destinationLabel !== stop.name ? ` · ${destinationLabel}` : ''
-    const arriveLine = `${cue}arrive at ${stop.name}${destNote}`
-    return {
-      instruction: arriveLine.charAt(0).toUpperCase() + arriveLine.slice(1),
-      title: 'Inside · Arrive',
-      maneuver: 'arrive',
-      distanceM: dist,
+    const label = stop.name || destinationLabel || 'destination'
+    if (turn === 'left' || turn === 'sharp-left') {
+      return { instruction: `Turn left to ${label}`, title: 'Inside · Arrive', maneuver: 'arrive', distanceM: dist }
     }
+    if (turn === 'right' || turn === 'sharp-right') {
+      return { instruction: `Turn right to ${label}`, title: 'Inside · Arrive', maneuver: 'arrive', distanceM: dist }
+    }
+    return { instruction: `Arrive at ${label}`, title: 'Inside · Arrive', maneuver: 'arrive', distanceM: dist }
   }
 
   if (VERTICAL_TYPES.has(effectiveType(stop)) || isVerticalish(stop)) {
     const elev = effectiveType(stop) === 'Elevator'
-    const goingUp = next && (next.elevation || 0) > (stop.elevation || 0)
+    const targetFloor = next?.floorLabel || floor
     return {
-      instruction: `Go to the ${elev ? 'elevator' : 'stairs'} (${stop.name}) for ${next?.floorLabel || 'the next floor'}${goingUp ? ' · up' : ''}`,
+      instruction: elev ? `Elevator to ${targetFloor}` : `Stairs to ${targetFloor}`,
       title: `Inside · ${elev ? 'Elevator' : 'Stairs'}`,
       maneuver: elev ? 'elevator' : 'stairs',
       distanceM: dist,
@@ -422,33 +409,24 @@ function instructionForStop(stops, i, destinationLabel) {
     const brFrom = stops[i - 2] ? bearingDeg(stops[i - 2], prev) : bearingDeg(prev, stop)
     const brTo = bearingDeg(prev, stop)
     const turn = turnWord(brFrom, brTo)
-    const place =
-      stop.type === 'Corridor'
-        ? `the corridor toward ${stop.name}`
-        : stop.type === 'Door'
-          ? `the door at ${stop.name}`
-          : stop.name
-    const verb =
-      turn === 'left' || turn === 'sharp-left'
-        ? `Turn left toward ${place}`
-        : turn === 'right' || turn === 'sharp-right'
-          ? `Turn right toward ${place}`
-          : turn === 'slight-left'
-            ? `Bear left toward ${place}`
-            : turn === 'slight-right'
-              ? `Bear right toward ${place}`
-              : `Continue to ${place}`
-    const meters = dist >= 8 ? ` (${dist} m)` : ''
-    return {
-      instruction: `${verb}${meters}`,
-      title: `Inside · Step ${i + 1}`,
-      maneuver: turn,
-      distanceM: dist,
+    const place = stop.name || 'ahead'
+    if (turn === 'left' || turn === 'sharp-left') {
+      return { instruction: `Turn left to ${place}`, title: `Inside · Step ${i + 1}`, maneuver: turn, distanceM: dist }
     }
+    if (turn === 'right' || turn === 'sharp-right') {
+      return { instruction: `Turn right to ${place}`, title: `Inside · Step ${i + 1}`, maneuver: turn, distanceM: dist }
+    }
+    if (turn === 'slight-left') {
+      return { instruction: `Bear left to ${place}`, title: `Inside · Step ${i + 1}`, maneuver: turn, distanceM: dist }
+    }
+    if (turn === 'slight-right') {
+      return { instruction: `Bear right to ${place}`, title: `Inside · Step ${i + 1}`, maneuver: turn, distanceM: dist }
+    }
+    return { instruction: `Continue to ${place}`, title: `Inside · Step ${i + 1}`, maneuver: 'straight', distanceM: dist }
   }
 
   return {
-    instruction: `Go to ${stop.name} (${stop.floorLabel})`,
+    instruction: `Go to ${stop.name}`,
     title: `Inside · Step ${i + 1}`,
     maneuver: 'straight',
     distanceM: dist,

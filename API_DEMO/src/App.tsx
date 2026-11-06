@@ -13,7 +13,7 @@ import { IndoorFloorMap } from './components/IndoorFloorMap'
 import { StartLocationPanel } from './components/StartLocationPanel'
 import { NavGuidanceBanner } from './components/NavGuidanceBanner'
 import { AutocompleteField, type AutocompleteOption } from './components/AutocompleteField'
-import { unlockVoiceFromGesture, useDirectionVoice } from './voiceGuide'
+import { speakWeakGpsAlert, unlockVoiceFromGesture, useDirectionVoice } from './voiceGuide'
 import { withLiveDrive } from './liveDrive'
 // import { attachLotToResult, withLiveDrive } from './liveDrive' // Via parking
 import {
@@ -601,10 +601,11 @@ export default function App() {
   const outdoorActive =
     activePhase === 'drive' || activePhase === 'walk' || activePhase === 'outdoor'
 
-  // Phone live: watch GPS whenever Live/Custom start is active (or toggle is on).
+  // Phone live: watch GPS outdoors and indoors whenever Live is on.
   const wantsLiveGps =
     liveNav || startMode === 'live' || (startMode === 'custom' && liveSelected)
-  const liveWatchOn = Boolean(result && wantsLiveGps && outdoorActive)
+  const indoorActive = activePhase === 'indoor'
+  const liveWatchOn = Boolean(result && wantsLiveGps && (outdoorActive || indoorActive))
   const liveGpsAnchor = useMemo(
     () =>
       result
@@ -631,12 +632,63 @@ export default function App() {
       return
     }
 
+    // Weak phone GPS — short voice nudge (throttled inside speakWeakGpsAlert).
+    if (liveFix.accuracy >= 25) {
+      speakWeakGpsAlert(liveFix.accuracy)
+    }
+
+    const phaseNow = result.journey.steps[journeyIndex]?.phase
+    const now = Date.now()
+
+    // Indoor: follow phone GPS against indoor stop pins (no outdoor re-route).
+    if (phaseNow === 'indoor') {
+      const indoorSteps = result.journey.steps.filter((s) => s.phase === 'indoor')
+      if (!indoorSteps.length) return
+      let bestIdx = journeyIndex
+      let bestDist = Infinity
+      for (let i = 0; i < result.journey.steps.length; i += 1) {
+        const s = result.journey.steps[i]
+        if (s.phase !== 'indoor') continue
+        const d = approxMeters(liveFix.latitude, liveFix.longitude, s.latitude, s.longitude)
+        if (d < bestDist) {
+          bestDist = d
+          bestIdx = i
+        }
+      }
+      const arriveR = Math.max(12, Math.min(35, (liveFix.accuracy || 15) * 1.2))
+      setLiveProgress({
+        stepIndex: bestIdx,
+        distanceToRouteM: bestDist,
+        remainingM: bestDist,
+        remainingSec: Math.round(bestDist / 1.2),
+        toNextManeuverM: bestDist,
+        snapped: { latitude: liveFix.latitude, longitude: liveFix.longitude },
+        offRoute: bestDist > Math.max(40, arriveR * 2),
+      })
+      if (now >= manualHoldUntil.current && liveFix.accuracy < 35) {
+        // Advance when near the next indoor pin (or snapped onto a later one).
+        const next = Math.min(result.journey.steps.length - 1, journeyIndex + 1)
+        const nextStep = result.journey.steps[next]
+        if (nextStep?.phase === 'indoor') {
+          const toNext = approxMeters(
+            liveFix.latitude,
+            liveFix.longitude,
+            nextStep.latitude,
+            nextStep.longitude,
+          )
+          if (toNext <= arriveR || (bestIdx > journeyIndex && bestDist <= arriveR * 1.4)) {
+            setJourneyIndex(bestIdx > journeyIndex ? bestIdx : next)
+          }
+        }
+      }
+      return
+    }
+
     // Match against dense outdoor/walk polylines, not sparse step pins.
     const matchSteps = enrichStepsWithRouteGeometry(result, routeCorridorRef.current)
     const progress = matchLiveProgress(matchSteps, liveFix, journeyIndex)
     setLiveProgress(progress)
 
-    const now = Date.now()
     // Step auto-advance can wait; off-route recalculation must not.
     if (now >= manualHoldUntil.current) {
       const target = result.journey.steps[progress.stepIndex]
@@ -1144,17 +1196,29 @@ export default function App() {
                   {journeyIndex >= steps.length - 1 ? 'Arrived' : 'Next indoor step'}
                 </button>
                 <span className="demo-hint">
-                  Indoor is manual — use Next / Previous or the step list. Live GPS does not auto-enter indoors.
+                  {wantsLiveGps && liveFix
+                    ? liveFix.accuracy >= 25
+                      ? `Following your phone · weak GPS ±${Math.round(liveFix.accuracy)} m`
+                      : `Following your phone · ±${Math.round(liveFix.accuracy)} m`
+                    : wantsLiveGps
+                      ? 'Waiting for phone GPS indoors…'
+                      : 'Turn on Live GPS to follow your phone indoors'}
                 </span>
               </div>
               {indoorView === 'floor' ? (
-                <IndoorFloorMap map3d={result.map3d} activeStep={indoorStep} instruction={active?.instruction} />
+                <IndoorFloorMap
+                  map3d={result.map3d}
+                  activeStep={indoorStep}
+                  instruction={active?.instruction}
+                  liveFix={wantsLiveGps ? liveFix : null}
+                />
               ) : (
                 <Indoor3D
                   map3d={result.map3d}
                   activeStep={indoorStep}
                   instruction={active?.instruction}
                   complexName={result.selection.complex?.name}
+                  liveFix={wantsLiveGps ? liveFix : null}
                 />
               )}
             </div>
