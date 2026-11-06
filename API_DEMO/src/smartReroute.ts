@@ -52,10 +52,6 @@ export async function rerouteFromLiveFix(
     longitude: result.destination.longitude,
   }
   // Re-route toward the unit/building pin (same as outdoor D) — not a parking-lot entry.
-  const indoorContinues =
-    Boolean(result.entrance) &&
-    ((result.map3d?.routeStops?.length ?? 0) > 1 ||
-      metersBetween(toLit(entrance), toLit(unitDest)) > 8)
   const dest: LatLng = unitDest
   const parking = isDbParking(result)
     ? {
