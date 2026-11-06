@@ -684,14 +684,17 @@ export default function App() {
       return
     }
 
-    // Match against dense outdoor/walk polylines, not sparse step pins.
-    const matchSteps = enrichStepsWithRouteGeometry(result, routeCorridorRef.current)
+    // Match the SAME turn-by-turn list the banner shows (mapGuidance), so D / instruction
+    // update as you drive. Fall back to server steps + drawn corridor when guidance isn't ready.
+    const matchSteps = mapGuidance?.length
+      ? voiceSteps
+      : enrichStepsWithRouteGeometry(result, routeCorridorRef.current)
     const progress = matchLiveProgress(matchSteps, liveFix, journeyIndex)
     setLiveProgress(progress)
 
     // Step auto-advance can wait; off-route recalculation must not.
     if (now >= manualHoldUntil.current) {
-      const target = result.journey.steps[progress.stepIndex]
+      const target = matchSteps[progress.stepIndex]
       if (target?.phase !== 'indoor') {
         if (progress.stepIndex !== journeyIndex && progress.distanceToRouteM < 120) {
           setJourneyIndex(progress.stepIndex)
@@ -744,7 +747,7 @@ export default function App() {
           setRecalculating(false)
         })
     }
-  }, [liveWatchOn, liveFix, result, journeyIndex])
+  }, [liveWatchOn, liveFix, result, journeyIndex, mapGuidance, voiceSteps])
 
   // Indoor Floor ↔ 3D is user-controlled only (never auto-flip on step advance).
 
@@ -1283,13 +1286,34 @@ export default function App() {
                   {active.phase === 'drive' || active.phase === 'outdoor' ? (
                     <>
                       {active.roadName ? `${active.roadName} · ` : ''}
-                      {active.distanceM ?? 0} m · {active.durationSec ?? 0}s · traffic{' '}
-                      <strong>{active.trafficLevel}</strong>
+                      {Math.round(
+                        wantsLiveGps && liveProgress
+                          ? liveProgress.toNextManeuverM
+                          : (active.distanceM ?? 0),
+                      )}{' '}
+                      m
+                      {wantsLiveGps && liveProgress
+                        ? ` · ${Math.round(liveProgress.remainingM)} m trip`
+                        : active.durationSec != null
+                          ? ` · ${active.durationSec}s`
+                          : ''}
+                      {active.trafficLevel ? (
+                        <>
+                          {' '}
+                          · traffic <strong>{active.trafficLevel}</strong>
+                        </>
+                      ) : null}
                       {active.speedMph != null ? ` · ${active.speedMph} mph` : ''}
                     </>
                   ) : active.phase === 'walk' ? (
                     <>
-                      Pedestrian · {active.distanceM ?? 0} m · {active.durationSec ?? 0}s
+                      Pedestrian ·{' '}
+                      {Math.round(
+                        wantsLiveGps && liveProgress
+                          ? liveProgress.toNextManeuverM
+                          : (active.distanceM ?? 0),
+                      )}{' '}
+                      m
                       {active.roadName ? ` · ${active.roadName}` : ''}
                       {' · leave vehicle at parking'}
                     </>

@@ -85,6 +85,43 @@ function lastOutdoorIndex(steps: JourneyStep[]) {
   return -1
 }
 
+/** Meters left along a step polyline from the snapped GPS point to the step end. */
+function remainingAlongGeometry(
+  snapLat: number,
+  snapLng: number,
+  geometry: [number, number][],
+): number {
+  if (!geometry.length) return 0
+  if (geometry.length === 1) {
+    return haversineM(snapLat, snapLng, geometry[0][1], geometry[0][0])
+  }
+  let bestDist = Infinity
+  let bestSeg = 0
+  let bestT = 0
+  let bestLat = geometry[0][1]
+  let bestLng = geometry[0][0]
+  for (let i = 0; i < geometry.length - 1; i += 1) {
+    const a = { lat: geometry[i][1], lng: geometry[i][0], stepIndex: 0 }
+    const b = { lat: geometry[i + 1][1], lng: geometry[i + 1][0], stepIndex: 0 }
+    const proj = projectOnSegment(snapLat, snapLng, a, b)
+    if (proj.distM < bestDist) {
+      bestDist = proj.distM
+      bestSeg = i
+      bestT = proj.t
+      bestLat = proj.lat
+      bestLng = proj.lng
+    }
+  }
+  let rem = haversineM(bestLat, bestLng, geometry[bestSeg + 1][1], geometry[bestSeg + 1][0])
+  // If projection is past mid-segment, rem already starts at best→segEnd; otherwise include
+  // leftover of current segment via bestT (proj already is the snap on the segment).
+  void bestT
+  for (let i = bestSeg + 1; i < geometry.length - 1; i += 1) {
+    rem += haversineM(geometry[i][1], geometry[i][0], geometry[i + 1][1], geometry[i + 1][0])
+  }
+  return rem
+}
+
 function projectOnSegment(
   lat: number,
   lng: number,
@@ -188,14 +225,30 @@ export function matchLiveProgress(
   }
 
   let stepIndex = best.stepIndex
+  // Prefer not jumping backward while still on the corridor; allow forward along GPS.
+  if (stepIndex < currentIndex && best.distM < 90) {
+    stepIndex = currentIndex
+  }
   // Advance only along outdoor steps — never into indoor.
-  const next = currentIndex + 1
+  const next = Math.max(stepIndex, currentIndex) + 1
   if (next < steps.length && steps[next].phase !== 'indoor') {
     const n = steps[next]
+    const cur = steps[Math.max(stepIndex, currentIndex)]
+    const arriveR = arrivalRadiusM(fix.accuracy)
+    let nearNext = false
     if (Number.isFinite(n.latitude) && Number.isFinite(n.longitude)) {
-      const toNext = haversineM(fix.latitude, fix.longitude, n.latitude, n.longitude)
-      if (toNext < arrivalRadiusM(fix.accuracy)) stepIndex = Math.max(stepIndex, next)
+      nearNext = haversineM(fix.latitude, fix.longitude, n.latitude, n.longitude) < arriveR
     }
+    // Also advance when the current step polyline is nearly finished (Google-like).
+    if (
+      !nearNext &&
+      cur?.geometry &&
+      cur.geometry.length > 1 &&
+      remainingAlongGeometry(best.lat, best.lng, cur.geometry) < Math.max(25, arriveR * 0.6)
+    ) {
+      nearNext = true
+    }
+    if (nearNext) stepIndex = Math.max(stepIndex, next)
   }
   // Don't jump backwards while still near the current corridor
   if (stepIndex < currentIndex && best.distM < 90) {
@@ -208,12 +261,19 @@ export function matchLiveProgress(
   }
 
   const active = steps[stepIndex]
+  // Distance left on THIS turn (Google-style D) — along the step polyline from the snap,
+  // not the static step.distanceM which never changes while you drive.
   let toNextManeuverM = active?.distanceM ?? 0
   if (active?.geometry && active.geometry.length > 1) {
-    const end = active.geometry[active.geometry.length - 1]
-    toNextManeuverM = haversineM(best.lat, best.lng, end[1], end[0])
-  } else if (active) {
-    toNextManeuverM = haversineM(best.lat, best.lng, active.latitude, active.longitude)
+    toNextManeuverM = remainingAlongGeometry(best.lat, best.lng, active.geometry)
+  } else if (active && Number.isFinite(active.latitude) && Number.isFinite(active.longitude)) {
+    // Prefer distance to the NEXT step start (the maneuver) when we lack a polyline.
+    const nxt = steps[stepIndex + 1]
+    if (nxt && nxt.phase !== 'indoor' && Number.isFinite(nxt.latitude) && Number.isFinite(nxt.longitude)) {
+      toNextManeuverM = haversineM(best.lat, best.lng, nxt.latitude, nxt.longitude)
+    } else {
+      toNextManeuverM = haversineM(best.lat, best.lng, active.latitude, active.longitude)
+    }
   }
 
   const phase = active?.phase ?? 'drive'

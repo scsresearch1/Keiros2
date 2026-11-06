@@ -85,7 +85,8 @@ function pinSvg(fill: string, label: string) {
 
 /**
  * Google Maps–style “you are here” puck.
- * `rot` is degrees clockwise from screen-up (phone-top relative to the map view).
+ * Circle is centered at (40,40) = map lat/lng. `rot` is clockwise from screen-up
+ * (0 = arrow points to top of screen when map is heading-up).
  */
 function livePuckSvg(rotDeg: number | null) {
   const hasHeading = rotDeg != null && Number.isFinite(rotDeg)
@@ -99,11 +100,11 @@ function livePuckSvg(rotDeg: number | null) {
   <g transform="rotate(${rot.toFixed(1)} 40 40)" filter="url(#keirosPuckShadow)">
     ${
       hasHeading
-        ? `<path d="M40 6 L54 32 L40 27 L26 32 Z" fill="#1a73e8" stroke="#ffffff" stroke-width="3" stroke-linejoin="round"/>`
+        ? `<path d="M40 4 L55 30 L40 24 L25 30 Z" fill="#1a73e8" stroke="#ffffff" stroke-width="3" stroke-linejoin="round"/>`
         : ''
     }
-    <circle cx="40" cy="42" r="18" fill="#1a73e8" stroke="#ffffff" stroke-width="5"/>
-    <circle cx="40" cy="42" r="6.5" fill="#ffffff"/>
+    <circle cx="40" cy="40" r="16" fill="#1a73e8" stroke="#ffffff" stroke-width="5"/>
+    <circle cx="40" cy="40" r="5.5" fill="#ffffff"/>
   </g>
 </svg>`
 }
@@ -799,7 +800,7 @@ export function OutdoorMap({
     map.panTo(latLngLiteral(activeStep.latitude, activeStep.longitude))
   }, [activeStep, followLive, liveFix, mapReady])
 
-  // Live GPS puck + follow
+  // Live GPS puck + follow (Google Maps–style heading-up navigation).
   useEffect(() => {
     const map = mapRef.current
     if (!map || !mapReady) return
@@ -817,9 +818,6 @@ export function OutdoorMap({
       return
     }
 
-    // Prefer LiveFix heading (phone compass + GPS). Fall back to movement bearing.
-    let rawHeading: number | null =
-      liveFix.heading != null && Number.isFinite(liveFix.heading) ? liveFix.heading : null
     const prev = lastLiveRef.current
     const movedM =
       prev != null
@@ -830,8 +828,38 @@ export function OutdoorMap({
               Math.cos((liveFix.latitude * Math.PI) / 180),
           )
         : 0
-    if (rawHeading == null && prev && movedM > 2.5) {
+    const speed = liveFix.speed != null && Number.isFinite(liveFix.speed) ? liveFix.speed : 0
+    const moving = speed > 1.2 || movedM > 2.5
+
+    // Travel direction for heading-up: prefer GPS course / movement, then compass.
+    // (Compass-only while stopped made the map fight the road and flipped left/right.)
+    let rawHeading: number | null = null
+    if (moving && liveFix.heading != null && Number.isFinite(liveFix.heading) && speed > 1.2) {
+      rawHeading = liveFix.heading
+    } else if (moving && prev && movedM > 2.5) {
       rawHeading = bearingDeg(prev.latitude, prev.longitude, liveFix.latitude, liveFix.longitude)
+    } else if (liveFix.heading != null && Number.isFinite(liveFix.heading)) {
+      rawHeading = liveFix.heading
+    }
+    // Aim slightly along the active step toward the destination when we have one.
+    if (
+      moving &&
+      activeStep &&
+      activeStep.phase !== 'indoor' &&
+      Number.isFinite(activeStep.latitude) &&
+      Number.isFinite(activeStep.longitude)
+    ) {
+      const toStep = bearingDeg(
+        liveFix.latitude,
+        liveFix.longitude,
+        activeStep.latitude,
+        activeStep.longitude,
+      )
+      if (rawHeading == null) rawHeading = toStep
+      else {
+        const delta = ((toStep - rawHeading + 540) % 360) - 180
+        if (Math.abs(delta) < 70) rawHeading = normalizeDeg(rawHeading + delta * 0.35)
+      }
     }
     if (rawHeading != null && Number.isFinite(rawHeading)) {
       smoothHeadingRef.current = blendHeading(smoothHeadingRef.current, rawHeading)
@@ -839,6 +867,7 @@ export function OutdoorMap({
     const heading = smoothHeadingRef.current
     lastLiveRef.current = liveFix
 
+    // Keep puck + accuracy circle on the SAME smoothed point (never diverge).
     const smoothed = blendPosition(
       smoothPosRef.current,
       { lat: liveFix.latitude, lng: liveFix.longitude },
@@ -847,35 +876,35 @@ export function OutdoorMap({
     smoothPosRef.current = smoothed
     const pos = latLngLiteral(smoothed.lat, smoothed.lng)
 
-    // Always track the phone in Live mode (do not gate on distance to S — that left the
-    // puck stranded across the city when the overview zoomed out to the full trip).
     const shouldFollow = followLive && !userPanningRef.current
-    const driving = liveFix.speed != null && liveFix.speed > 8
+    const driving = speed > 8
     const targetZoom = driving ? 16 : 18
     const needStreetZoom = !liveSnapDoneRef.current || (map.getZoom() ?? 0) < 15
 
-    // Rotate map toward phone-top when following — but only when heading actually changed
-    // enough (constant compass noise was spinning the map every frame).
-    const headingMoved =
-      heading != null &&
-      (lastCameraHeadingRef.current == null ||
-        headingDeltaDeg(lastCameraHeadingRef.current, heading) >= 6)
-
-    if (shouldFollow && heading != null && (needStreetZoom || headingMoved)) {
-      const zoom = needStreetZoom ? targetZoom : Math.max(map.getZoom() ?? targetZoom, 15)
+    // Heading-up needs a vector map — hybrid/satellite often stays north-up and
+    // makes roadside POIs look mirrored vs travel direction.
+    if (shouldFollow && heading != null) {
       try {
-        map.moveCamera({
-          center: pos,
-          zoom,
-          heading: normalizeDeg(heading),
-          tilt: 0,
-        })
+        const mt = map.getMapTypeId?.()
+        if (mt === 'hybrid' || mt === 'satellite') {
+          map.setMapTypeId('roadmap')
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+
+    if (shouldFollow && heading != null) {
+      const zoom = needStreetZoom ? targetZoom : Math.max(map.getZoom() ?? targetZoom, 15)
+      const h = normalizeDeg(heading)
+      try {
+        map.moveCamera({ center: pos, zoom, heading: h, tilt: 0 })
       } catch {
         map.setCenter(pos)
         map.setZoom(zoom)
-        if (typeof map.setHeading === 'function') map.setHeading(normalizeDeg(heading))
+        if (typeof map.setHeading === 'function') map.setHeading(h)
       }
-      lastCameraHeadingRef.current = normalizeDeg(heading)
+      lastCameraHeadingRef.current = h
       liveSnapDoneRef.current = true
     } else if (shouldFollow) {
       if (needStreetZoom) {
@@ -883,22 +912,25 @@ export function OutdoorMap({
         map.setZoom(targetZoom)
         liveSnapDoneRef.current = true
       } else {
-        // Soft follow — panTo eases; avoids hard setCenter jitter on every GPS tick.
         map.panTo(pos)
       }
     }
 
+    // After heading-up, travel direction is screen-up → keep arrow pointing up.
     const appliedMapHeading =
       typeof map.getHeading === 'function' && Number.isFinite(map.getHeading())
         ? normalizeDeg(map.getHeading() as number)
         : lastCameraHeadingRef.current ?? 0
     setMapHeading(appliedMapHeading)
-    // Arrow = phone-top relative to whatever way the map is currently drawn.
     const puckRot =
-      heading != null ? normalizeDeg(heading - appliedMapHeading) : null
+      heading != null
+        ? shouldFollow
+          ? 0
+          : normalizeDeg(heading - appliedMapHeading)
+        : null
     const puckRotChanged =
       puckRot != null &&
-      (lastPuckRotRef.current == null || headingDeltaDeg(lastPuckRotRef.current, puckRot) >= 3)
+      (lastPuckRotRef.current == null || headingDeltaDeg(lastPuckRotRef.current, puckRot) >= 2)
 
     if (!liveMarkerRef.current) {
       const puck = createAdvancedMarker({
@@ -907,22 +939,19 @@ export function OutdoorMap({
         zIndex: 1000,
         svg: livePuckSvg(puckRot),
         title: 'You (live)',
+        anchor: 'center',
       })
-      puck.anchorTop = '50%'
-      puck.anchorLeft = '50%'
       liveMarkerRef.current = puck
       lastPuckRotRef.current = puckRot
     } else {
       liveMarkerRef.current.position = pos
-      if (puckRotChanged) {
-        setAdvancedMarkerSvg(liveMarkerRef.current, livePuckSvg(puckRot))
+      if (puckRotChanged || lastPuckRotRef.current == null) {
+        setAdvancedMarkerSvg(liveMarkerRef.current, livePuckSvg(puckRot), 'center')
         lastPuckRotRef.current = puckRot
       }
-      liveMarkerRef.current.anchorTop = '50%'
-      liveMarkerRef.current.anchorLeft = '50%'
     }
 
-    const accRadius = Math.max(12, Math.min(40, liveFix.accuracy || 20))
+    const accRadius = Math.max(8, Math.min(35, liveFix.accuracy || 15))
     if (!accuracyRef.current) {
       accuracyRef.current = new google.maps.Circle({
         map,
@@ -939,7 +968,7 @@ export function OutdoorMap({
       accuracyRef.current.setCenter(pos)
       accuracyRef.current.setRadius(accRadius)
     }
-  }, [liveFix, followLive, mapReady])
+  }, [liveFix, followLive, mapReady, activeStep])
 
   // When Live GPS turns off, restore north-up so the map isn't left rotated.
   useEffect(() => {

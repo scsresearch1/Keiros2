@@ -92,12 +92,19 @@ export function geoJsonToLatLngs(
     .map(([lng, lat]) => ({ lat, lng }))
 }
 
-function htmlFromSvg(svg: string) {
+function htmlFromSvg(svg: string, anchor: 'bottom' | 'center' = 'bottom') {
   const wrap = document.createElement('div')
   wrap.innerHTML = svg
   wrap.style.display = 'flex'
   wrap.style.alignItems = 'center'
   wrap.style.justifyContent = 'center'
+  wrap.style.pointerEvents = 'none'
+  // Default Advanced Marker anchor is bottom-center (correct for teardrop pins).
+  // Live puck must sit on the accuracy-circle center → shift content up by 50%.
+  if (anchor === 'center') {
+    wrap.style.transform = 'translateY(50%)'
+    wrap.style.transformOrigin = 'center center'
+  }
   return wrap
 }
 
@@ -114,9 +121,12 @@ export function createAdvancedMarker(opts: {
   gmpDraggable?: boolean
   /** Required for gmp-click / InfoWindow on Advanced Markers (default true). */
   gmpClickable?: boolean
+  /** `center` for the live GPS puck; `bottom` (default) for pin markers. */
+  anchor?: 'bottom' | 'center'
 }): AdvMarker {
   const AdvancedMarkerElement = google.maps.marker.AdvancedMarkerElement
-  const content = opts.content ?? (opts.svg ? htmlFromSvg(opts.svg) : undefined)
+  const content =
+    opts.content ?? (opts.svg ? htmlFromSvg(opts.svg, opts.anchor ?? 'bottom') : undefined)
   return new AdvancedMarkerElement({
     map: opts.map,
     position: opts.position,
@@ -128,8 +138,12 @@ export function createAdvancedMarker(opts: {
   })
 }
 
-export function setAdvancedMarkerSvg(marker: AdvMarker, svg: string) {
-  marker.content = htmlFromSvg(svg)
+export function setAdvancedMarkerSvg(
+  marker: AdvMarker,
+  svg: string,
+  anchor: 'bottom' | 'center' = 'bottom',
+) {
+  marker.content = htmlFromSvg(svg, anchor)
 }
 
 export function markerLatLng(marker: AdvMarker): google.maps.LatLngLiteral | null {
