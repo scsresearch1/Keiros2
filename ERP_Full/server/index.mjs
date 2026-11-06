@@ -511,16 +511,22 @@ app.post('/api/v1/navigate', (req, res) =>
       longitude: entry.longitude,
       name: entry.name || 'Building entrance',
     }
-    // Via parking: outdoor ends at entrance. Point-to-point: outdoor goes to the unit pin.
-    const routeTarget = viaParking
-      ? {
-          latitude: entrancePoint.latitude,
-          longitude: entrancePoint.longitude,
-        }
-      : {
-          latitude: unit.latitude,
-          longitude: unit.longitude,
-        }
+    // Orion-style: outdoor ends at the building entrance whenever indoor continues to the unit.
+    // (Avoids driving to a street-locked unit pin like Fig Garden Unit 202.)
+    const indoorContinues =
+      (indoor.stops?.length ?? 0) > 1 ||
+      (entry?.id && unit?.id && entry.id !== unit.id) ||
+      String(unit.floorLabel || '').toUpperCase() !== 'L01'
+    const routeTarget =
+      viaParking || indoorContinues
+        ? {
+            latitude: entrancePoint.latitude,
+            longitude: entrancePoint.longitude,
+          }
+        : {
+            latitude: unit.latitude,
+            longitude: unit.longitude,
+          }
     const origin = explicitStart
       ? { latitude: bodyLat, longitude: bodyLng }
       : offsetMiles(
@@ -613,8 +619,9 @@ app.post('/api/v1/navigate', (req, res) =>
       drive = arrival.drive
       walk = arrival.walk
       arrivalMode = 'point-to-point'
-      outdoorNote =
-        'Point-to-point: start → destination unit. No parking stop. Enable “Via parking” for the car-park route.'
+      outdoorNote = indoorContinues
+        ? `Drive/walk to ${entrancePoint.name}, then continue indoors to ${unit.name || 'your unit'}.`
+        : 'Point-to-point: start → destination.'
     }
     const weather = await weatherPromise
     const originMiles = Math.round(milesBetween(origin, routeTarget) * 10) / 10

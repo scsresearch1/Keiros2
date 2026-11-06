@@ -299,10 +299,26 @@ export function OutdoorMap({
       Number(result.origin.latitude),
       Number(result.origin.longitude),
     )
-    const destination = latLngLiteral(
+    // Orion-style: when indoor continues past the door, outdoor D sits on the entrance
+    // (not a street-locked unit pin). Indoor map still uses map3d routeStops → unit.
+    const unitDest = latLngLiteral(
       Number(result.destination.latitude ?? result.selection?.unit?.latitude),
       Number(result.destination.longitude ?? result.selection?.unit?.longitude),
     )
+    const entranceDest = result.entrance
+      ? latLngLiteral(Number(result.entrance.latitude), Number(result.entrance.longitude))
+      : null
+    const indoorContinues = Boolean(
+      entranceDest &&
+        ((result.map3d?.routeStops?.length ?? 0) > 1 ||
+          Math.hypot(
+            (unitDest.lat - entranceDest.lat) * 111_320,
+            (unitDest.lng - entranceDest.lng) *
+              111_320 *
+              Math.cos((unitDest.lat * Math.PI) / 180),
+          ) > 8),
+    )
+    const destination = indoorContinues && entranceDest ? entranceDest : unitDest
     if (
       !Number.isFinite(origin.lat) ||
       !Number.isFinite(origin.lng) ||
@@ -380,10 +396,13 @@ export function OutdoorMap({
     })
     bounds.extend(origin)
 
-    const destName =
+    const unitName =
       result.destination.label ||
       result.selection?.unit?.name ||
       'Destination'
+    const destName = indoorContinues
+      ? `${result.entrance?.label || 'Entrance'} · then ${unitName}`
+      : unitName
     const destAddress =
       result.destination.address ||
       result.selection?.unit?.physicalAddress ||
@@ -393,13 +412,19 @@ export function OutdoorMap({
       createAdvancedMarker({
         map: gmap,
         position: destination,
-        title: `Destination · ${destName}`,
+        title: indoorContinues ? `Entrance · ${destName}` : `Destination · ${destName}`,
         zIndex: 45,
         svg: pinSvg('#ea4335', 'D'),
       }),
     )
     destMarker.addEventListener('gmp-click', () => {
-      openPinInfo(destMarker, 'Destination', destName, destAddress, destination)
+      openPinInfo(
+        destMarker,
+        indoorContinues ? 'Entrance' : 'Destination',
+        destName,
+        destAddress,
+        destination,
+      )
     })
     bounds.extend(destination)
 
@@ -610,27 +635,31 @@ export function OutdoorMap({
       const corridorWalk: google.maps.LatLngLiteral[] = []
       const guidanceAcc: JourneyStep[] = []
 
-      // Via parking: drive → lot, then walk pathways to entrance.
-      // Otherwise: Google drive toward D (may add last-meter walk).
-      const legsToDraw: OutdoorLeg[] = outdoorPlan.viaParking
-        ? outdoorPlan.legs
-        : [
-            {
-              id: 'drive-toward-destination',
-              mode: 'DRIVE',
-              from: origin,
-              to: destination,
-              label: 'Drive toward destination (Google roads)',
-              color: ROUTE_DRIVE_BLUE,
-            },
-          ]
+      // Prefer planned legs (drive → entrance). Fallback: Google drive to outdoor D.
+      const legsToDraw: OutdoorLeg[] =
+        outdoorPlan.legs.length > 0
+          ? outdoorPlan.legs
+          : [
+              {
+                id: 'drive-toward-destination',
+                mode: 'DRIVE',
+                from: origin,
+                to: destination,
+                label: indoorContinues
+                  ? 'Drive to entrance (Google roads)'
+                  : 'Drive toward destination (Google roads)',
+                color: ROUTE_DRIVE_BLUE,
+              },
+            ]
 
       setSiteNet({
         driveways: 0,
         sidewalks: 0,
         routedOn: outdoorPlan.viaParking
           ? 'Drive to parking → walk pathways'
-          : 'Google drive → walk to D',
+          : indoorContinues
+            ? 'Google drive → walk to entrance'
+            : 'Google drive → walk to D',
       })
 
       async function drawLegPlan(

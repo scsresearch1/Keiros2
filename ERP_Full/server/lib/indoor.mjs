@@ -374,8 +374,17 @@ function instructionForStop(stops, i, destinationLabel) {
 
   if (prev && prev.floorId !== stop.floorId) {
     const elev = /elevator/i.test(`${prev.type} ${prev.name}`)
+    const midLanding = /stair/i.test(floor)
+    if (midLanding) {
+      return {
+        instruction: elev ? 'Continue in the elevator' : 'Continue up the stairs',
+        title: 'Inside · Stairs',
+        maneuver: 'vertical',
+        distanceM: dist,
+      }
+    }
     return {
-      instruction: elev ? `Take the elevator to ${floor}` : `Take the stairs to ${floor}`,
+      instruction: elev ? `Elevator to ${floor}` : `Stairs to ${floor}`,
       title: `Inside · ${floor}`,
       maneuver: 'vertical',
       distanceM: dist,
@@ -397,8 +406,27 @@ function instructionForStop(stops, i, destinationLabel) {
   if (VERTICAL_TYPES.has(effectiveType(stop)) || isVerticalish(stop)) {
     const elev = effectiveType(stop) === 'Elevator'
     const targetFloor = next?.floorLabel || floor
+    const mid = /stair/i.test(String(targetFloor))
+    if (/start/i.test(String(stop.name))) {
+      return {
+        instruction: elev ? 'Take the elevator' : 'Take the stairs',
+        title: `Inside · ${elev ? 'Elevator' : 'Stairs'}`,
+        maneuver: elev ? 'elevator' : 'stairs',
+        distanceM: dist,
+      }
+    }
+    if (/turn/i.test(String(stop.name)) || mid) {
+      return {
+        instruction: elev ? 'Continue in the elevator' : 'Continue up the stairs',
+        title: `Inside · ${elev ? 'Elevator' : 'Stairs'}`,
+        maneuver: elev ? 'elevator' : 'stairs',
+        distanceM: dist,
+      }
+    }
     return {
-      instruction: elev ? `Elevator to ${targetFloor}` : `Stairs to ${targetFloor}`,
+      instruction: elev
+        ? `Elevator to ${mid ? 'next floor' : targetFloor}`
+        : `Stairs to ${mid ? 'next floor' : targetFloor}`,
       title: `Inside · ${elev ? 'Elevator' : 'Stairs'}`,
       maneuver: elev ? 'elevator' : 'stairs',
       distanceM: dist,
