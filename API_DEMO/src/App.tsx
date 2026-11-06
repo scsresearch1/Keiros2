@@ -468,7 +468,7 @@ export default function App() {
       })
       // Point-to-point starts at the first step (origin → destination).
       setJourneyIndex(0)
-      setIndoorView('floor')
+      // Do not force Floor/3D here — keep whatever the user last selected.
       // Live / custom: keep GPS follow + re-route on. Demo: leave live off (simulated start).
       setLiveNav(mode === 'live' || mode === 'custom')
       setLiveProgress(null)
@@ -746,10 +746,7 @@ export default function App() {
     }
   }, [liveWatchOn, liveFix, result, journeyIndex])
 
-  useEffect(() => {
-    const step = result?.journey.steps[journeyIndex]
-    if (step?.phase === 'indoor') setIndoorView('floor')
-  }, [result, journeyIndex])
+  // Indoor Floor ↔ 3D is user-controlled only (never auto-flip on step advance).
 
   function bumpJourney(delta: number) {
     manualHoldUntil.current = Date.now() + 10000

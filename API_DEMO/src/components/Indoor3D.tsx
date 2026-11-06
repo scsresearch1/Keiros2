@@ -17,7 +17,6 @@ type Vec3 = { x: number; y: number; z: number }
 const DEFAULT: Cam = { yaw: 0.55, pitch: 0.62, zoom: 1 }
 const HALF = 95
 const FLOOR_GAP = 26
-const CORE = { x: 0, y: 0 } // elevator / vertical shaft near building center
 
 function clamp(n: number, min: number, max: number) {
   return Math.min(max, Math.max(min, n))
@@ -392,7 +391,8 @@ function buildModel(
     }
   })
 
-  // Path follows floor → elevator core → vertical rise → floor (not a diagonal through floors)
+  // Path follows real stop coordinates. Floor changes rise/drop at the stair/elevator
+  // pin itself (not the building center) so stair landings stay on the orange path.
   const path3d: Vec3[] = []
   for (let i = 0; i < routePts.length; i += 1) {
     const cur = routePts[i]
@@ -403,9 +403,21 @@ function buildModel(
     const prev = routePts[i - 1]
     if (prev.floorId === cur.floorId) {
       path3d.push({ x: cur.x, y: cur.y, z: cur.z })
+      continue
+    }
+    const stairish =
+      /stair|elevator/i.test(String(prev.name || '')) ||
+      /stair|elevator/i.test(String(cur.name || ''))
+    if (stairish) {
+      // Vertical at previous landing, then short lateral to next landing.
+      path3d.push({ x: prev.x, y: prev.y, z: cur.z })
+      path3d.push({ x: cur.x, y: cur.y, z: cur.z })
     } else {
-      path3d.push({ x: CORE.x, y: CORE.y, z: prev.z })
-      path3d.push({ x: CORE.x, y: CORE.y, z: cur.z })
+      // Generic floor change — still prefer shaft near the stops, not map center.
+      const sx = (prev.x + cur.x) / 2
+      const sy = (prev.y + cur.y) / 2
+      path3d.push({ x: sx, y: sy, z: prev.z })
+      path3d.push({ x: sx, y: sy, z: cur.z })
       path3d.push({ x: cur.x, y: cur.y, z: cur.z })
     }
   }
