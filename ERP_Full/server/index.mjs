@@ -470,7 +470,9 @@ app.post('/api/v1/navigate', (req, res) =>
     const complex =
       complexes.find((c) => c.id === (complexId || building.complexId || unit.complexId)) ?? null
 
-    const indoor = buildIndoorJourney(unit, locations)
+    // Prefer mapped locations; label enrichment + stair routing live in indoor.mjs.
+    const indoorPool = locations.filter((l) => l.mapped !== false)
+    const indoor = buildIndoorJourney(unit, indoorPool.length ? indoorPool : locations)
     const entry = indoor.entry || {
       latitude: unit.latitude,
       longitude: unit.longitude,

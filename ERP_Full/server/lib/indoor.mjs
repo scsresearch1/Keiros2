@@ -3,6 +3,16 @@
  * (entry → corridors / vertical cores → unit) with turn-by-turn cues.
  */
 
+import {
+  enrichLocation,
+  enrichLocations,
+  filterBuildingOutliers,
+  inferLocationType,
+  isStairish,
+  isVerticalish,
+  stairChainOrder,
+} from './locationLabels.mjs'
+
 export function haversineMeters(a, b) {
   const R = 6371000
   const toRad = (d) => (d * Math.PI) / 180
@@ -40,18 +50,8 @@ function turnWord(fromBearing, toBearing) {
 const HUB_TYPES = new Set(['Corridor', 'Lobby', 'Entry', 'Exit', 'Elevator', 'Stairs', 'Door', 'Amenity'])
 const VERTICAL_TYPES = new Set(['Elevator', 'Stairs'])
 
-/** Keriosa often stored dwellings as type Entry — treat those as units for routing. */
-function looksLikeDwelling(label) {
-  const t = String(label || '').trim()
-  if (!t) return false
-  if (/\b(unit|suite|apt\.?|apartment)\s*[#-]?\s*[a-z0-9-]+\b/i.test(t)) return true
-  if (/#\s*\d{1,4}[a-z]?\b/i.test(t)) return true
-  return false
-}
-
 function effectiveType(loc) {
-  if (loc?.type === 'Entry' && looksLikeDwelling(loc.name)) return 'Unit'
-  return loc?.type
+  return inferLocationType(loc)
 }
 
 function isHub(loc) {
@@ -158,12 +158,12 @@ function dijkstraFloor(from, to, floorLocs) {
 }
 
 function pickVertical(buildingLocs, fromFloorId, toFloorId, nearFrom, nearTo) {
-  const cores = buildingLocs.filter((l) => VERTICAL_TYPES.has(l.type))
+  const cores = buildingLocs.filter((l) => isVerticalish(l) || VERTICAL_TYPES.has(effectiveType(l)))
   if (!cores.length) return null
   // Prefer elevator, then stairs; score by distance to both ends
   return [...cores].sort((a, b) => {
     const score = (c) => {
-      const typeBias = c.type === 'Elevator' ? 0 : 18
+      const typeBias = effectiveType(c) === 'Elevator' ? 0 : 18
       return (
         typeBias +
         haversineMeters(nearFrom, c) +
@@ -172,6 +172,62 @@ function pickVertical(buildingLocs, fromFloorId, toFloorId, nearFrom, nearTo) {
     }
     return score(a) - score(b)
   })[0]
+}
+
+function floorRank(loc) {
+  const label = String(loc?.floorLabel || '')
+  if (/stair/i.test(label)) return 1.5
+  const m = label.match(/L?\s*(\d+(?:\.\d+)?)/i)
+  if (m) return Number(m[1])
+  if (Number.isFinite(loc?.level)) return Number(loc.level)
+  return 0
+}
+
+/**
+ * Ordered vertical / stair chain between floors (Start → turn → Top),
+ * inferred from labels when Keriosa locked a walkable stair sequence.
+ */
+function buildVerticalChain(buildingLocs, fromFloorId, toFloorId, nearFrom, nearTo) {
+  const verticals = buildingLocs.filter((l) => isVerticalish(l))
+  if (!verticals.length) return null
+
+  const elevators = verticals.filter((l) => effectiveType(l) === 'Elevator')
+  if (elevators.length && !verticals.some(isStairish)) {
+    const core = pickVertical(buildingLocs, fromFloorId, toFloorId, nearFrom, nearTo)
+    return core ? [core] : null
+  }
+
+  const stairs = verticals.filter(isStairish)
+  if (!stairs.length) {
+    const core = pickVertical(buildingLocs, fromFloorId, toFloorId, nearFrom, nearTo)
+    return core ? [core] : null
+  }
+
+  // Prefer the stair cluster nearest the traveler (drops distant GPS outliers).
+  const rankedClusters = [...stairs].sort(
+    (a, b) =>
+      haversineMeters(nearFrom, a) +
+      haversineMeters(nearTo, a) -
+      (haversineMeters(nearFrom, b) + haversineMeters(nearTo, b)),
+  )
+  const seed = rankedClusters[0]
+  const cluster = stairs.filter((s) => haversineMeters(seed, s) <= 45)
+  const ordered = [...cluster].sort((a, b) => {
+    const o = stairChainOrder(a) - stairChainOrder(b)
+    if (o !== 0) return o
+    return floorRank(a) - floorRank(b)
+  })
+
+  // Use floor labels (L01/L02), not raw GPS elevation — Keriosa elev is often wrong.
+  const ascending = floorRank(nearTo) >= floorRank(nearFrom)
+  if (!ascending) ordered.reverse()
+  return ordered.length ? ordered : null
+}
+
+function appendUnique(path, stop) {
+  if (!stop) return
+  if (path[path.length - 1]?.id === stop.id) return
+  path.push(stop)
 }
 
 /**
@@ -206,39 +262,51 @@ export function routePath(from, to, locations) {
   }
 
   if (from.floorId !== to.floorId) {
-    const buildingLocs = locations.filter((l) => l.buildingId === from.buildingId)
+    const buildingLocs = filterBuildingOutliers(
+      locations.filter((l) => l.buildingId === from.buildingId),
+    )
     const fromFloor = buildingLocs.filter((l) => l.floorId === from.floorId)
     const toFloor = buildingLocs.filter((l) => l.floorId === to.floorId)
-    const vertical = pickVertical(buildingLocs, from.floorId, to.floorId, from, to)
-    if (!vertical) {
+    const chain = buildVerticalChain(buildingLocs, from.floorId, to.floorId, from, to)
+    if (!chain?.length) {
       return [...dijkstraFloor(from, to, [...fromFloor, ...toFloor, from, to])]
     }
-    const vertOnFrom = {
-      ...vertical,
-      floorId: from.floorId,
-      floorLabel: from.floorLabel,
-      elevation: from.elevation,
-    }
-    // Prefer a vertical core that exists on this floor listing; else use the building core coords
+
+    const first = chain[0]
+    const last = chain[chain.length - 1]
+    // Approach first stair/elevator on the departure floor.
     const onFrom =
-      fromFloor.find((l) => l.type === vertical.type && /elevator|stair/i.test(`${l.type}${l.name}`)) ||
-      fromFloor.find((l) => l.id === vertical.id) ||
-      vertOnFrom
-    const onTo = {
-      ...(toFloor.find((l) => l.type === vertical.type) || vertical),
-      floorId: to.floorId,
-      floorLabel: to.floorLabel,
-      elevation: to.elevation,
-      id: `${vertical.id}→${to.floorId}`,
-      name: `${vertical.name} (${to.floorLabel})`,
-    }
+      fromFloor.find((l) => l.id === first.id) ||
+      fromFloor.find((l) => isVerticalish(l)) ||
+      {
+        ...first,
+        floorId: from.floorId,
+        floorLabel: from.floorLabel,
+        elevation: from.elevation,
+      }
+    const onTo =
+      toFloor.find((l) => l.id === last.id) ||
+      toFloor.find((l) => isVerticalish(l)) || {
+        ...last,
+        floorId: to.floorId,
+        floorLabel: to.floorLabel,
+        elevation: to.elevation ?? last.elevation,
+        id: last.id,
+        name: /L\d+/i.test(String(last.name)) ? last.name : `${last.name} (${to.floorLabel})`,
+      }
+
     const legA = dijkstraFloor(from, onFrom, fromFloor.length ? [...fromFloor, onFrom] : [from, onFrom])
-    const legB = dijkstraFloor(onTo, to, toFloor.length ? [...toFloor, onTo] : [onTo, to])
     const path = [...legA]
-    if (path[path.length - 1]?.id !== onTo.id) path.push(onTo)
-    for (const s of legB) {
-      if (path[path.length - 1]?.id !== s.id) path.push(s)
-    }
+    // Walk the labeled stair chain once (Start → turn → Top), then finish on the destination floor.
+    for (const node of chain) appendUnique(path, node)
+    appendUnique(path, onTo)
+    const legBNodes = toFloor.filter((l) => !isVerticalish(l) || l.id === onTo.id || l.id === to.id)
+    const legB = dijkstraFloor(
+      onTo,
+      to,
+      legBNodes.length ? [...legBNodes, onTo, to] : [onTo, to],
+    )
+    for (const s of legB) appendUnique(path, s)
     return path
   }
 
@@ -328,7 +396,9 @@ function instructionForStop(stops, i, destinationLabel) {
             : turn === 'slight-right'
               ? 'Bear right and '
               : ''
-    const arriveLine = `${cue}arrive at ${stop.name}${destinationLabel ? ` · ${destinationLabel}` : ''}`
+    const destNote =
+      destinationLabel && destinationLabel !== stop.name ? ` · ${destinationLabel}` : ''
+    const arriveLine = `${cue}arrive at ${stop.name}${destNote}`
     return {
       instruction: arriveLine.charAt(0).toUpperCase() + arriveLine.slice(1),
       title: 'Inside · Arrive',
@@ -337,12 +407,13 @@ function instructionForStop(stops, i, destinationLabel) {
     }
   }
 
-  if (VERTICAL_TYPES.has(stop.type) || /elevator|stair/i.test(stop.name || '')) {
+  if (VERTICAL_TYPES.has(effectiveType(stop)) || isVerticalish(stop)) {
+    const elev = effectiveType(stop) === 'Elevator'
     const goingUp = next && (next.elevation || 0) > (stop.elevation || 0)
     return {
-      instruction: `Go to the ${stop.type === 'Elevator' ? 'elevator' : 'stairs'} (${stop.name}) for ${next?.floorLabel || 'the next floor'}${goingUp ? ' · up' : ''}`,
-      title: `Inside · ${stop.type}`,
-      maneuver: stop.type === 'Elevator' ? 'elevator' : 'stairs',
+      instruction: `Go to the ${elev ? 'elevator' : 'stairs'} (${stop.name}) for ${next?.floorLabel || 'the next floor'}${goingUp ? ' · up' : ''}`,
+      title: `Inside · ${elev ? 'Elevator' : 'Stairs'}`,
+      maneuver: elev ? 'elevator' : 'stairs',
       distanceM: dist,
     }
   }
@@ -385,35 +456,44 @@ function instructionForStop(stops, i, destinationLabel) {
 }
 
 export function buildIndoorJourney(destination, allLocations) {
-  const buildingLocs = allLocations.filter((l) => l.buildingId === destination.buildingId)
-  // Prefer an entrance on the destination floor so indoor nav starts where the unit lives.
+  const enrichedAll = enrichLocations(allLocations)
+  const dest = enrichLocation(destination)
+  let buildingLocs = filterBuildingOutliers(
+    enrichedAll.filter((l) => l.buildingId === dest.buildingId && l.mapped !== false),
+  )
+  if (!buildingLocs.length) {
+    buildingLocs = enrichedAll.filter((l) => l.buildingId === dest.buildingId)
+  }
+
+  // Multi-floor units: start at a ground / nearest Entry, then climb via stairs/elevator.
+  // (Preferring the destination floor wrongly skipped L01 doors when only L02 was mapped.)
   const entry =
-    nearestEntry(buildingLocs, destination, destination.floorId) ||
-    nearestEntry(buildingLocs, destination) ||
+    nearestEntry(buildingLocs, dest) ||
+    nearestEntry(buildingLocs, dest, dest.floorId) ||
     buildingLocs[0] ||
-    destination
-  if (!entry || entry.id === destination.id) {
-    const sameFloor = buildingLocs.filter((l) => l.floorId === destination.floorId)
+    dest
+  if (!entry || entry.id === dest.id) {
+    const sameFloor = buildingLocs.filter((l) => l.floorId === dest.floorId)
     const neighbor =
       [...sameFloor]
-        .filter((l) => l.id !== destination.id)
-        .sort((a, b) => haversineMeters(destination, a) - haversineMeters(destination, b))[0] || null
-    const stops = neighbor ? [neighbor, destination] : [destination]
+        .filter((l) => l.id !== dest.id)
+        .sort((a, b) => haversineMeters(dest, a) - haversineMeters(dest, b))[0] || null
+    const stops = neighbor ? [neighbor, dest] : [dest]
     const distanceM = pathDistanceMeters(stops)
-    const cues = stops.map((_, i) => instructionForStop(stops, i, destination.name))
+    const cues = stops.map((_, i) => instructionForStop(stops, i, dest.name))
     return {
       stops,
       distanceM: Math.round(distanceM),
       walkMinutes: estimateWalkMinutes(distanceM, 0),
       floorChanges: 0,
-      entry: neighbor || destination,
+      entry: neighbor || dest,
       cues,
     }
   }
-  const stops = routePath(entry, destination, allLocations)
+  const stops = routePath(entry, dest, buildingLocs)
   const floorChanges = Math.max(0, new Set(stops.map((s) => s.floorId)).size - 1)
   const distanceM = pathDistanceMeters(stops)
-  const cues = stops.map((_, i) => instructionForStop(stops, i, destination.name))
+  const cues = stops.map((_, i) => instructionForStop(stops, i, dest.name))
   return {
     stops,
     distanceM: Math.round(distanceM),
@@ -458,18 +538,19 @@ export function buildIndoorSteps(indoor, destinationLabel, indexOffset = 0) {
 }
 
 export function serializeStop(loc) {
+  const e = enrichLocation(loc)
   return {
-    id: loc.id,
-    name: loc.name,
-    type: loc.type,
-    code: loc.code,
-    floorId: loc.floorId,
-    floorLabel: loc.floorLabel,
-    buildingId: loc.buildingId,
-    buildingName: loc.buildingName,
-    latitude: loc.latitude,
-    longitude: loc.longitude,
-    elevation: loc.elevation,
-    physicalAddress: loc.physicalAddress || loc.address || null,
+    id: e.id,
+    name: e.name,
+    type: e.type,
+    code: e.code,
+    floorId: e.floorId,
+    floorLabel: e.floorLabel,
+    buildingId: e.buildingId,
+    buildingName: e.buildingName,
+    latitude: e.latitude,
+    longitude: e.longitude,
+    elevation: e.elevation,
+    physicalAddress: e.physicalAddress || e.address || e.labelSourceName || null,
   }
 }
