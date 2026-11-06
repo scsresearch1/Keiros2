@@ -511,22 +511,21 @@ app.post('/api/v1/navigate', (req, res) =>
       longitude: entry.longitude,
       name: entry.name || 'Building entrance',
     }
-    // Orion-style: outdoor ends at the building entrance whenever indoor continues to the unit.
-    // (Avoids driving to a street-locked unit pin like Fig Garden Unit 202.)
+    // Indoor still starts at the entry door. Outdoor D / drive target is the unit
+    // (building destination) — entrance pins can sit in a parking aisle (Fig Garden).
     const indoorContinues =
       (indoor.stops?.length ?? 0) > 1 ||
       (entry?.id && unit?.id && entry.id !== unit.id) ||
       String(unit.floorLabel || '').toUpperCase() !== 'L01'
-    const routeTarget =
-      viaParking || indoorContinues
-        ? {
-            latitude: entrancePoint.latitude,
-            longitude: entrancePoint.longitude,
-          }
-        : {
-            latitude: unit.latitude,
-            longitude: unit.longitude,
-          }
+    const routeTarget = viaParking
+      ? {
+          latitude: entrancePoint.latitude,
+          longitude: entrancePoint.longitude,
+        }
+      : {
+          latitude: unit.latitude,
+          longitude: unit.longitude,
+        }
     const origin = explicitStart
       ? { latitude: bodyLat, longitude: bodyLng }
       : offsetMiles(
@@ -620,7 +619,7 @@ app.post('/api/v1/navigate', (req, res) =>
       walk = arrival.walk
       arrivalMode = 'point-to-point'
       outdoorNote = indoorContinues
-        ? `Drive/walk to ${entrancePoint.name}, then continue indoors to ${unit.name || 'your unit'}.`
+        ? `Drive/walk to ${unit.name || 'destination'}, then continue indoors from ${entrancePoint.name}.`
         : 'Point-to-point: start → destination.'
     }
     const weather = await weatherPromise

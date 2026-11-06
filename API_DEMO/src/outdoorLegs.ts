@@ -67,9 +67,9 @@ function isRealParkingStop(result: NavigateResult, origin: LatLngLit): LatLngLit
 }
 
 /**
- * Outdoor legs (Orion-style):
- * - Via parking: drive → lot, then walk pathways to entrance (indoor continues to unit)
- * - Otherwise: drive toward entrance, last-meter walk to the door — never to a street unit pin
+ * Outdoor legs:
+ * - Via parking: drive → lot, then walk pathways to the unit/building (entrance waypoint kept)
+ * - Otherwise: drive toward the unit pin (brown-building destination), not a parking-lot entry
  */
 export function resolveOutdoorLegs(result: NavigateResult): OutdoorPlan {
   const origin = lit(result.origin.latitude, result.origin.longitude)
@@ -85,10 +85,10 @@ export function resolveOutdoorLegs(result: NavigateResult): OutdoorPlan {
     result.entrance &&
       ((result.map3d?.routeStops?.length ?? 0) > 1 || metersBetween(entrance, unit) > 8),
   )
-  // Outdoor corridor ends at the door when indoor will finish the trip.
-  const outdoorEnd = indoorContinues ? entrance : unit
+  // Red D / outdoor corridor end on the unit building — not a lot entrance pin.
+  const outdoorEnd = unit
 
-  const toEntranceM = Math.round(metersBetween(origin, entrance))
+  const toEntranceM = Math.round(metersBetween(origin, outdoorEnd))
   const parking = isRealParkingStop(result, origin)
   const viaParking = Boolean(parking)
 
@@ -101,12 +101,14 @@ export function resolveOutdoorLegs(result: NavigateResult): OutdoorPlan {
       fill: '#a855f7',
     })
   }
-  waypoints.push({
-    kind: 'entrance',
-    position: entrance,
-    label: result.entrance?.label || 'Entry door',
-    fill: '#22c55e',
-  })
+  if (indoorContinues && metersBetween(entrance, unit) > 5) {
+    waypoints.push({
+      kind: 'entrance',
+      position: entrance,
+      label: result.entrance?.label || 'Entry door',
+      fill: '#22c55e',
+    })
+  }
 
   const legs: OutdoorLeg[] = []
 
@@ -119,33 +121,33 @@ export function resolveOutdoorLegs(result: NavigateResult): OutdoorPlan {
       label: 'Drive to parking',
       color: DRIVE_COLOR,
     })
-    // Walk on pathways from parking → entrance (indoor continues to unit).
-    if (metersBetween(parking, entrance) > AT_DESTINATION_M) {
+    // Walk on pathways from parking → unit/building.
+    if (metersBetween(parking, outdoorEnd) > AT_DESTINATION_M) {
       legs.push({
-        id: 'walk-parking-to-entrance',
+        id: 'walk-parking-to-destination',
         mode: 'WALK',
         from: parking,
-        to: entrance,
-        label: 'Walk pathways to entrance',
+        to: outdoorEnd,
+        label: 'Walk pathways to destination',
         color: WALK_COLOR,
       })
     }
   } else if (metersBetween(origin, outdoorEnd) > AT_DESTINATION_M) {
     legs.push({
-      id: 'drive-to-entrance',
+      id: 'drive-to-destination',
       mode: 'DRIVE',
       from: origin,
       to: outdoorEnd,
-      label: indoorContinues ? 'Drive to entrance' : 'Drive toward destination',
+      label: 'Drive toward destination',
       color: DRIVE_COLOR,
     })
   } else if (metersBetween(origin, outdoorEnd) > 8) {
     legs.push({
-      id: 'walk-to-entrance',
+      id: 'walk-to-destination',
       mode: 'WALK',
       from: origin,
       to: outdoorEnd,
-      label: indoorContinues ? 'Walk to entrance' : 'Walk to destination',
+      label: 'Walk to destination',
       color: WALK_COLOR,
     })
   }

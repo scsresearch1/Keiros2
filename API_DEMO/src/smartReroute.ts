@@ -51,12 +51,12 @@ export async function rerouteFromLiveFix(
     latitude: result.destination.latitude,
     longitude: result.destination.longitude,
   }
-  // Outdoor re-route aims at the door when indoor continues (Fig Garden / Orion style).
+  // Re-route toward the unit/building pin (same as outdoor D) — not a parking-lot entry.
   const indoorContinues =
     Boolean(result.entrance) &&
     ((result.map3d?.routeStops?.length ?? 0) > 1 ||
       metersBetween(toLit(entrance), toLit(unitDest)) > 8)
-  const dest: LatLng = indoorContinues ? entrance : unitDest
+  const dest: LatLng = unitDest
   const parking = isDbParking(result)
     ? {
         latitude: result.parking!.latitude,

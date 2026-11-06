@@ -300,8 +300,8 @@ export function OutdoorMap({
       Number(result.origin.latitude),
       Number(result.origin.longitude),
     )
-    // Orion-style: when indoor continues past the door, outdoor D sits on the entrance
-    // (not a street-locked unit pin). Indoor map still uses map3d routeStops → unit.
+    // D always sits on the unit / building destination (e.g. Fig Garden brown-roof Unit 202).
+    // Entrance is a separate green waypoint — never steal the red D into a parking-lot entry pin.
     const unitDest = latLngLiteral(
       Number(result.destination.latitude ?? result.selection?.unit?.latitude),
       Number(result.destination.longitude ?? result.selection?.unit?.longitude),
@@ -319,7 +319,7 @@ export function OutdoorMap({
               Math.cos((unitDest.lat * Math.PI) / 180),
           ) > 8),
     )
-    const destination = indoorContinues && entranceDest ? entranceDest : unitDest
+    const destination = unitDest
     if (
       !Number.isFinite(origin.lat) ||
       !Number.isFinite(origin.lng) ||
@@ -402,7 +402,7 @@ export function OutdoorMap({
       result.selection?.unit?.name ||
       'Destination'
     const destName = indoorContinues
-      ? `${result.entrance?.label || 'Entrance'} · then ${unitName}`
+      ? `${unitName} · enter via ${result.entrance?.label || 'entrance'}`
       : unitName
     const destAddress =
       result.destination.address ||
@@ -413,19 +413,13 @@ export function OutdoorMap({
       createAdvancedMarker({
         map: gmap,
         position: destination,
-        title: indoorContinues ? `Entrance · ${destName}` : `Destination · ${destName}`,
+        title: `Destination · ${destName}`,
         zIndex: 45,
         svg: pinSvg('#ea4335', 'D'),
       }),
     )
     destMarker.addEventListener('gmp-click', () => {
-      openPinInfo(
-        destMarker,
-        indoorContinues ? 'Entrance' : 'Destination',
-        destName,
-        destAddress,
-        destination,
-      )
+      openPinInfo(destMarker, 'Destination', destName, destAddress, destination)
     })
     bounds.extend(destination)
 
