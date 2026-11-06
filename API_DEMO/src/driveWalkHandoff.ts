@@ -279,11 +279,9 @@ export async function planDrivePlusWalk(
     steps: drive.steps,
   }
 
-  // Vehicle network close enough — still walk leftover meters to exact D.
-  // Never drop the walk entirely when there is any gap: asphalt-snapped unit pins
-  // were hiding the red walk dots (Fig Garden Unit 202).
+  // Vehicle network close enough — still walk any leftover meters to exact D.
   if (endGap <= LAST_MILE_WALK_M) {
-    if (endGap <= 0.75) {
+    if (endGap <= 2) {
       return {
         segments: [driveSeg],
         handoff: null,
@@ -297,7 +295,7 @@ export async function planDrivePlusWalk(
         mode: 'WALK',
         path: forceReach([handoff], to),
         dashed: true,
-        distanceM: Math.round(Math.max(endGap, 1)),
+        distanceM: Math.round(endGap),
         source: 'last-meters-to-destination',
       },
     ]

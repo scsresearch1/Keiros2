@@ -68,12 +68,8 @@ function isRealParkingStop(result: NavigateResult, origin: LatLngLit): LatLngLit
 
 /**
  * Outdoor legs:
- * - Via parking: drive → lot, then walk pathways to the unit/building
- * - Indoor continues: drive → entrance/curb, then WALK to the unit (brown-building D)
- * - Otherwise: drive toward the unit pin
- *
- * Walk must stay a separate leg whenever indoor continues — otherwise Google drive
- * snaps onto the unit pin on asphalt and the red walk dots disappear.
+ * - Via parking: drive → lot, then walk pathways to the unit/building (entrance waypoint kept)
+ * - Otherwise: drive toward the unit pin (brown-building destination), not a parking-lot entry
  */
 export function resolveOutdoorLegs(result: NavigateResult): OutdoorPlan {
   const origin = lit(result.origin.latitude, result.origin.longitude)
@@ -89,8 +85,10 @@ export function resolveOutdoorLegs(result: NavigateResult): OutdoorPlan {
     result.entrance &&
       ((result.map3d?.routeStops?.length ?? 0) > 1 || metersBetween(entrance, unit) > 8),
   )
+  // Red D / outdoor corridor end on the unit building — not a lot entrance pin.
+  const outdoorEnd = unit
 
-  const toEntranceM = Math.round(metersBetween(origin, unit))
+  const toEntranceM = Math.round(metersBetween(origin, outdoorEnd))
   const parking = isRealParkingStop(result, origin)
   const viaParking = Boolean(parking)
 
@@ -123,72 +121,32 @@ export function resolveOutdoorLegs(result: NavigateResult): OutdoorPlan {
       label: 'Drive to parking',
       color: DRIVE_COLOR,
     })
-    if (metersBetween(parking, unit) > 8) {
+    // Walk on pathways from parking → unit/building.
+    if (metersBetween(parking, outdoorEnd) > AT_DESTINATION_M) {
       legs.push({
         id: 'walk-parking-to-destination',
         mode: 'WALK',
         from: parking,
-        to: unit,
+        to: outdoorEnd,
         label: 'Walk pathways to destination',
         color: WALK_COLOR,
       })
     }
-  } else if (indoorContinues) {
-    // Drive to the door approach, then always walk to the unit pin (brown building).
-    if (metersBetween(origin, entrance) > AT_DESTINATION_M) {
-      legs.push({
-        id: 'drive-to-entrance',
-        mode: 'DRIVE',
-        from: origin,
-        to: entrance,
-        label: 'Drive to entrance',
-        color: DRIVE_COLOR,
-      })
-    } else if (metersBetween(origin, entrance) > 8) {
-      legs.push({
-        id: 'walk-to-entrance',
-        mode: 'WALK',
-        from: origin,
-        to: entrance,
-        label: 'Walk to entrance',
-        color: WALK_COLOR,
-      })
-    }
-    if (metersBetween(entrance, unit) > 5) {
-      legs.push({
-        id: 'walk-entrance-to-unit',
-        mode: 'WALK',
-        from: entrance,
-        to: unit,
-        label: 'Walk to door / unit',
-        color: WALK_COLOR,
-      })
-    } else if (!legs.some((l) => l.mode === 'WALK') && metersBetween(origin, unit) > 8) {
-      // Entrance ≈ unit — still force a short walk finish onto the building pin.
-      legs.push({
-        id: 'walk-to-destination',
-        mode: 'WALK',
-        from: legs.length ? legs[legs.length - 1].to : origin,
-        to: unit,
-        label: 'Walk to destination',
-        color: WALK_COLOR,
-      })
-    }
-  } else if (metersBetween(origin, unit) > AT_DESTINATION_M) {
+  } else if (metersBetween(origin, outdoorEnd) > AT_DESTINATION_M) {
     legs.push({
       id: 'drive-to-destination',
       mode: 'DRIVE',
       from: origin,
-      to: unit,
+      to: outdoorEnd,
       label: 'Drive toward destination',
       color: DRIVE_COLOR,
     })
-  } else if (metersBetween(origin, unit) > 8) {
+  } else if (metersBetween(origin, outdoorEnd) > 8) {
     legs.push({
       id: 'walk-to-destination',
       mode: 'WALK',
       from: origin,
-      to: unit,
+      to: outdoorEnd,
       label: 'Walk to destination',
       color: WALK_COLOR,
     })
@@ -203,7 +161,7 @@ export function resolveOutdoorLegs(result: NavigateResult): OutdoorPlan {
       : legs.length === 0
         ? 'at-destination'
         : indoorContinues
-          ? 'drive-to-entrance-then-walk-to-unit'
+          ? 'drive-then-walk-to-entrance'
           : 'drive-then-walk-to-destination',
     toEntranceM,
   }
