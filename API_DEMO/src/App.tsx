@@ -483,6 +483,9 @@ export default function App() {
       mapGuidanceSig.current = ''
       offRouteStreak.current = 0
       rerouteInFlight.current = false
+      travelModeRef.current = null
+      travelModeSwitchStreak.current = 0
+      setTravelMode(null)
       // Short hold so step voice settles — do not block off-route recalculation for long.
       manualHoldUntil.current = Date.now() + (mode === 'demo' ? 4000 : 1500)
       rerouteLockUntil.current = 0
