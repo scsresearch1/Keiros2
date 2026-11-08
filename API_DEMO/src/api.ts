@@ -89,6 +89,11 @@ export type NavigateResult = {
     viaParking?: boolean
     /** Live GPS travel mode used for the last recalculation (walk → sidewalks). */
     liveTravelMode?: 'walk' | 'drive'
+    /**
+     * Current GPS used as the corridor start for live recalculation.
+     * Session start pin (S) stays on latitude/longitude — only set on new Navigate.
+     */
+    liveFrom?: { latitude: number; longitude: number }
   }
   parking?: {
     latitude: number

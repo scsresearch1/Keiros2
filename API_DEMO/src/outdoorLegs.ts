@@ -72,7 +72,14 @@ function isRealParkingStop(result: NavigateResult, origin: LatLngLit): LatLngLit
  * - Otherwise: drive toward the unit pin (brown-building destination), not a parking-lot entry
  */
 export function resolveOutdoorLegs(result: NavigateResult): OutdoorPlan {
-  const origin = lit(result.origin.latitude, result.origin.longitude)
+  // Session start (S pin) — never moved by live recalculation.
+  const sessionOrigin = lit(result.origin.latitude, result.origin.longitude)
+  // Remaining corridor may start at current GPS after a live recalculate.
+  const lf = result.origin.liveFrom
+  const corridorFrom =
+    lf && Number.isFinite(lf.latitude) && Number.isFinite(lf.longitude)
+      ? lit(lf.latitude, lf.longitude)
+      : sessionOrigin
   const unit = lit(
     Number(result.destination.latitude ?? result.selection?.unit?.latitude),
     Number(result.destination.longitude ?? result.selection?.unit?.longitude),
@@ -88,8 +95,8 @@ export function resolveOutdoorLegs(result: NavigateResult): OutdoorPlan {
   // Red D / outdoor corridor end on the unit building — not a lot entrance pin.
   const outdoorEnd = unit
 
-  const toEntranceM = Math.round(metersBetween(origin, outdoorEnd))
-  const parking = isRealParkingStop(result, origin)
+  const toEntranceM = Math.round(metersBetween(corridorFrom, outdoorEnd))
+  const parking = isRealParkingStop(result, sessionOrigin)
   const viaParking = Boolean(parking)
   // Live GPS said we're walking — never plan a blue drive corridor on roads.
   const liveWalking =
@@ -117,11 +124,11 @@ export function resolveOutdoorLegs(result: NavigateResult): OutdoorPlan {
   const legs: OutdoorLeg[] = []
 
   if (liveWalking) {
-    if (metersBetween(origin, outdoorEnd) > 8) {
+    if (metersBetween(corridorFrom, outdoorEnd) > 8) {
       legs.push({
         id: 'walk-live-to-destination',
         mode: 'WALK',
-        from: origin,
+        from: corridorFrom,
         to: outdoorEnd,
         label: 'Walk on sidewalks / pathways',
         color: WALK_COLOR,
@@ -131,7 +138,7 @@ export function resolveOutdoorLegs(result: NavigateResult): OutdoorPlan {
     legs.push({
       id: 'drive-to-parking',
       mode: 'DRIVE',
-      from: origin,
+      from: corridorFrom,
       to: parking,
       label: 'Drive to parking',
       color: DRIVE_COLOR,
@@ -147,20 +154,20 @@ export function resolveOutdoorLegs(result: NavigateResult): OutdoorPlan {
         color: WALK_COLOR,
       })
     }
-  } else if (metersBetween(origin, outdoorEnd) > AT_DESTINATION_M) {
+  } else if (metersBetween(corridorFrom, outdoorEnd) > AT_DESTINATION_M) {
     legs.push({
       id: 'drive-to-destination',
       mode: 'DRIVE',
-      from: origin,
+      from: corridorFrom,
       to: outdoorEnd,
       label: 'Drive toward destination',
       color: DRIVE_COLOR,
     })
-  } else if (metersBetween(origin, outdoorEnd) > 8) {
+  } else if (metersBetween(corridorFrom, outdoorEnd) > 8) {
     legs.push({
       id: 'walk-to-destination',
       mode: 'WALK',
-      from: origin,
+      from: corridorFrom,
       to: outdoorEnd,
       label: 'Walk to destination',
       color: WALK_COLOR,

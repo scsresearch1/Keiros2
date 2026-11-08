@@ -32,7 +32,7 @@ export type RerouteOptions = {
  * Google-class recalculation from live GPS:
  * - Drive: traffic-aware roads to parking (if Via parking) or destination
  * - Walk: pedestrian / sidewalk paths when the phone is walking
- * - Always stamps new origin so the outdoor map redraws the blue/red path
+ * - Keeps session origin (S pin); stamps liveFrom so remaining corridor starts at GPS
  */
 export async function rerouteFromLiveFix(
   result: NavigateResult,
@@ -77,12 +77,11 @@ export async function rerouteFromLiveFix(
         pastParking ||
         (!result.outdoor.steps?.length && phaseNow !== 'drive' && phaseNow !== 'outdoor')))
 
+  // Never move session start (S). Route APIs still use `fix`; outdoor legs use liveFrom.
   const stampedOrigin = {
     ...result.origin,
-    latitude: fix.latitude,
-    longitude: fix.longitude,
-    label: result.origin.label || 'Current location',
     liveTravelMode: (walking ? 'walk' : 'drive') as 'walk' | 'drive',
+    liveFrom: { latitude: fix.latitude, longitude: fix.longitude },
   }
 
   try {

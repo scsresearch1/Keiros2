@@ -459,7 +459,13 @@ export default function App() {
       // Stamp viaParking false — outdoor map goes straight toward destination (no parking stop).
       setResult({
         ...routed,
-        origin: { ...routed.origin, viaParking: false },
+        // Fresh Navigate: clear live recalculate anchors so S is only this session start.
+        origin: {
+          ...routed.origin,
+          viaParking: false,
+          liveFrom: undefined,
+          liveTravelMode: undefined,
+        },
         // ...(dbParking && routed.parking?.mode === 'database'
         //   ? {
         //       parking: {
@@ -615,12 +621,13 @@ export default function App() {
     liveNav || startMode === 'live' || (startMode === 'custom' && liveSelected)
   const indoorActive = activePhase === 'indoor'
   const liveWatchOn = Boolean(result && wantsLiveGps && (outdoorActive || indoorActive))
+  // Freeze on session start coords only — live recalculate must not re-seed GPS.
   const liveGpsAnchor = useMemo(
     () =>
       result
         ? { latitude: result.origin.latitude, longitude: result.origin.longitude }
         : null,
-    [result],
+    [result?.origin.latitude, result?.origin.longitude],
   )
   const { fix: liveFix, error: liveGpsError, watching: liveWatching } = useGeolocationWatch(
     liveWatchOn,
