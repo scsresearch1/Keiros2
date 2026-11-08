@@ -17,10 +17,12 @@ import { speakWeakGpsAlert, unlockVoiceFromGesture, useDirectionVoice } from './
 import { withLiveDrive } from './liveDrive'
 // import { attachLotToResult, withLiveDrive } from './liveDrive' // Via parking
 import {
+  inferTravelMode,
   matchLiveProgress,
   requestCompassPermission,
   useGeolocationWatch,
   type LiveProgress,
+  type TravelMode,
 } from './liveNavigation'
 import { rerouteFromLiveFix } from './smartReroute'
 import type { StartPoint } from './startLocation'
@@ -140,6 +142,10 @@ export default function App() {
   /** Google-like: require consecutive off-route fixes before recalculating. */
   const offRouteStreak = useRef(0)
   const rerouteInFlight = useRef(false)
+  /** GPS walk vs drive — hysteresis in inferTravelMode; streak confirms a switch. */
+  const travelModeRef = useRef<TravelMode | null>(null)
+  const travelModeSwitchStreak = useRef(0)
+  const [travelMode, setTravelMode] = useState<TravelMode | null>(null)
   /** Dense map polylines from OutdoorMap (lng,lat) — preferred for off-route. */
   const routeCorridorRef = useRef<{
     drive?: [number, number][]
@@ -684,6 +690,20 @@ export default function App() {
       return
     }
 
+    // Walk vs drive from GPS speed (not from the current journey step alone).
+    const inferred = inferTravelMode(liveFix.speed, travelModeRef.current)
+    if (travelModeRef.current == null) {
+      travelModeRef.current = inferred
+      setTravelMode(inferred)
+      travelModeSwitchStreak.current = 0
+    } else if (inferred !== travelModeRef.current) {
+      travelModeSwitchStreak.current += 1
+    } else {
+      travelModeSwitchStreak.current = 0
+    }
+    const confirmedModeSwitch =
+      travelModeSwitchStreak.current >= 2 && inferred !== travelModeRef.current
+
     // Match the SAME turn-by-turn list the banner shows (mapGuidance), so D / instruction
     // update as you drive. Fall back to server steps + drawn corridor when guidance isn't ready.
     const matchSteps = mapGuidance?.length
@@ -721,18 +741,24 @@ export default function App() {
       offRouteStreak.current = 0
     }
 
-    // Google-like: 2 consecutive off-route samples, then recalculate from phone GPS.
+    // Recalculate when off-route OR when walk↔drive mode flips (sidewalk vs road corridor).
     const confirmedOff = offRouteStreak.current >= 2
-    if (
-      confirmedOff &&
+    const shouldReroute =
+      (confirmedOff || confirmedModeSwitch) &&
       !rerouteInFlight.current &&
       now > rerouteLockUntil.current
-    ) {
+    if (shouldReroute) {
+      if (confirmedModeSwitch) {
+        travelModeRef.current = inferred
+        setTravelMode(inferred)
+        travelModeSwitchStreak.current = 0
+      }
       lastOffRouteAt.current = now
       rerouteInFlight.current = true
       setRecalculating(true)
-      const phaseHint = result.journey.steps[journeyIndex]?.phase
-      void rerouteFromLiveFix(result, liveFix, { phaseHint })
+      const mode = travelModeRef.current ?? inferred
+      const phaseHint = mode === 'walk' ? 'walk' : mode === 'drive' ? 'drive' : result.journey.steps[journeyIndex]?.phase
+      void rerouteFromLiveFix(result, liveFix, { phaseHint, travelMode: mode })
         .then((next) => {
           if (!next) return
           setResult(next)
@@ -1133,7 +1159,7 @@ export default function App() {
                       ? liveWatching && liveFix
                         ? liveProgress?.offRoute
                           ? 'Off route — finding a better path…'
-                          : `Following you · ±${Math.round(liveFix.accuracy)} m`
+                          : `Following you · ${travelMode === 'walk' ? 'Walking' : travelMode === 'drive' ? 'Driving' : '…'} · ±${Math.round(liveFix.accuracy)} m`
                         : liveGpsError || 'Waiting for GPS — allow location in the browser'
                       : 'Turn on to follow GPS and re-route when you leave the path'}
                 </span>

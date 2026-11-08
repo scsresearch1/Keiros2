@@ -10,6 +10,25 @@ export type LiveFix = {
   timestamp: number
 }
 
+export type TravelMode = 'walk' | 'drive'
+
+/**
+ * Infer walk vs drive from GPS speed with hysteresis so noisy phone GPS
+ * does not flip modes every tick (Google Maps–style).
+ * Thresholds in m/s: walk stays until ~14 km/h; drive drops to walk under ~7 km/h.
+ */
+export function inferTravelMode(
+  speedMps: number | null | undefined,
+  prev: TravelMode | null,
+): TravelMode {
+  const speed =
+    speedMps != null && Number.isFinite(speedMps) ? Math.max(0, Number(speedMps)) : null
+  if (speed == null) return prev ?? 'walk'
+  if (prev === 'drive') return speed < 2.0 ? 'walk' : 'drive'
+  if (prev === 'walk') return speed > 4.0 ? 'drive' : 'walk'
+  return speed >= 3.0 ? 'drive' : 'walk'
+}
+
 export type LiveProgress = {
   stepIndex: number
   distanceToRouteM: number

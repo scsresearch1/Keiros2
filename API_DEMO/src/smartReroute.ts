@@ -22,12 +22,14 @@ function isDbParking(result: NavigateResult) {
 export type RerouteOptions = {
   /** Current journey step phase — more reliable than first outdoor step. */
   phaseHint?: string | null
+  /** GPS-inferred travel mode (preferred over journey phase when set). */
+  travelMode?: 'walk' | 'drive' | null
 }
 
 /**
  * Google-class recalculation from live GPS:
  * - Drive: traffic-aware roads to parking (if Via parking) or destination
- * - Walk: pedestrian paths for the last mile
+ * - Walk: pedestrian / sidewalk paths when the phone is walking
  * - Always stamps new origin so the outdoor map redraws the blue/red path
  */
 export async function rerouteFromLiveFix(
@@ -63,17 +65,22 @@ export async function rerouteFromLiveFix(
   const atDoor = metersBetween(toLit(fix), toLit(entrance)) <= AT_ENTRANCE_M
   const pastParking =
     parking != null && metersBetween(toLit(fix), toLit(parking)) <= 55 && phaseNow === 'walk'
+  // GPS travel mode wins: walking must not keep a blue drive corridor.
+  const travelMode = opts?.travelMode
   const walking =
-    atDoor ||
-    phaseNow === 'walk' ||
-    pastParking ||
-    (!result.outdoor.steps?.length && phaseNow !== 'drive' && phaseNow !== 'outdoor')
+    travelMode === 'walk' ||
+    (travelMode !== 'drive' &&
+      (atDoor ||
+        phaseNow === 'walk' ||
+        pastParking ||
+        (!result.outdoor.steps?.length && phaseNow !== 'drive' && phaseNow !== 'outdoor')))
 
   const stampedOrigin = {
     ...result.origin,
     latitude: fix.latitude,
     longitude: fix.longitude,
     label: result.origin.label || 'Current location',
+    liveTravelMode: (walking ? 'walk' : 'drive') as 'walk' | 'drive',
   }
 
   try {

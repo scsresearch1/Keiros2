@@ -91,9 +91,13 @@ export function resolveOutdoorLegs(result: NavigateResult): OutdoorPlan {
   const toEntranceM = Math.round(metersBetween(origin, outdoorEnd))
   const parking = isRealParkingStop(result, origin)
   const viaParking = Boolean(parking)
+  // Live GPS said we're walking — never plan a blue drive corridor on roads.
+  const liveWalking =
+    result.origin.liveTravelMode === 'walk' ||
+    /live recalculate · walk/i.test(String(result.outdoor?.provider || ''))
 
   const waypoints: OutdoorWaypoint[] = []
-  if (parking) {
+  if (parking && !liveWalking) {
     waypoints.push({
       kind: 'parking',
       position: parking,
@@ -112,7 +116,18 @@ export function resolveOutdoorLegs(result: NavigateResult): OutdoorPlan {
 
   const legs: OutdoorLeg[] = []
 
-  if (viaParking && parking) {
+  if (liveWalking) {
+    if (metersBetween(origin, outdoorEnd) > 8) {
+      legs.push({
+        id: 'walk-live-to-destination',
+        mode: 'WALK',
+        from: origin,
+        to: outdoorEnd,
+        label: 'Walk on sidewalks / pathways',
+        color: WALK_COLOR,
+      })
+    }
+  } else if (viaParking && parking) {
     legs.push({
       id: 'drive-to-parking',
       mode: 'DRIVE',
@@ -155,14 +170,16 @@ export function resolveOutdoorLegs(result: NavigateResult): OutdoorPlan {
   return {
     legs,
     waypoints,
-    viaParking,
-    policy: viaParking
-      ? 'drive-to-parking-then-walk-pathways'
-      : legs.length === 0
-        ? 'at-destination'
-        : indoorContinues
-          ? 'drive-then-walk-to-entrance'
-          : 'drive-then-walk-to-destination',
+    viaParking: viaParking && !liveWalking,
+    policy: liveWalking
+      ? 'live-walk-sidewalks'
+      : viaParking
+        ? 'drive-to-parking-then-walk-pathways'
+        : legs.length === 0
+          ? 'at-destination'
+          : indoorContinues
+            ? 'drive-then-walk-to-entrance'
+            : 'drive-then-walk-to-destination',
     toEntranceM,
   }
 }

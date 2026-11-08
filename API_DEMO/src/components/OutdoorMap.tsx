@@ -74,6 +74,28 @@ function writeCollapsed(key: string, collapsed: boolean) {
   }
 }
 
+const MAP_TYPE_STORAGE = 'keiros_map_type_id'
+
+function readStoredMapTypeId(): string {
+  try {
+    const v = localStorage.getItem(MAP_TYPE_STORAGE)
+    if (v === 'roadmap' || v === 'hybrid' || v === 'satellite' || v === 'terrain') return v
+  } catch {
+    /* ignore */
+  }
+  return 'hybrid'
+}
+
+function writeStoredMapTypeId(id: string) {
+  try {
+    if (id === 'roadmap' || id === 'hybrid' || id === 'satellite' || id === 'terrain') {
+      localStorage.setItem(MAP_TYPE_STORAGE, id)
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
 function pinSvg(fill: string, label: string) {
   const safe = escapeHtml(label.slice(0, 1).toUpperCase())
   return `<svg xmlns="http://www.w3.org/2000/svg" width="36" height="44" viewBox="0 0 36 44">
@@ -190,6 +212,8 @@ export function OutdoorMap({
   liveFixRef.current = liveFix
   const followLiveRef = useRef(followLive)
   followLiveRef.current = followLive
+  /** User-selected basemap — never force-switch away (iOS was flipping Satellite → Map). */
+  const userMapTypeRef = useRef(readStoredMapTypeId())
 
   const [mapError, setMapError] = useState('')
   const [mapReady, setMapReady] = useState(false)
@@ -236,22 +260,38 @@ export function OutdoorMap({
     loadGoogleMaps()
       .then(() => {
         if (cancelled || !hostRef.current) return
+        const initialType = readStoredMapTypeId()
+        userMapTypeRef.current = initialType
         const map = new google.maps.Map(
           hostRef.current,
           mapOptions(latLngLiteral(result.origin.latitude, result.origin.longitude), 17, {
-            // Match Google Maps consumer look: satellite + labels (switchable).
-            mapTypeId: 'hybrid',
+            // Respect last user choice (Map / Satellite / Hybrid) across browsers incl. iOS Safari.
+            mapTypeId: initialType,
             mapTypeControl: true,
             mapTypeControlOptions: {
               style: google.maps.MapTypeControlStyle.HORIZONTAL_BAR,
               position: google.maps.ControlPosition.TOP_LEFT,
-              mapTypeIds: ['hybrid', 'roadmap', 'satellite'],
+              mapTypeIds: ['roadmap', 'hybrid', 'satellite'],
             },
+            // Helps iOS / Safari keep control clicks from being swallowed by gestures.
+            gestureHandling: 'greedy',
+            clickableIcons: false,
           }),
         )
         mapRef.current = map
         setMapReady(true)
         setMapError('')
+
+        map.addListener('maptypeid_changed', () => {
+          try {
+            const id = String(map.getMapTypeId?.() || '')
+            if (!id) return
+            userMapTypeRef.current = id
+            writeStoredMapTypeId(id)
+          } catch {
+            /* ignore */
+          }
+        })
 
         map.addListener('dragstart', () => {
           userPanningRef.current = true
@@ -875,19 +915,8 @@ export function OutdoorMap({
     const targetZoom = driving ? 16 : 18
     const needStreetZoom = !liveSnapDoneRef.current || (map.getZoom() ?? 0) < 15
 
-    // Heading-up needs a vector map — hybrid/satellite often stays north-up and
-    // makes roadside POIs look mirrored vs travel direction.
-    if (shouldFollow && heading != null) {
-      try {
-        const mt = map.getMapTypeId?.()
-        if (mt === 'hybrid' || mt === 'satellite') {
-          map.setMapTypeId('roadmap')
-        }
-      } catch {
-        /* ignore */
-      }
-    }
-
+    // Do not call setMapTypeId here — forcing roadmap for heading-up flipped
+    // Satellite → Map on iOS/iPad. Heading-up is best-effort on the user's basemap.
     if (shouldFollow && heading != null) {
       const zoom = needStreetZoom ? targetZoom : Math.max(map.getZoom() ?? targetZoom, 15)
       const h = normalizeDeg(heading)

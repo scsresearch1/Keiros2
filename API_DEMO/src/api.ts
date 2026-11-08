@@ -87,6 +87,8 @@ export type NavigateResult = {
     offsetMiles: number
     startMode?: 'demo' | 'live' | 'custom'
     viaParking?: boolean
+    /** Live GPS travel mode used for the last recalculation (walk → sidewalks). */
+    liveTravelMode?: 'walk' | 'drive'
   }
   parking?: {
     latitude: number
