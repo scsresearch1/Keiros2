@@ -28,16 +28,14 @@ function nodeKey(lat: number, lng: number, precision = 5) {
 function waysForMode(
   extract: SiteWaysExtract,
   mode: GraphMode,
-  opts?: { sidewalksOnly?: boolean },
+  _opts?: { sidewalksOnly?: boolean },
 ): SiteWay[] {
   if (mode === 'DRIVE') {
     // Vehicle network only (roads / driveways / service).
     return extract.driveways
   }
-  // Prefer pure sidewalks/footways to the entry door when available.
-  if (opts?.sidewalksOnly) return extract.sidewalks
-  // Fallback: sidewalks + service drives (apartment loops people walk on).
-  return [...extract.sidewalks, ...extract.driveways]
+  // Pedestrians stay on sidewalks / footways / crossings — never parking aisles.
+  return extract.sidewalks
 }
 
 function buildGraph(ways: SiteWay[], linkMeters = 10): Graph {

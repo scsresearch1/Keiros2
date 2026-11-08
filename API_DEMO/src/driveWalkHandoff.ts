@@ -145,7 +145,11 @@ function forceReach(
   return [...path.map((p) => ({ ...p })), { ...target }]
 }
 
-async function bestSidewalkWalk(
+/**
+ * Pedestrian route: prefer OSM sidewalks/footways. Google WALK often follows
+ * parking aisles — only use it when sidewalks cannot reach the destination.
+ */
+export async function bestSidewalkWalk(
   from: google.maps.LatLngLiteral,
   to: google.maps.LatLngLiteral,
   extract: SiteWaysExtract | null,
@@ -163,7 +167,7 @@ async function bestSidewalkWalk(
     steps?: JourneyStep[]
   }[] = []
 
-  if (extract) {
+  if (extract?.sidewalks?.length) {
     const sidewalksOnly = routeOnSiteWays(extract, from, to, 'WALK', { sidewalksOnly: true })
     if (sidewalksOnly && sidewalksOnly.path.length >= 2) {
       candidates.push({
@@ -173,16 +177,11 @@ async function bestSidewalkWalk(
         gap: pathEndGapM(sidewalksOnly.path, to),
       })
     }
-    const mixed = routeOnSiteWays(extract, from, to, 'WALK')
-    if (mixed && mixed.path.length >= 2) {
-      candidates.push({
-        path: mixed.path,
-        distanceM: mixed.distanceM,
-        source: 'osm-walk',
-        gap: pathEndGapM(mixed.path, to),
-      })
-    }
   }
+
+  // Sidewalk graph reached the destination closely enough — never fall back to aisle routing.
+  const sidewalkHit = candidates.find((c) => c.source === 'osm-sidewalks' && c.gap <= 45)
+  if (sidewalkHit) return sidewalkHit
 
   try {
     const g: RoadRoute = await fetchRoadRoute(from, to, 'WALK')
@@ -200,11 +199,17 @@ async function bestSidewalkWalk(
   }
 
   if (!candidates.length) return null
+  // Prefer OSM sidewalks even if a bit longer / slightly larger end gap than Google aisles.
   candidates.sort((a, b) => {
-    const aSide = a.source === 'osm-sidewalks' ? 0 : a.source === 'google-walk' ? 1 : 2
-    const bSide = b.source === 'osm-sidewalks' ? 0 : b.source === 'google-walk' ? 1 : 2
-    if (aSide !== bSide && Math.abs(a.gap - b.gap) < 50) return aSide - bSide
-    if (Math.abs(a.gap - b.gap) > 10) return a.gap - b.gap
+    const rank = (s: string) => (s === 'osm-sidewalks' ? 0 : 1)
+    const ra = rank(a.source)
+    const rb = rank(b.source)
+    if (ra !== rb) {
+      // Sidewalks win unless they miss the destination by a lot more than Google.
+      if (ra === 0 && a.gap <= Math.max(55, b.gap + 25)) return -1
+      if (rb === 0 && b.gap <= Math.max(55, a.gap + 25)) return 1
+    }
+    if (Math.abs(a.gap - b.gap) > 12) return a.gap - b.gap
     return a.distanceM - b.distanceM
   })
   return candidates[0]

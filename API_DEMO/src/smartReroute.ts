@@ -1,4 +1,6 @@
 import type { JourneyStep, NavigateResult } from './api'
+import { bestSidewalkWalk } from './driveWalkHandoff'
+import { extractSiteWays } from './extractSiteWays'
 import { fetchRoadRoute } from './googleRoute'
 import { AT_ENTRANCE_M, metersBetween } from './outdoorLegs'
 
@@ -86,8 +88,34 @@ export async function rerouteFromLiveFix(
   try {
     if (walking) {
       const walkTarget = dest
-      const route = await fetchRoadRoute(toLit(fix), toLit(walkTarget), 'WALK')
-      const walkSteps = route.steps.map((s, i) => ({ ...s, index: i, phase: 'walk' as const }))
+      const fromLit = toLit(fix)
+      const toLitDest = toLit(walkTarget)
+      // Prefer OSM sidewalks/footways — Google WALK often paints parking aisles.
+      const extract = await extractSiteWays([fromLit, toLitDest]).catch(() => null)
+      const ped = await bestSidewalkWalk(fromLit, toLitDest, extract)
+      const path = ped?.path?.length
+        ? ped.path
+        : (await fetchRoadRoute(fromLit, toLitDest, 'WALK')).path
+      const distanceM = ped?.distanceM ?? Math.round(
+        path.reduce((sum, p, i) => {
+          if (i === 0) return 0
+          return sum + metersBetween(path[i - 1], p)
+        }, 0),
+      )
+      const walkSteps =
+        ped?.steps?.map((s, i) => ({ ...s, index: i, phase: 'walk' as const })) ??
+        [
+          {
+            id: 'live-walk-1',
+            phase: 'walk' as const,
+            index: 0,
+            instruction: 'Walk on sidewalks toward your destination',
+            latitude: fix.latitude,
+            longitude: fix.longitude,
+            distanceM,
+            geometry: pathToGeoJson(path),
+          },
+        ]
       const steps = [
         ...walkSteps,
         ...indoor.map((s, i) => ({ ...s, index: walkSteps.length + i })),
@@ -105,16 +133,19 @@ export async function rerouteFromLiveFix(
           steps: [],
           traffic: {
             ...result.outdoor.traffic,
-            note: 'Recalculated — walking on map pathways.',
+            note:
+              ped?.source === 'osm-sidewalks'
+                ? 'Recalculated — walking on sidewalks / footways.'
+                : 'Recalculated — walking route from your location.',
             updatedAt: new Date().toISOString(),
           },
         },
         walk: {
-          provider: 'Google Routes',
-          distanceM: route.distanceM,
-          distanceMiles: Math.round((route.distanceM / 1609.344) * 10) / 10,
-          durationMinutes: Math.round((route.durationSec / 60) * 10) / 10,
-          geometry: { type: 'LineString', coordinates: pathToGeoJson(route.path) },
+          provider: ped?.source === 'osm-sidewalks' ? 'OSM sidewalks' : 'Google Routes',
+          distanceM,
+          distanceMiles: Math.round((distanceM / 1609.344) * 10) / 10,
+          durationMinutes: Math.round(distanceM / 1.35 / 60 * 10) / 10,
+          geometry: { type: 'LineString', coordinates: pathToGeoJson(path) },
           steps: walkSteps,
         },
         journey: {
@@ -124,7 +155,10 @@ export async function rerouteFromLiveFix(
           outdoorSteps: 0,
           walkSteps: walkSteps.length,
           steps,
-          summary: 'Recalculated walking route from your location.',
+          summary:
+            ped?.source === 'osm-sidewalks'
+              ? 'Recalculated walking route on sidewalks.'
+              : 'Recalculated walking route from your location.',
         },
       }
     }

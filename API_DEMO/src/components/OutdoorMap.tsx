@@ -763,11 +763,23 @@ export function OutdoorMap({
         }
       }
 
-      // Fast first paint with Google only (no Overpass wait).
+      // For walk legs, wait briefly for OSM sidewalks so we don't paint parking aisles first.
+      const needsSidewalks = legsToDraw.some((l) => l.mode === 'WALK')
+      let extractForDraw: SiteWaysExtract | null = null
+      if (needsSidewalks) {
+        extractForDraw = await Promise.race([
+          extractPromise,
+          new Promise<null>((resolve) => {
+            window.setTimeout(() => resolve(null), 2800)
+          }),
+        ])
+      }
+
       await Promise.all(
         legsToDraw.map(async (leg, index) => {
           try {
-            await drawLegPlan(leg, index, null)
+            // Walk: use sidewalk extract when ready. Drive: Google first (OSM optional).
+            await drawLegPlan(leg, index, leg.mode === 'WALK' ? extractForDraw : null)
           } catch (err) {
             if (session !== routeSessionRef.current) return
             serverFallbackForLeg(leg)
@@ -779,8 +791,8 @@ export function OutdoorMap({
       if (session !== routeSessionRef.current) return
       const src = [...sources].join('+') || 'google'
       setSiteNet((prev) => ({
-        driveways: prev?.driveways ?? 0,
-        sidewalks: prev?.sidewalks ?? 0,
+        driveways: prev?.driveways ?? extractForDraw?.driveways.length ?? 0,
+        sidewalks: prev?.sidewalks ?? extractForDraw?.sidewalks.length ?? 0,
         routedOn: outdoorPlan.viaParking
           ? `Parking route · ${src}`
           : driveWalkCount
@@ -810,18 +822,56 @@ export function OutdoorMap({
         onRouteGuidance(guidanceAcc)
       }
 
-      // When OSM pathways arrive, redraw walk legs on sidewalks/footways.
+      // Late OSM: if walk painted without sidewalks, replace corridor once (no aisle+sidewalk stack).
       void extractPromise.then(async (extract) => {
-        if (session !== routeSessionRef.current || !extract) return
+        if (session !== routeSessionRef.current || !extract?.sidewalks.length) return
+        if (extractForDraw?.sidewalks.length) return
         const walkLegs = legsToDraw.filter((l) => l.mode === 'WALK')
-        if (!walkLegs.length || !extract.sidewalks.length) return
-        for (let i = 0; i < walkLegs.length; i++) {
+        if (!walkLegs.length) return
+        clearOverlays()
+        // Restore S / D pins after clear (route redraw does not recreate them).
+        track(
+          createAdvancedMarker({
+            map: gmap,
+            position: origin,
+            title: `Start · ${result.origin.label}`,
+            zIndex: 40,
+            svg: pinSvg('#0ea5e9', 'S'),
+          }),
+        )
+        track(
+          createAdvancedMarker({
+            map: gmap,
+            position: destination,
+            title: `Destination · ${destName}`,
+            zIndex: 45,
+            svg: pinSvg('#ea4335', 'D'),
+          }),
+        )
+        drawExtractedNetworks(extract)
+        corridorDrive.length = 0
+        corridorWalk.length = 0
+        guidanceAcc.length = 0
+        sources.clear()
+        driveWalkCount = 0
+        for (let i = 0; i < legsToDraw.length; i++) {
           try {
-            await drawLegPlan(walkLegs[i], 30 + i, extract)
+            await drawLegPlan(legsToDraw[i], i, extract)
           } catch {
-            /* keep Google walk */
+            /* keep prior attempt */
           }
         }
+        if (onRouteCorridor) {
+          onRouteCorridor({
+            drive: corridorDrive.length
+              ? corridorDrive.map((p) => [p.lng, p.lat] as [number, number])
+              : undefined,
+            walk: corridorWalk.length
+              ? corridorWalk.map((p) => [p.lng, p.lat] as [number, number])
+              : undefined,
+          })
+        }
+        if (onRouteGuidance && guidanceAcc.length) onRouteGuidance([...guidanceAcc])
       })
     })()
   }, [mapReady, result, outdoorPlan])

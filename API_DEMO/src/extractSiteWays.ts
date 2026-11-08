@@ -111,6 +111,10 @@ function buildQuery(south: number, west: number, north: number, east: number) {
   way["highway"="footway"](${b});
   way["highway"="path"](${b});
   way["highway"="pedestrian"](${b});
+  way["highway"="steps"](${b});
+  way["highway"="crossing"](${b});
+  way["footway"="sidewalk"](${b});
+  way["footway"="crossing"](${b});
 );
 out geom;
 `.trim()
