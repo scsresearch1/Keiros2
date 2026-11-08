@@ -212,8 +212,10 @@ export function OutdoorMap({
   liveFixRef.current = liveFix
   const followLiveRef = useRef(followLive)
   followLiveRef.current = followLive
-  /** User-selected basemap — never force-switch away (iOS was flipping Satellite → Map). */
+  /** User-selected basemap (Satellite/Hybrid/Map). Restored when Live follow ends. */
   const userMapTypeRef = useRef(readStoredMapTypeId())
+  /** True while we temporarily use vector roadmap so heading-up can rotate the camera. */
+  const headingUpBasemapRef = useRef(false)
 
   const [mapError, setMapError] = useState('')
   const [mapReady, setMapReady] = useState(false)
@@ -286,6 +288,8 @@ export function OutdoorMap({
           try {
             const id = String(map.getMapTypeId?.() || '')
             if (!id) return
+            // While Live heading-up forces roadmap, don't overwrite the user's Satellite choice.
+            if (headingUpBasemapRef.current && id === 'roadmap') return
             userMapTypeRef.current = id
             writeStoredMapTypeId(id)
           } catch {
@@ -899,6 +903,16 @@ export function OutdoorMap({
       smoothPosRef.current = null
       lastCameraHeadingRef.current = null
       lastPuckRotRef.current = null
+      if (headingUpBasemapRef.current) {
+        headingUpBasemapRef.current = false
+        try {
+          const preferred = userMapTypeRef.current || readStoredMapTypeId()
+          if (preferred) map.setMapTypeId(preferred)
+          if (typeof map.setHeading === 'function') map.setHeading(0)
+        } catch {
+          /* ignore */
+        }
+      }
       return
     }
 
@@ -965,9 +979,21 @@ export function OutdoorMap({
     const targetZoom = driving ? 16 : 18
     const needStreetZoom = !liveSnapDoneRef.current || (map.getZoom() ?? 0) < 15
 
-    // Do not call setMapTypeId here — forcing roadmap for heading-up flipped
-    // Satellite → Map on iOS/iPad. Heading-up is best-effort on the user's basemap.
+    // Heading-up (travel direction at top of phone) requires a VECTOR basemap.
+    // Satellite/Hybrid tiles stay north-up — Google ignores setHeading on them.
+    // So during Live follow we temporarily use roadmap, then restore Satellite after.
     if (shouldFollow && heading != null) {
+      try {
+        const mt = String(map.getMapTypeId?.() || '')
+        if (mt === 'hybrid' || mt === 'satellite') {
+          headingUpBasemapRef.current = true
+          map.setMapTypeId('roadmap')
+        } else if (mt === 'roadmap') {
+          headingUpBasemapRef.current = true
+        }
+      } catch {
+        /* ignore */
+      }
       const zoom = needStreetZoom ? targetZoom : Math.max(map.getZoom() ?? targetZoom, 15)
       const h = normalizeDeg(heading)
       try {
@@ -976,6 +1002,18 @@ export function OutdoorMap({
         map.setCenter(pos)
         map.setZoom(zoom)
         if (typeof map.setHeading === 'function') map.setHeading(h)
+      }
+      // Verify rotation stuck; if still ~north while heading is elsewhere, retry setHeading.
+      try {
+        const applied =
+          typeof map.getHeading === 'function' && Number.isFinite(map.getHeading())
+            ? normalizeDeg(map.getHeading() as number)
+            : h
+        if (headingDeltaDeg(applied, h) > 15 && typeof map.setHeading === 'function') {
+          map.setHeading(h)
+        }
+      } catch {
+        /* ignore */
       }
       lastCameraHeadingRef.current = h
       liveSnapDoneRef.current = true
@@ -1043,13 +1081,21 @@ export function OutdoorMap({
     }
   }, [liveFix, followLive, mapReady, activeStep])
 
-  // When Live GPS turns off, restore north-up so the map isn't left rotated.
+  // When Live GPS turns off, restore north-up + the user's Satellite/Hybrid choice.
   useEffect(() => {
     const map = mapRef.current
     if (!map || !mapReady) return
     if (followLive) return
+    headingUpBasemapRef.current = false
     if (typeof map.setHeading === 'function') map.setHeading(0)
     setMapHeading(0)
+    try {
+      const preferred = userMapTypeRef.current || readStoredMapTypeId()
+      const current = String(map.getMapTypeId?.() || '')
+      if (preferred && preferred !== current) map.setMapTypeId(preferred)
+    } catch {
+      /* ignore */
+    }
   }, [followLive, mapReady])
 
   return (
