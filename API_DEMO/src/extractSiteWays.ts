@@ -11,6 +11,11 @@ export type SiteWay = {
   coordinates: [number, number][]
   name?: string
   highway?: string
+  /**
+   * Walk quality: 1 = kerb sidewalk / pedestrian street (use these),
+   * 2 = generic footway, 3 = path (often grass / desire lines — last resort).
+   */
+  walkPriority?: number
 }
 
 export type SiteWaysExtract = {
@@ -60,6 +65,20 @@ function emptyExtract(bbox: [number, number, number, number]): SiteWaysExtract {
     source: 'openstreetmap',
     fetchedAt: new Date().toISOString(),
   }
+}
+
+function walkPriorityFromTags(tags: Record<string, string>): number {
+  const highway = tags.highway || ''
+  const footway = tags.footway || ''
+  // Real building-side sidewalks and pedestrian streets.
+  if (footway === 'sidewalk' || highway === 'pedestrian') return 1
+  if (footway === 'crossing' || highway === 'crossing' || highway === 'steps') return 1
+  // Generic footway without sidewalk tag — sometimes a verge; still usable.
+  if (highway === 'footway') return 2
+  if (highway === 'cycleway') return 2
+  // Untagged paths are often grass strips / desire lines between road and sidewalk.
+  if (highway === 'path') return 3
+  return 2
 }
 
 function classify(tags: Record<string, string> | undefined): SiteWayKind | null {
@@ -155,6 +174,7 @@ function elementToWay(el: OverpassElement): SiteWay | null {
     coordinates,
     name: el.tags?.name,
     highway: el.tags?.highway || el.tags?.service || el.tags?.footway,
+    ...(kind === 'sidewalk' && el.tags ? { walkPriority: walkPriorityFromTags(el.tags) } : {}),
   }
 }
 

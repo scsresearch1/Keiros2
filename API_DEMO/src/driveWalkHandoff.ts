@@ -7,7 +7,7 @@
 import type { JourneyStep } from './api'
 import type { SiteWaysExtract } from './extractSiteWays'
 import { fetchRoadRoute, pathEndGapM, type RoadRoute, type RouteTravelMode } from './googleRoute'
-import { routeOnSiteWays } from './siteGraphRoute'
+import { routeOnSiteWays, snapPathToSidewalks } from './siteGraphRoute'
 
 /** Only switch to walk when the drive network ends this far from the entry door. */
 export const LAST_MILE_WALK_M = 30
@@ -181,16 +181,26 @@ export async function bestSidewalkWalk(
 
   // Sidewalk graph reached the destination closely enough — never fall back to aisle routing.
   const sidewalkHit = candidates.find((c) => c.source === 'osm-sidewalks' && c.gap <= 45)
-  if (sidewalkHit) return sidewalkHit
+  if (sidewalkHit) {
+    return {
+      ...sidewalkHit,
+      path: forceReach(sidewalkHit.path, to),
+    }
+  }
 
   try {
     const g: RoadRoute = await fetchRoadRoute(from, to, 'WALK')
     if (g.path.length >= 2) {
+      // Google walk often follows the road / grass verge — snap onto kerb sidewalks.
+      const snapped =
+        extract?.sidewalks?.length
+          ? snapPathToSidewalks(g.path, extract.sidewalks, 20)
+          : g.path
       candidates.push({
-        path: g.path,
+        path: snapped,
         distanceM: g.distanceM,
-        source: 'google-walk',
-        gap: pathEndGapM(g.path, to),
+        source: snapped !== g.path ? 'google-walk-snapped-sidewalk' : 'google-walk',
+        gap: pathEndGapM(snapped, to),
         steps: g.steps,
       })
     }
@@ -201,18 +211,19 @@ export async function bestSidewalkWalk(
   if (!candidates.length) return null
   // Prefer OSM sidewalks even if a bit longer / slightly larger end gap than Google aisles.
   candidates.sort((a, b) => {
-    const rank = (s: string) => (s === 'osm-sidewalks' ? 0 : 1)
+    const rank = (s: string) =>
+      s === 'osm-sidewalks' ? 0 : s === 'google-walk-snapped-sidewalk' ? 1 : 2
     const ra = rank(a.source)
     const rb = rank(b.source)
     if (ra !== rb) {
-      // Sidewalks win unless they miss the destination by a lot more than Google.
-      if (ra === 0 && a.gap <= Math.max(55, b.gap + 25)) return -1
-      if (rb === 0 && b.gap <= Math.max(55, a.gap + 25)) return 1
+      if (ra < rb && a.gap <= Math.max(55, b.gap + 25)) return -1
+      if (rb < ra && b.gap <= Math.max(55, a.gap + 25)) return 1
     }
     if (Math.abs(a.gap - b.gap) > 12) return a.gap - b.gap
     return a.distanceM - b.distanceM
   })
-  return candidates[0]
+  const best = candidates[0]
+  return { ...best, path: forceReach(best.path, to) }
 }
 
 function collectGuidance(segments: HandoffSegment[]): JourneyStep[] {

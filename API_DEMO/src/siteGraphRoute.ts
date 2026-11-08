@@ -28,13 +28,16 @@ function nodeKey(lat: number, lng: number, precision = 5) {
 function waysForMode(
   extract: SiteWaysExtract,
   mode: GraphMode,
-  _opts?: { sidewalksOnly?: boolean },
+  opts?: { sidewalksOnly?: boolean; maxWalkPriority?: number },
 ): SiteWay[] {
   if (mode === 'DRIVE') {
     // Vehicle network only (roads / driveways / service).
     return extract.driveways
   }
-  // Pedestrians stay on sidewalks / footways / crossings — never parking aisles.
+  // Prefer real kerb sidewalks; drop grass/desire `path` unless nothing better exists.
+  const maxP = opts?.maxWalkPriority ?? 2
+  const ranked = extract.sidewalks.filter((w) => (w.walkPriority ?? 2) <= maxP)
+  if (ranked.length) return ranked
   return extract.sidewalks
 }
 
@@ -65,10 +68,13 @@ function buildGraph(ways: SiteWay[], linkMeters = 10): Graph {
       endpoints.add(ids[0])
       endpoints.add(ids[ids.length - 1])
     }
+    // Cost: kerb sidewalks cheap; grass paths expensive so Dijkstra avoids them.
+    const pri = way.walkPriority ?? 2
+    const costMul = pri <= 1 ? 1 : pri === 2 ? 1.35 : 3.2
     for (let i = 1; i < ids.length; i++) {
       const a = nodes.get(ids[i - 1])!
       const b = nodes.get(ids[i])!
-      addEdge(ids[i - 1], ids[i], meters(a, b), way.id)
+      addEdge(ids[i - 1], ids[i], meters(a, b) * costMul, way.id)
     }
   }
 
@@ -156,6 +162,90 @@ export type SiteRouteResult = {
   source: 'osm-site-graph' | 'osm-sidewalks'
 }
 
+function routeOnce(
+  ways: SiteWay[],
+  origin: { lat: number; lng: number },
+  destination: { lat: number; lng: number },
+  mode: GraphMode,
+): { path: google.maps.LatLngLiteral[]; distanceM: number } | null {
+  if (ways.length < 1) return null
+  const graph = buildGraph(ways, mode === 'WALK' ? 14 : 10)
+  if (graph.nodes.size < 2) return null
+  const start = nearestNode(graph, origin, mode === 'WALK' ? 90 : 80)
+  const end = nearestNode(graph, destination, mode === 'WALK' ? 90 : 80)
+  if (!start || !end) return null
+  const solved = dijkstra(graph, start, end)
+  if (!solved || solved.path.length < 2) return null
+  const path: google.maps.LatLngLiteral[] = solved.path.map((id) => {
+    const n = graph.nodes.get(id)!
+    return { lat: n.lat, lng: n.lng }
+  })
+  const MAX_CONNECT = 28
+  if (meters(origin, path[0]) <= MAX_CONNECT) path.unshift({ ...origin })
+  if (meters(destination, path[path.length - 1]) <= MAX_CONNECT) path.push({ ...destination })
+  return { path, distanceM: Math.round(solved.distanceM) }
+}
+
+/**
+ * Project a point onto the nearest sidewalk segment (building-side kerb preferred).
+ * Used to pull Google walk polylines off road medians / grass verges onto real sidewalks.
+ */
+export function snapPointToSidewalks(
+  point: { lat: number; lng: number },
+  sidewalks: SiteWay[],
+  maxMeters = 18,
+): { lat: number; lng: number; distM: number } | null {
+  const preferred = sidewalks.filter((w) => (w.walkPriority ?? 2) <= 2)
+  const pool = preferred.length ? preferred : sidewalks
+  let best: { lat: number; lng: number; distM: number } | null = null
+  for (const way of pool) {
+    const pri = way.walkPriority ?? 2
+    // Slightly prefer priority-1 sidewalks when distances are similar.
+    const priBias = pri <= 1 ? 0 : pri === 2 ? 1.5 : 4
+    const coords = way.coordinates
+    for (let i = 0; i < coords.length - 1; i++) {
+      const a = { lat: coords[i][1], lng: coords[i][0] }
+      const b = { lat: coords[i + 1][1], lng: coords[i + 1][0] }
+      const abx = b.lng - a.lng
+      const aby = b.lat - a.lat
+      const len2 = abx * abx + aby * aby
+      const t =
+        len2 > 0
+          ? Math.max(0, Math.min(1, ((point.lng - a.lng) * abx + (point.lat - a.lat) * aby) / len2))
+          : 0
+      const lat = a.lat + aby * t
+      const lng = a.lng + abx * t
+      const distM = meters(point, { lat, lng }) + priBias
+      if (!best || distM < best.distM) best = { lat, lng, distM }
+    }
+  }
+  if (!best) return null
+  const raw = meters(point, { lat: best.lat, lng: best.lng })
+  if (raw > maxMeters) return null
+  return { lat: best.lat, lng: best.lng, distM: raw }
+}
+
+/** Pull an entire walk polyline onto kerb sidewalks when OSM has them nearby. */
+export function snapPathToSidewalks(
+  path: google.maps.LatLngLiteral[],
+  sidewalks: SiteWay[],
+  maxMeters = 18,
+): google.maps.LatLngLiteral[] {
+  if (!path.length || !sidewalks.length) return path
+  const kerb = sidewalks.filter((w) => (w.walkPriority ?? 2) <= 2)
+  const pool = kerb.length ? kerb : sidewalks
+  let snapped = 0
+  const out = path.map((p) => {
+    const hit = snapPointToSidewalks(p, pool, maxMeters)
+    if (!hit) return { ...p }
+    snapped += 1
+    return { lat: hit.lat, lng: hit.lng }
+  })
+  // Only keep snap if enough vertices moved onto sidewalks (avoid jittering a good path).
+  if (snapped < Math.max(2, Math.floor(path.length * 0.35))) return path
+  return out
+}
+
 /**
  * Route on extracted OSM driveway / sidewalk linework (separate graphs by mode).
  */
@@ -166,32 +256,29 @@ export function routeOnSiteWays(
   mode: GraphMode,
   opts?: { sidewalksOnly?: boolean },
 ): SiteRouteResult | null {
+  if (mode === 'WALK') {
+    // Try kerb sidewalks first, then footways, then any pedestrian way.
+    for (const maxWalkPriority of [1, 2, 3]) {
+      const ways = waysForMode(extract, mode, { ...opts, maxWalkPriority })
+      const solved = routeOnce(ways, origin, destination, mode)
+      if (solved) {
+        return {
+          path: solved.path,
+          distanceM: solved.distanceM,
+          mode,
+          source: 'osm-sidewalks',
+        }
+      }
+    }
+    return null
+  }
+
   const ways = waysForMode(extract, mode, opts)
-  if (ways.length < 1) return null
-
-  const graph = buildGraph(ways, mode === 'WALK' ? 12 : 10)
-  if (graph.nodes.size < 2) return null
-
-  const start = nearestNode(graph, origin, mode === 'WALK' ? 90 : 80)
-  const end = nearestNode(graph, destination, mode === 'WALK' ? 90 : 80)
-  if (!start || !end) return null
-
-  const solved = dijkstra(graph, start, end)
-  if (!solved || solved.path.length < 2) return null
-
-  const path: google.maps.LatLngLiteral[] = solved.path.map((id) => {
-    const n = graph.nodes.get(id)!
-    return { lat: n.lat, lng: n.lng }
-  })
-
-  // Attach true endpoints when within a short connector (stay honest — no long chords).
-  const MAX_CONNECT = 28
-  if (meters(origin, path[0]) <= MAX_CONNECT) path.unshift({ ...origin })
-  if (meters(destination, path[path.length - 1]) <= MAX_CONNECT) path.push({ ...destination })
-
+  const solved = routeOnce(ways, origin, destination, mode)
+  if (!solved) return null
   return {
-    path,
-    distanceM: Math.round(solved.distanceM),
+    path: solved.path,
+    distanceM: solved.distanceM,
     mode,
     source: opts?.sidewalksOnly ? 'osm-sidewalks' : 'osm-site-graph',
   }
