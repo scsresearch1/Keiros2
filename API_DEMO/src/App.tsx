@@ -17,10 +17,12 @@ import { speakWeakGpsAlert, unlockVoiceFromGesture, useDirectionVoice } from './
 import { withLiveDrive } from './liveDrive'
 // import { attachLotToResult, withLiveDrive } from './liveDrive' // Via parking
 import {
+  corridorTravelMode,
   inferTravelMode,
   matchLiveProgress,
   requestCompassPermission,
   useGeolocationWatch,
+  type LiveFix,
   type LiveProgress,
   type TravelMode,
 } from './liveNavigation'
@@ -146,6 +148,8 @@ export default function App() {
   const travelModeRef = useRef<TravelMode | null>(null)
   const travelModeSwitchStreak = useRef(0)
   const [travelMode, setTravelMode] = useState<TravelMode | null>(null)
+  /** Prior GPS sample — derive speed when the OS leaves coords.speed null. */
+  const prevMotionFixRef = useRef<LiveFix | null>(null)
   /** Dense map polylines from OutdoorMap (lng,lat) — preferred for off-route. */
   const routeCorridorRef = useRef<{
     drive?: [number, number][]
@@ -492,6 +496,7 @@ export default function App() {
       travelModeRef.current = null
       travelModeSwitchStreak.current = 0
       setTravelMode(null)
+      prevMotionFixRef.current = null
       // Short hold so step voice settles — do not block off-route recalculation for long.
       manualHoldUntil.current = Date.now() + (mode === 'demo' ? 4000 : 1500)
       rerouteLockUntil.current = 0
@@ -701,7 +706,24 @@ export default function App() {
     }
 
     // Walk vs drive from GPS speed (not from the current journey step alone).
-    const inferred = inferTravelMode(liveFix.speed, travelModeRef.current)
+    // Many phones leave coords.speed null — estimate from successive fixes.
+    const prevMotion = prevMotionFixRef.current
+    let derivedSpeed: number | null = null
+    if (prevMotion && liveFix.timestamp > prevMotion.timestamp) {
+      const dt = (liveFix.timestamp - prevMotion.timestamp) / 1000
+      if (dt >= 0.4 && dt <= 12) {
+        const dist = approxMeters(
+          prevMotion.latitude,
+          prevMotion.longitude,
+          liveFix.latitude,
+          liveFix.longitude,
+        )
+        derivedSpeed = dist / dt
+      }
+    }
+    prevMotionFixRef.current = liveFix
+
+    const inferred = inferTravelMode(liveFix.speed, travelModeRef.current, derivedSpeed)
     if (travelModeRef.current == null) {
       travelModeRef.current = inferred
       setTravelMode(inferred)
@@ -713,6 +735,10 @@ export default function App() {
     }
     const confirmedModeSwitch =
       travelModeSwitchStreak.current >= 2 && inferred !== travelModeRef.current
+    // Painted corridor lags motion mode when a prior recalculate failed — keep retrying.
+    const corridorMode = corridorTravelMode(result)
+    const stuckModeMismatch =
+      travelModeRef.current != null && travelModeRef.current !== corridorMode
 
     // Match the SAME turn-by-turn list the banner shows (mapGuidance), so D / instruction
     // update as you drive. Fall back to server steps + drawn corridor when guidance isn't ready.
@@ -751,26 +777,33 @@ export default function App() {
       offRouteStreak.current = 0
     }
 
-    // Recalculate when off-route OR when walk↔drive mode flips (sidewalk vs road corridor).
+    // Recalculate when off-route OR walk↔drive flips OR corridor still mismatches motion mode.
     const confirmedOff = offRouteStreak.current >= 2
     const shouldReroute =
-      (confirmedOff || confirmedModeSwitch) &&
+      (confirmedOff || confirmedModeSwitch || stuckModeMismatch) &&
       !rerouteInFlight.current &&
       now > rerouteLockUntil.current
     if (shouldReroute) {
-      if (confirmedModeSwitch) {
-        travelModeRef.current = inferred
-        setTravelMode(inferred)
-        travelModeSwitchStreak.current = 0
-      }
+      // Commit motion mode only after a successful recalculate (avoids Walking + Drive steps).
+      const mode: TravelMode = confirmedModeSwitch
+        ? inferred
+        : stuckModeMismatch
+          ? (travelModeRef.current as TravelMode)
+          : (travelModeRef.current ?? inferred)
       lastOffRouteAt.current = now
       rerouteInFlight.current = true
       setRecalculating(true)
-      const mode = travelModeRef.current ?? inferred
-      const phaseHint = mode === 'walk' ? 'walk' : mode === 'drive' ? 'drive' : result.journey.steps[journeyIndex]?.phase
+      const phaseHint = mode === 'walk' ? 'walk' : 'drive'
       void rerouteFromLiveFix(result, liveFix, { phaseHint, travelMode: mode })
         .then((next) => {
-          if (!next) return
+          if (!next) {
+            // Short backoff so walk/drive can retry instead of getting stuck.
+            rerouteLockUntil.current = Date.now() + 1500
+            return
+          }
+          travelModeRef.current = mode
+          setTravelMode(mode)
+          travelModeSwitchStreak.current = 0
           setResult(next)
           setJourneyIndex(0)
           manualHoldUntil.current = 0

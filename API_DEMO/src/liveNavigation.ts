@@ -16,17 +16,42 @@ export type TravelMode = 'walk' | 'drive'
  * Infer walk vs drive from GPS speed with hysteresis so noisy phone GPS
  * does not flip modes every tick (Google Maps–style).
  * Thresholds in m/s: walk stays until ~14 km/h; drive drops to walk under ~7 km/h.
+ * `derivedSpeedMps` fills in when the OS leaves coords.speed null (common on Android).
  */
 export function inferTravelMode(
   speedMps: number | null | undefined,
   prev: TravelMode | null,
+  derivedSpeedMps?: number | null,
 ): TravelMode {
-  const speed =
+  const reported =
     speedMps != null && Number.isFinite(speedMps) ? Math.max(0, Number(speedMps)) : null
+  const derived =
+    derivedSpeedMps != null && Number.isFinite(derivedSpeedMps)
+      ? Math.max(0, Number(derivedSpeedMps))
+      : null
+  // Prefer reported speed when present; otherwise use displacement-based estimate.
+  const speed = reported ?? derived
   if (speed == null) return prev ?? 'walk'
   if (prev === 'drive') return speed < 2.0 ? 'walk' : 'drive'
   if (prev === 'walk') return speed > 4.0 ? 'drive' : 'walk'
   return speed >= 3.0 ? 'drive' : 'walk'
+}
+
+/** What corridor the current NavigateResult is painted as (after last successful recalculate). */
+export function corridorTravelMode(result: {
+  origin: { liveTravelMode?: 'walk' | 'drive' }
+  outdoor?: { provider?: string; steps?: unknown[] }
+  journey: { driveSteps?: number; walkSteps?: number }
+}): TravelMode {
+  if (result.origin.liveTravelMode === 'walk' || result.origin.liveTravelMode === 'drive') {
+    return result.origin.liveTravelMode
+  }
+  const provider = String(result.outdoor?.provider || '')
+  if (/live recalculate · walk/i.test(provider)) return 'walk'
+  if (/live recalculate · drive/i.test(provider)) return 'drive'
+  if ((result.journey.driveSteps ?? 0) > 0 || (result.outdoor?.steps?.length ?? 0) > 0) return 'drive'
+  if ((result.journey.walkSteps ?? 0) > 0) return 'walk'
+  return 'drive'
 }
 
 export type LiveProgress = {
