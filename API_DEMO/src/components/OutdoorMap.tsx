@@ -212,10 +212,8 @@ export function OutdoorMap({
   liveFixRef.current = liveFix
   const followLiveRef = useRef(followLive)
   followLiveRef.current = followLive
-  /** User-selected basemap (Satellite/Hybrid/Map). Restored when Live follow ends. */
+  /** User-selected basemap (Satellite/Hybrid/Map) — never overridden by Live / heading-up. */
   const userMapTypeRef = useRef(readStoredMapTypeId())
-  /** True while we temporarily use vector roadmap so heading-up can rotate the camera. */
-  const headingUpBasemapRef = useRef(false)
 
   const [mapError, setMapError] = useState('')
   const [mapReady, setMapReady] = useState(false)
@@ -288,10 +286,11 @@ export function OutdoorMap({
           try {
             const id = String(map.getMapTypeId?.() || '')
             if (!id) return
-            // While Live heading-up forces roadmap, don't overwrite the user's Satellite choice.
-            if (headingUpBasemapRef.current && id === 'roadmap') return
-            userMapTypeRef.current = id
-            writeStoredMapTypeId(id)
+            // Persist whatever the user (or Map/Satellite control) selected — incl. iOS Safari.
+            if (id === 'roadmap' || id === 'hybrid' || id === 'satellite' || id === 'terrain') {
+              userMapTypeRef.current = id
+              writeStoredMapTypeId(id)
+            }
           } catch {
             /* ignore */
           }
@@ -903,16 +902,6 @@ export function OutdoorMap({
       smoothPosRef.current = null
       lastCameraHeadingRef.current = null
       lastPuckRotRef.current = null
-      if (headingUpBasemapRef.current) {
-        headingUpBasemapRef.current = false
-        try {
-          const preferred = userMapTypeRef.current || readStoredMapTypeId()
-          if (preferred) map.setMapTypeId(preferred)
-          if (typeof map.setHeading === 'function') map.setHeading(0)
-        } catch {
-          /* ignore */
-        }
-      }
       return
     }
 
@@ -979,21 +968,23 @@ export function OutdoorMap({
     const targetZoom = driving ? 16 : 18
     const needStreetZoom = !liveSnapDoneRef.current || (map.getZoom() ?? 0) < 15
 
-    // Heading-up (travel direction at top of phone) requires a VECTOR basemap.
-    // Satellite/Hybrid tiles stay north-up — Google ignores setHeading on them.
-    // So during Live follow we temporarily use roadmap, then restore Satellite after.
-    if (shouldFollow && heading != null) {
-      try {
-        const mt = String(map.getMapTypeId?.() || '')
-        if (mt === 'hybrid' || mt === 'satellite') {
-          headingUpBasemapRef.current = true
-          map.setMapTypeId('roadmap')
-        } else if (mt === 'roadmap') {
-          headingUpBasemapRef.current = true
-        }
-      } catch {
-        /* ignore */
+    // Keep the user's Map / Satellite / Hybrid choice (esp. iOS Safari).
+    // Never force roadmap for heading-up — that was flipping Satellite → Map on Live.
+    const preferredType = userMapTypeRef.current || readStoredMapTypeId()
+    let mapTypeId = ''
+    try {
+      mapTypeId = String(map.getMapTypeId?.() || '')
+      if (preferredType && mapTypeId && preferredType !== mapTypeId) {
+        map.setMapTypeId(preferredType)
+        mapTypeId = preferredType
       }
+    } catch {
+      /* ignore */
+    }
+    // Heading-up only works on vector Map. Satellite/Hybrid stay north-up (Google limitation).
+    const canHeadingUp = mapTypeId === 'roadmap' || preferredType === 'roadmap'
+
+    if (shouldFollow && heading != null && canHeadingUp) {
       const zoom = needStreetZoom ? targetZoom : Math.max(map.getZoom() ?? targetZoom, 15)
       const h = normalizeDeg(heading)
       try {
@@ -1003,7 +994,6 @@ export function OutdoorMap({
         map.setZoom(zoom)
         if (typeof map.setHeading === 'function') map.setHeading(h)
       }
-      // Verify rotation stuck; if still ~north while heading is elsewhere, retry setHeading.
       try {
         const applied =
           typeof map.getHeading === 'function' && Number.isFinite(map.getHeading())
@@ -1018,6 +1008,15 @@ export function OutdoorMap({
       lastCameraHeadingRef.current = h
       liveSnapDoneRef.current = true
     } else if (shouldFollow) {
+      // Satellite / Hybrid / no heading: follow north-up only (do not call setHeading).
+      if (typeof map.setHeading === 'function') {
+        try {
+          if ((map.getHeading?.() ?? 0) !== 0) map.setHeading(0)
+        } catch {
+          /* ignore */
+        }
+      }
+      lastCameraHeadingRef.current = 0
       if (needStreetZoom) {
         map.setCenter(pos)
         map.setZoom(targetZoom)
@@ -1027,15 +1026,17 @@ export function OutdoorMap({
       }
     }
 
-    // After heading-up, travel direction is screen-up → keep arrow pointing up.
     const appliedMapHeading =
-      typeof map.getHeading === 'function' && Number.isFinite(map.getHeading())
+      canHeadingUp &&
+      typeof map.getHeading === 'function' &&
+      Number.isFinite(map.getHeading())
         ? normalizeDeg(map.getHeading() as number)
         : lastCameraHeadingRef.current ?? 0
     setMapHeading(appliedMapHeading)
+    // Heading-up Map → arrow stays screen-up. Satellite north-up → rotate puck by bearing.
     const puckRot =
       heading != null
-        ? shouldFollow
+        ? shouldFollow && canHeadingUp
           ? 0
           : normalizeDeg(heading - appliedMapHeading)
         : null
@@ -1081,12 +1082,11 @@ export function OutdoorMap({
     }
   }, [liveFix, followLive, mapReady, activeStep])
 
-  // When Live GPS turns off, restore north-up + the user's Satellite/Hybrid choice.
+  // When Live GPS turns off, reset to north-up and re-assert the stored basemap.
   useEffect(() => {
     const map = mapRef.current
     if (!map || !mapReady) return
     if (followLive) return
-    headingUpBasemapRef.current = false
     if (typeof map.setHeading === 'function') map.setHeading(0)
     setMapHeading(0)
     try {
