@@ -10,6 +10,8 @@ export type OutdoorLeg = {
   to: LatLngLit
   label: string
   color: string
+  /** Drawn on the map but not used for turn-by-turn (e.g. S → live after recalculate). */
+  skipGuidance?: boolean
 }
 
 export type OutdoorWaypoint = {
@@ -122,6 +124,21 @@ export function resolveOutdoorLegs(result: NavigateResult): OutdoorPlan {
   }
 
   const legs: OutdoorLeg[] = []
+
+  // After live walk↔drive recalculate, keep the corridor from session S → current GPS
+  // so the blue line / walk dots are not erased when remaining route starts at liveFrom.
+  const gapFromStartM = metersBetween(sessionOrigin, corridorFrom)
+  if (lf && gapFromStartM > 20) {
+    legs.push({
+      id: 'from-session-start',
+      mode: liveWalking ? 'WALK' : 'DRIVE',
+      from: sessionOrigin,
+      to: corridorFrom,
+      label: 'From start',
+      color: liveWalking ? WALK_COLOR : DRIVE_COLOR,
+      skipGuidance: true,
+    })
+  }
 
   if (liveWalking) {
     if (metersBetween(corridorFrom, outdoorEnd) > 8) {

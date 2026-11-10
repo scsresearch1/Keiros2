@@ -717,7 +717,7 @@ export function OutdoorMap({
           return
         }
 
-        if (plan.guidanceSteps?.length) {
+        if (!leg.skipGuidance && plan.guidanceSteps?.length) {
           for (const step of plan.guidanceSteps) {
             guidanceAcc.push({
               ...step,
