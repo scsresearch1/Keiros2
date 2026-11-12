@@ -1846,6 +1846,11 @@ select:disabled {
   font-weight: 700;
 }
 
+.indoor-mini__legend .is-focus {
+  color: #4ade80;
+  font-weight: 700;
+}
+
 .floor-map {
   display: grid;
 }

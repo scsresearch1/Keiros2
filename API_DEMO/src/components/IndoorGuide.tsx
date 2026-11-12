@@ -16,6 +16,12 @@ type Props = {
     longitude: number
     label: string
   }
+  /** Building entrance — frames the mini-map until you're close. */
+  entrance?: {
+    latitude: number
+    longitude: number
+    label: string
+  } | null
   liveFix: LiveFix | null
   wantsLiveGps: boolean
   onPrev: () => void
@@ -98,6 +104,7 @@ export function IndoorGuide({
   upcoming,
   complexName,
   destination,
+  entrance,
   liveFix,
   wantsLiveGps,
   onPrev,
@@ -210,7 +217,20 @@ export function IndoorGuide({
       )}
 
       {wantsLiveGps ? (
-        <IndoorMiniMap liveFix={liveFix} destination={destination} />
+        <IndoorMiniMap
+          liveFix={liveFix}
+          destination={destination}
+          focus={
+            entrance ??
+            (Number.isFinite(active.latitude) && Number.isFinite(active.longitude)
+              ? {
+                  latitude: active.latitude,
+                  longitude: active.longitude,
+                  label: active.stopName || active.instruction || 'Next stop',
+                }
+              : null)
+          }
+        />
       ) : null}
 
       <div className="indoor-guide__actions">

@@ -9,7 +9,7 @@ import {
 } from '../googleMaps'
 import { bearingDeg, haversineM, type LiveFix } from '../liveNavigation'
 
-type Dest = {
+type Pin = {
   latitude: number
   longitude: number
   label: string
@@ -17,8 +17,14 @@ type Dest = {
 
 type Props = {
   liveFix: LiveFix | null
-  destination: Dest
+  /** Final unit pin (D). */
+  destination: Pin
+  /** Entrance / current indoor stop — used to frame the map when you're still approaching. */
+  focus?: Pin | null
 }
+
+/** Beyond this, don't zoom out to fit you↔unit (looks like indoor “starts from far”). */
+const NEAR_BUILDING_M = 150
 
 function pinSvg(fill: string, label: string) {
   const safe = label.slice(0, 1).toUpperCase().replace(/[<>&"]/g, '')
@@ -49,19 +55,20 @@ function normalizeDeg(d: number) {
   return ((d % 360) + 360) % 360
 }
 
-function relativeCue(heading: number | null, bearing: number): string {
-  if (heading == null || !Number.isFinite(heading)) return 'Walk toward the red unit pin'
+function relativeCue(heading: number | null, bearing: number, targetLabel: string): string {
+  if (heading == null || !Number.isFinite(heading)) return `Walk toward ${targetLabel}`
   const delta = ((bearing - heading + 540) % 360) - 180
-  if (Math.abs(delta) <= 25) return 'Unit is ahead — keep going this way'
-  if (delta > 25 && delta <= 140) return 'Unit is to your right'
-  if (delta < -25 && delta >= -140) return 'Unit is to your left'
-  return 'Unit is behind you — turn around'
+  if (Math.abs(delta) <= 25) return `${targetLabel} is ahead — keep going`
+  if (delta > 25 && delta <= 140) return `${targetLabel} is to your right`
+  if (delta < -25 && delta >= -140) return `${targetLabel} is to your left`
+  return `${targetLabel} is behind you — turn around`
 }
 
-export function IndoorMiniMap({ liveFix, destination }: Props) {
+export function IndoorMiniMap({ liveFix, destination, focus }: Props) {
   const hostRef = useRef<HTMLDivElement | null>(null)
   const mapRef = useRef<google.maps.Map | null>(null)
   const destMarkerRef = useRef<AdvMarker | null>(null)
+  const focusMarkerRef = useRef<AdvMarker | null>(null)
   const puckRef = useRef<AdvMarker | null>(null)
   const lineRef = useRef<google.maps.Polyline | null>(null)
   const accuracyRef = useRef<google.maps.Circle | null>(null)
@@ -70,6 +77,11 @@ export function IndoorMiniMap({ liveFix, destination }: Props) {
   const [cue, setCue] = useState('Unit pin on the map')
 
   const dest = latLngLiteral(Number(destination.latitude), Number(destination.longitude))
+  const focusLit =
+    focus && Number.isFinite(focus.latitude) && Number.isFinite(focus.longitude)
+      ? latLngLiteral(Number(focus.latitude), Number(focus.longitude))
+      : dest
+  const focusLabel = focus?.label || destination.label || 'entrance'
 
   useEffect(() => {
     const host = hostRef.current
@@ -81,7 +93,7 @@ export function IndoorMiniMap({ liveFix, destination }: Props) {
         if (cancelled || !hostRef.current) return
         const map = new google.maps.Map(
           hostRef.current,
-          mapOptions(dest, 18, {
+          mapOptions(focusLit, 18, {
             mapTypeControl: false,
             fullscreenControl: false,
             streetViewControl: false,
@@ -109,21 +121,43 @@ export function IndoorMiniMap({ liveFix, destination }: Props) {
       cancelled = true
       if (puckRef.current) puckRef.current.map = null
       if (destMarkerRef.current) destMarkerRef.current.map = null
+      if (focusMarkerRef.current) focusMarkerRef.current.map = null
       accuracyRef.current?.setMap(null)
       lineRef.current?.setMap(null)
       puckRef.current = null
       destMarkerRef.current = null
+      focusMarkerRef.current = null
       accuracyRef.current = null
       lineRef.current = null
       mapRef.current = null
     }
-    // Create once for this destination.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [destination.latitude, destination.longitude, destination.label])
 
   useEffect(() => {
     const map = mapRef.current
     if (!map || !ready) return
+
+    const sameFocusAsDest =
+      Math.abs(focusLit.lat - dest.lat) < 1e-5 && Math.abs(focusLit.lng - dest.lng) < 1e-5
+
+    if (!sameFocusAsDest) {
+      if (!focusMarkerRef.current) {
+        focusMarkerRef.current = createAdvancedMarker({
+          map,
+          position: focusLit,
+          title: focusLabel,
+          zIndex: 45,
+          svg: pinSvg('#22c55e', 'E'),
+        })
+      } else {
+        focusMarkerRef.current.position = focusLit
+        focusMarkerRef.current.map = map
+      }
+    } else if (focusMarkerRef.current) {
+      focusMarkerRef.current.map = null
+      focusMarkerRef.current = null
+    }
 
     if (!liveFix) {
       if (puckRef.current) puckRef.current.map = null
@@ -132,20 +166,23 @@ export function IndoorMiniMap({ liveFix, destination }: Props) {
       accuracyRef.current = null
       lineRef.current?.setMap(null)
       lineRef.current = null
-      map.setCenter(dest)
+      map.setCenter(focusLit)
       map.setZoom(18)
-      setCue(`Unit · ${destination.label || 'destination'} (waiting for GPS)`)
+      setCue(`At the building · ${focusLabel} (waiting for GPS)`)
       return
     }
 
     const you = latLngLiteral(liveFix.latitude, liveFix.longitude)
-    const bearing = bearingDeg(liveFix.latitude, liveFix.longitude, dest.lat, dest.lng)
-    const distM = haversineM(liveFix.latitude, liveFix.longitude, dest.lat, dest.lng)
+    const distToUnit = haversineM(liveFix.latitude, liveFix.longitude, dest.lat, dest.lng)
+    const distToFocus = haversineM(liveFix.latitude, liveFix.longitude, focusLit.lat, focusLit.lng)
+    const nearBuilding = Math.min(distToUnit, distToFocus) <= NEAR_BUILDING_M
+    const aim = nearBuilding ? dest : focusLit
+    const aimLabel = nearBuilding ? destination.label || 'unit' : focusLabel
+    const bearing = bearingDeg(liveFix.latitude, liveFix.longitude, aim.lat, aim.lng)
     const heading =
       liveFix.heading != null && Number.isFinite(liveFix.heading)
         ? normalizeDeg(liveFix.heading)
         : null
-    // North-up map → rotate puck by compass/GPS heading.
     const puckRot = heading
 
     if (!puckRef.current) {
@@ -183,7 +220,7 @@ export function IndoorMiniMap({ liveFix, destination }: Props) {
     if (!lineRef.current) {
       lineRef.current = new google.maps.Polyline({
         map,
-        path: [you, dest],
+        path: [you, aim],
         strokeColor: '#1a73e8',
         strokeOpacity: 0.85,
         strokeWeight: 4,
@@ -191,26 +228,47 @@ export function IndoorMiniMap({ liveFix, destination }: Props) {
         zIndex: 8,
       })
     } else {
-      lineRef.current.setPath([you, dest])
+      lineRef.current.setPath([you, aim])
     }
 
-    const bounds = new google.maps.LatLngBounds()
-    bounds.extend(you)
-    bounds.extend(dest)
-    map.fitBounds(bounds, { top: 36, right: 36, bottom: 36, left: 36 })
-    const z = map.getZoom() ?? 18
-    if (z > 19) map.setZoom(19)
-    if (z < 16 && distM < 120) map.setZoom(17)
+    if (nearBuilding) {
+      const bounds = new google.maps.LatLngBounds()
+      bounds.extend(you)
+      bounds.extend(dest)
+      if (!sameFocusAsDest) bounds.extend(focusLit)
+      map.fitBounds(bounds, { top: 36, right: 36, bottom: 36, left: 36 })
+      const z = map.getZoom() ?? 18
+      if (z > 19) map.setZoom(19)
+      if (z < 16) map.setZoom(17)
+    } else {
+      // Still approaching — keep street zoom on you → entrance, never campus-wide fit to unit.
+      map.setCenter(you)
+      map.setZoom(17)
+    }
 
+    const distM = nearBuilding ? distToUnit : distToFocus
     const distLabel =
       distM >= 1000 ? `${(distM / 1000).toFixed(1)} km` : `${Math.round(distM)} m`
-    setCue(`${relativeCue(heading, bearing)} · ~${distLabel} to unit`)
-  }, [liveFix, ready, dest.lat, dest.lng, destination.label])
+    setCue(
+      nearBuilding
+        ? `${relativeCue(heading, bearing, 'Unit')} · ~${distLabel}`
+        : `Head to ${aimLabel} first · ~${distLabel} (indoor unlocks at the door)`,
+    )
+  }, [
+    liveFix,
+    ready,
+    dest.lat,
+    dest.lng,
+    destination.label,
+    focusLit.lat,
+    focusLit.lng,
+    focusLabel,
+  ])
 
   return (
     <div className="indoor-mini">
       <div className="indoor-mini__head">
-        <span className="indoor-mini__title">Live map · you → unit</span>
+        <span className="indoor-mini__title">Live map · you → building / unit</span>
         <span className="indoor-mini__cue">{cue}</span>
       </div>
       {error ? (
@@ -222,8 +280,9 @@ export function IndoorMiniMap({ liveFix, destination }: Props) {
       )}
       <p className="indoor-mini__legend">
         <span className="is-you">● You</span>
+        <span className="is-focus">● Entrance</span>
         <span className="is-dest">● Unit (D)</span>
-        Indoor GPS can be approximate — use the arrow and pin for direction.
+        Indoor GPS can be approximate — use the arrow for direction.
       </p>
     </div>
   )

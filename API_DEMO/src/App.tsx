@@ -26,7 +26,12 @@ import {
   type TravelMode,
 } from './liveNavigation'
 import { rerouteFromLiveFix } from './smartReroute'
+import { AT_ENTRANCE_M } from './outdoorLegs'
+import { haversineM } from './liveNavigation'
 import type { StartPoint } from './startLocation'
+
+/** Live GPS must be this close to the entrance before indoor unlocks. */
+const INDOOR_UNLOCK_M = Math.max(80, AT_ENTRANCE_M * 2)
 
 const DEMO_KEY = 'keiros_live_ot_demo_map_nav_2026'
 const KEY_STORAGE = 'keiros_api_demo_key'
@@ -888,8 +893,33 @@ export default function App() {
   const firstIndoorIndex = steps.findIndex((s) => s.phase === 'indoor')
   const indoorStepCount = steps.filter((s) => s.phase === 'indoor').length
   const canNavigate = Boolean(complexId && buildingId && floorId && unitId)
+  const firstIndoorStep = firstIndoorIndex >= 0 ? steps[firstIndoorIndex] : null
+  const entranceFocus = result
+    ? {
+        latitude: Number(
+          result.entrance?.latitude ?? firstIndoorStep?.latitude ?? result.destination.latitude,
+        ),
+        longitude: Number(
+          result.entrance?.longitude ?? firstIndoorStep?.longitude ?? result.destination.longitude,
+        ),
+        label: result.entrance?.label || firstIndoorStep?.stopName || 'Entrance',
+      }
+    : null
+  const metersToEntrance =
+    wantsLiveGps && liveFix && entranceFocus
+      ? haversineM(
+          liveFix.latitude,
+          liveFix.longitude,
+          entranceFocus.latitude,
+          entranceFocus.longitude,
+        )
+      : null
+  // With Live GPS on, indoor unlocks near the door — not from across campus.
+  const indoorUnlocked =
+    !wantsLiveGps || metersToEntrance == null || metersToEntrance <= INDOOR_UNLOCK_M
 
   function jumpToPhase(target: 'drive' | 'walk' | 'indoor') {
+    if (target === 'indoor' && !indoorUnlocked) return
     const idx = steps.findIndex((s) => {
       if (target === 'drive') return s.phase === 'drive' || s.phase === 'outdoor'
       return s.phase === target
@@ -1123,7 +1153,12 @@ export default function App() {
                   type="button"
                   className={phase === 'indoor' ? 'is-active phase-inside' : 'phase-inside'}
                   onClick={() => jumpToPhase('indoor')}
-                  disabled={firstIndoorIndex < 0}
+                  disabled={firstIndoorIndex < 0 || !indoorUnlocked}
+                  title={
+                    !indoorUnlocked && metersToEntrance != null
+                      ? `Get within ~${INDOOR_UNLOCK_M} m of the entrance (${Math.round(metersToEntrance)} m away)`
+                      : undefined
+                  }
                 >
                   3 · Inside building
                   {indoorStepCount ? ` (${indoorStepCount})` : ''}
@@ -1142,7 +1177,12 @@ export default function App() {
                   type="button"
                   className={phase === 'indoor' ? 'is-active phase-inside' : 'phase-inside'}
                   onClick={() => jumpToPhase('indoor')}
-                  disabled={firstIndoorIndex < 0}
+                  disabled={firstIndoorIndex < 0 || !indoorUnlocked}
+                  title={
+                    !indoorUnlocked && metersToEntrance != null
+                      ? `Get within ~${INDOOR_UNLOCK_M} m of the entrance (${Math.round(metersToEntrance)} m away)`
+                      : undefined
+                  }
                 >
                   2 · Inside building
                   {indoorStepCount ? ` (${indoorStepCount})` : ''}
@@ -1153,7 +1193,12 @@ export default function App() {
                 type="button"
                 className={phase === 'indoor' ? 'is-active phase-inside' : 'phase-inside'}
                 onClick={() => jumpToPhase('indoor')}
-                disabled={firstIndoorIndex < 0}
+                disabled={firstIndoorIndex < 0 || !indoorUnlocked}
+                title={
+                  !indoorUnlocked && metersToEntrance != null
+                    ? `Get within ~${INDOOR_UNLOCK_M} m of the entrance (${Math.round(metersToEntrance)} m away)`
+                    : undefined
+                }
               >
                 Inside · to unit
                 {indoorStepCount ? ` (${indoorStepCount})` : ''}
@@ -1162,12 +1207,20 @@ export default function App() {
           </div>
           {firstIndoorIndex >= 0 && phase !== 'indoor' ? (
             <div className="demo-indoor-jump">
-              <button type="button" className="demo-indoor-next" onClick={() => jumpToPhase('indoor')}>
-                Resume indoor navigation
+              <button
+                type="button"
+                className="demo-indoor-next"
+                onClick={() => jumpToPhase('indoor')}
+                disabled={!indoorUnlocked}
+              >
+                {indoorUnlocked ? 'Resume indoor navigation' : 'Indoor unlocks at the entrance'}
               </button>
               <span className="demo-hint">
-                Indoor starts automatically after Navigate · {indoorStepCount} step
-                {indoorStepCount === 1 ? '' : 's'} inside
+                {wantsLiveGps && metersToEntrance != null && !indoorUnlocked
+                  ? `Keep following outdoor · ${Math.round(metersToEntrance)} m to entrance`
+                  : wantsLiveGps
+                    ? `Near the door · ${indoorStepCount} indoor step${indoorStepCount === 1 ? '' : 's'}`
+                    : `Preview indoor · ${indoorStepCount} step${indoorStepCount === 1 ? '' : 's'} (Live GPS gates at the door)`}
               </span>
             </div>
           ) : null}
@@ -1249,6 +1302,7 @@ export default function App() {
                   result.selection.unit.code ||
                   'Unit',
               }}
+              entrance={entranceFocus}
               liveFix={wantsLiveGps ? liveFix : null}
               wantsLiveGps={wantsLiveGps}
               onPrev={() => bumpJourney(-1)}
