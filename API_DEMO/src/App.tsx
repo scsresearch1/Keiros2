@@ -1172,45 +1172,51 @@ export default function App() {
             </div>
           ) : null}
 
-          {showOutdoorMap ? (
-            <>
-              <div className="demo-live-bar demo-live-bar--top">
-                <button
-                  type="button"
-                  className={`demo-live-toggle${wantsLiveGps ? ' is-on' : ''}`}
-                  aria-pressed={wantsLiveGps}
-                  onClick={() => {
-                    unlockVoiceFromGesture()
-                    void requestCompassPermission()
-                    if (startMode === 'live') {
-                      setLiveNav(true)
-                      return
-                    }
-                    setLiveNav((v) => !v)
-                  }}
-                >
-                  <span className="demo-live-toggle__pulse" aria-hidden />
-                  {wantsLiveGps ? 'Live GPS on' : 'Live GPS off'}
-                </button>
-                <span className="demo-hint">
-                  {recalculating
-                    ? 'Recalculating from your phone…'
-                    : wantsLiveGps
-                      ? liveWatching && liveFix
+          {(showOutdoorMap || phase === 'indoor') && result ? (
+            <div className="demo-live-bar demo-live-bar--top">
+              <button
+                type="button"
+                className={`demo-live-toggle${wantsLiveGps ? ' is-on' : ''}`}
+                aria-pressed={wantsLiveGps}
+                onClick={() => {
+                  unlockVoiceFromGesture()
+                  void requestCompassPermission()
+                  if (startMode === 'live') {
+                    setLiveNav(true)
+                    return
+                  }
+                  setLiveNav((v) => !v)
+                }}
+              >
+                <span className="demo-live-toggle__pulse" aria-hidden />
+                {wantsLiveGps ? 'Live GPS on' : 'Live GPS off'}
+              </button>
+              <span className="demo-hint">
+                {recalculating
+                  ? 'Recalculating from your phone…'
+                  : wantsLiveGps
+                    ? liveWatching && liveFix
+                      ? showOutdoorMap
                         ? liveProgress?.offRoute
                           ? 'Off route — finding a better path…'
                           : `Following you · ${travelMode === 'walk' ? 'Walking' : travelMode === 'drive' ? 'Driving' : '…'} · ±${Math.round(liveFix.accuracy)} m`
-                        : liveGpsError || 'Waiting for GPS — allow location in the browser'
-                      : 'Turn on to follow GPS and re-route when you leave the path'}
-                </span>
-              </div>
-              <OutdoorMap
-                result={result}
-                activeStep={active}
-                weather={result.weather}
-                traffic={result.outdoor.traffic}
-                liveFix={wantsLiveGps ? liveFix : null}
-                followLive={wantsLiveGps}
+                        : `Indoor map on · ±${Math.round(liveFix.accuracy)} m`
+                      : liveGpsError || 'Waiting for GPS — allow location in the browser'
+                    : showOutdoorMap
+                      ? 'Turn on to follow GPS and re-route when you leave the path'
+                      : 'Turn on Live GPS to show you + the unit pin on the map'}
+              </span>
+            </div>
+          ) : null}
+
+          {showOutdoorMap ? (
+            <OutdoorMap
+              result={result}
+              activeStep={active}
+              weather={result.weather}
+              traffic={result.outdoor.traffic}
+              liveFix={wantsLiveGps ? liveFix : null}
+              followLive={wantsLiveGps}
               onRouteCorridor={(corridor) => {
                 routeCorridorRef.current = corridor
               }}
@@ -1222,7 +1228,6 @@ export default function App() {
                 setJourneyIndex(0)
               }}
             />
-            </>
           ) : active ? (
             <IndoorGuide
               map3d={result.map3d}
@@ -1231,6 +1236,19 @@ export default function App() {
               active={active}
               upcoming={steps[journeyIndex + 1] ?? null}
               complexName={result.selection.complex?.name}
+              destination={{
+                latitude: Number(
+                  result.destination.latitude ?? result.selection.unit.latitude,
+                ),
+                longitude: Number(
+                  result.destination.longitude ?? result.selection.unit.longitude,
+                ),
+                label:
+                  result.destination.label ||
+                  result.selection.unit.name ||
+                  result.selection.unit.code ||
+                  'Unit',
+              }}
               liveFix={wantsLiveGps ? liveFix : null}
               wantsLiveGps={wantsLiveGps}
               onPrev={() => bumpJourney(-1)}

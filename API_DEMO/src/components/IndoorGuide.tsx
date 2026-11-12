@@ -1,6 +1,8 @@
 import { useMemo, useState } from 'react'
 import type { JourneyStep, NavigateResult } from '../api'
+import type { LiveFix } from '../liveNavigation'
 import { Indoor3D } from './Indoor3D'
+import { IndoorMiniMap } from './IndoorMiniMap'
 
 type Props = {
   map3d: NavigateResult['map3d']
@@ -9,26 +11,82 @@ type Props = {
   active: JourneyStep
   upcoming: JourneyStep | null
   complexName?: string | null
-  liveFix: { accuracy: number } | null
+  destination: {
+    latitude: number
+    longitude: number
+    label: string
+  }
+  liveFix: LiveFix | null
   wantsLiveGps: boolean
   onPrev: () => void
   onNext: () => void
 }
 
+function floorLevel(
+  map3d: NavigateResult['map3d'],
+  step: JourneyStep | null | undefined,
+): number | null {
+  if (!step) return null
+  if (step.floorId) {
+    const byId = map3d.floors.find((f) => f.id === step.floorId)
+    if (byId && Number.isFinite(byId.level)) return byId.level
+  }
+  const label = (step.floorLabel || '').trim().toLowerCase()
+  if (label) {
+    const byLabel = map3d.floors.find((f) => f.label.trim().toLowerCase() === label)
+    if (byLabel && Number.isFinite(byLabel.level)) return byLabel.level
+  }
+  const stop = step.stopId
+    ? map3d.routeStops.find((s) => s.id === step.stopId)
+    : map3d.routeStops.find(
+        (s) =>
+          Math.abs(s.latitude - step.latitude) < 1e-5 &&
+          Math.abs(s.longitude - step.longitude) < 1e-5,
+      )
+  if (stop && Number.isFinite(stop.elevation)) return stop.elevation
+  return null
+}
+
 function floorChange(
+  map3d: NavigateResult['map3d'],
   active: JourneyStep,
   upcoming: JourneyStep | null,
-): { from: string; to: string; kind: 'stairs' | 'elevator' } | null {
+): {
+  from: string
+  to: string
+  kind: 'stairs' | 'elevator'
+  direction: 'up' | 'down' | 'same'
+} | null {
   if (!upcoming || upcoming.phase !== 'indoor') return null
   const a = (active.floorLabel || '').trim()
   const b = (upcoming.floorLabel || '').trim()
   // Dedicated vertical card only when the next stop is on another floor.
   if (!a || !b || a === b) return null
   const blob = `${active.stopType || ''} ${active.stopName || ''} ${active.instruction || ''} ${upcoming.stopType || ''} ${upcoming.instruction || ''}`
+  const fromLvl = floorLevel(map3d, active)
+  const toLvl = floorLevel(map3d, upcoming)
+  let direction: 'up' | 'down' | 'same' = 'same'
+  if (fromLvl != null && toLvl != null && fromLvl !== toLvl) {
+    direction = toLvl > fromLvl ? 'up' : 'down'
+  } else if (/down|lower|descend/i.test(blob)) {
+    direction = 'down'
+  } else if (/up|upper|ascend|climb/i.test(blob)) {
+    direction = 'up'
+  } else {
+    // Fallback: L01 < L02 style labels.
+    const na = Number((a.match(/-?\d+/) || [])[0])
+    const nb = Number((b.match(/-?\d+/) || [])[0])
+    if (Number.isFinite(na) && Number.isFinite(nb) && na !== nb) {
+      direction = nb > na ? 'up' : 'down'
+    } else {
+      direction = 'up'
+    }
+  }
   return {
     from: a,
     to: b,
     kind: /elevator|lift/i.test(blob) ? 'elevator' : 'stairs',
+    direction,
   }
 }
 
@@ -39,6 +97,7 @@ export function IndoorGuide({
   active,
   upcoming,
   complexName,
+  destination,
   liveFix,
   wantsLiveGps,
   onPrev,
@@ -56,7 +115,7 @@ export function IndoorGuide({
   )
   const indoorTotal = indoorSteps.length
   const indoorStep = active.indoorIndex ?? 0
-  const vertical = floorChange(active, upcoming)
+  const vertical = floorChange(map3d, active, upcoming)
   const atEnd = journeyIndex >= steps.length - 1
   const building = map3d?.building?.name || 'Building'
   const title =
@@ -71,7 +130,20 @@ export function IndoorGuide({
         ? `Following your phone · weak GPS ±${Math.round(liveFix.accuracy)} m`
         : `Following your phone · ±${Math.round(liveFix.accuracy)} m`
       : 'Waiting for phone GPS indoors…'
-    : 'Turn on Live GPS to auto-advance near each stop'
+    : 'Turn on Live GPS to see the map and auto-advance near each stop'
+
+  const verticalVerb =
+    vertical?.direction === 'down'
+      ? 'Go down'
+      : vertical?.direction === 'up'
+        ? 'Go up'
+        : 'Change floor'
+  const verticalBadge =
+    vertical?.kind === 'elevator'
+      ? 'ELV'
+      : vertical?.direction === 'down'
+        ? '↓'
+        : '↑'
 
   return (
     <div className="indoor-guide">
@@ -94,13 +166,19 @@ export function IndoorGuide({
       </header>
 
       {vertical ? (
-        <section className="indoor-guide__vertical" aria-live="polite">
+        <section
+          className={`indoor-guide__vertical is-${vertical.direction}`}
+          aria-live="polite"
+        >
           <div className="indoor-guide__vertical-badge" aria-hidden>
-            {vertical.kind === 'elevator' ? 'ELV' : '↑'}
+            {verticalBadge}
           </div>
+          <p className="indoor-guide__kicker is-vertical">
+            {verticalVerb} · {vertical.from} → {vertical.to}
+          </p>
           <h2 className="indoor-guide__headline">
-            {vertical.kind === 'elevator' ? 'Take the elevator' : 'Take the stairs'} to{' '}
-            <span>{vertical.to}</span>
+            {vertical.kind === 'elevator' ? 'Take the elevator' : 'Take the stairs'}{' '}
+            {vertical.direction === 'down' ? 'down' : 'up'} to <span>{vertical.to}</span>
           </h2>
           <p className="indoor-guide__sub">
             From {vertical.from}
@@ -130,6 +208,10 @@ export function IndoorGuide({
           )}
         </section>
       )}
+
+      {wantsLiveGps ? (
+        <IndoorMiniMap liveFix={liveFix} destination={destination} />
+      ) : null}
 
       <div className="indoor-guide__actions">
         <button type="button" className="indoor-guide__btn is-ghost" disabled={journeyIndex <= 0} onClick={onPrev}>
