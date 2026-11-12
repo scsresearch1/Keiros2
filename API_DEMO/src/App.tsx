@@ -30,8 +30,8 @@ import { AT_ENTRANCE_M } from './outdoorLegs'
 import { haversineM } from './liveNavigation'
 import type { StartPoint } from './startLocation'
 
-/** Live GPS must be this close to the entrance before indoor unlocks. */
-const INDOOR_UNLOCK_M = Math.max(80, AT_ENTRANCE_M * 2)
+/** Phone is at the door / inside — not “near the block”. */
+const ENTERED_BUILDING_M = AT_ENTRANCE_M
 
 const DEMO_KEY = 'keiros_live_ot_demo_map_nav_2026'
 const KEY_STORAGE = 'keiros_api_demo_key'
@@ -761,6 +761,37 @@ export default function App() {
       }
     }
 
+    // Entered the building (at entrance) → start indoor. Never jump indoor from far away.
+    const indoorIdx = result.journey.steps.findIndex((s) => s.phase === 'indoor')
+    if (
+      indoorIdx >= 0 &&
+      now >= manualHoldUntil.current &&
+      liveFix.accuracy < 45
+    ) {
+      const entry = result.entrance ?? result.journey.steps[indoorIdx]
+      if (entry && Number.isFinite(entry.latitude) && Number.isFinite(entry.longitude)) {
+        const atDoor =
+          approxMeters(
+            liveFix.latitude,
+            liveFix.longitude,
+            entry.latitude,
+            entry.longitude,
+          ) <= ENTERED_BUILDING_M
+        if (atDoor) {
+          // Map-guidance steps may prefix outdoor turns — prefer UI steps index when present.
+          const uiIndoor =
+            mapGuidance?.length
+              ? voiceSteps.findIndex((s) => s.phase === 'indoor')
+              : indoorIdx
+          const goTo = uiIndoor >= 0 ? uiIndoor : indoorIdx
+          if (journeyIndex < goTo) {
+            setJourneyIndex(goTo)
+            return
+          }
+        }
+      }
+    }
+
     const dest = {
       latitude: result.destination.latitude,
       longitude: result.destination.longitude,
@@ -826,8 +857,18 @@ export default function App() {
   function bumpJourney(delta: number) {
     manualHoldUntil.current = Date.now() + 10000
     setJourneyIndex((i) => {
-      const max = Math.max(0, (result?.journey.steps.length ?? 1) - 1)
-      return Math.min(max, Math.max(0, i + delta))
+      const max = Math.max(0, steps.length - 1)
+      const next = Math.min(max, Math.max(0, i + delta))
+      // Live GPS: do not step into indoor until the phone is at the entrance.
+      if (
+        delta > 0 &&
+        wantsLiveGps &&
+        !enteredBuilding &&
+        steps[next]?.phase === 'indoor'
+      ) {
+        return i
+      }
+      return next
     })
   }
 
@@ -914,12 +955,17 @@ export default function App() {
           entranceFocus.longitude,
         )
       : null
-  // With Live GPS on, indoor unlocks near the door — not from across campus.
-  const indoorUnlocked =
-    !wantsLiveGps || metersToEntrance == null || metersToEntrance <= INDOOR_UNLOCK_M
+  // Live GPS: indoor only after the phone is at the entrance (entered the building).
+  // No GPS yet / still outside → stay outdoor. Live off = demo preview only.
+  const enteredBuilding =
+    Boolean(liveFix) &&
+    liveFix!.accuracy < 45 &&
+    metersToEntrance != null &&
+    metersToEntrance <= ENTERED_BUILDING_M
+  const indoorUnlocked = wantsLiveGps ? enteredBuilding : true
 
   function jumpToPhase(target: 'drive' | 'walk' | 'indoor') {
-    if (target === 'indoor' && !indoorUnlocked) return
+    if (target === 'indoor' && wantsLiveGps && !enteredBuilding) return
     const idx = steps.findIndex((s) => {
       if (target === 'drive') return s.phase === 'drive' || s.phase === 'outdoor'
       return s.phase === target
@@ -1155,8 +1201,10 @@ export default function App() {
                   onClick={() => jumpToPhase('indoor')}
                   disabled={firstIndoorIndex < 0 || !indoorUnlocked}
                   title={
-                    !indoorUnlocked && metersToEntrance != null
-                      ? `Get within ~${INDOOR_UNLOCK_M} m of the entrance (${Math.round(metersToEntrance)} m away)`
+                    wantsLiveGps && !enteredBuilding
+                      ? metersToEntrance != null
+                        ? `Enter the building first · ${Math.round(metersToEntrance)} m to entrance`
+                        : 'Enter the building first (Live GPS)'
                       : undefined
                   }
                 >
@@ -1179,8 +1227,10 @@ export default function App() {
                   onClick={() => jumpToPhase('indoor')}
                   disabled={firstIndoorIndex < 0 || !indoorUnlocked}
                   title={
-                    !indoorUnlocked && metersToEntrance != null
-                      ? `Get within ~${INDOOR_UNLOCK_M} m of the entrance (${Math.round(metersToEntrance)} m away)`
+                    wantsLiveGps && !enteredBuilding
+                      ? metersToEntrance != null
+                        ? `Enter the building first · ${Math.round(metersToEntrance)} m to entrance`
+                        : 'Enter the building first (Live GPS)'
                       : undefined
                   }
                 >
@@ -1195,8 +1245,10 @@ export default function App() {
                 onClick={() => jumpToPhase('indoor')}
                 disabled={firstIndoorIndex < 0 || !indoorUnlocked}
                 title={
-                  !indoorUnlocked && metersToEntrance != null
-                    ? `Get within ~${INDOOR_UNLOCK_M} m of the entrance (${Math.round(metersToEntrance)} m away)`
+                  wantsLiveGps && !enteredBuilding
+                    ? metersToEntrance != null
+                      ? `Enter the building first · ${Math.round(metersToEntrance)} m to entrance`
+                      : 'Enter the building first (Live GPS)'
                     : undefined
                 }
               >
@@ -1213,14 +1265,18 @@ export default function App() {
                 onClick={() => jumpToPhase('indoor')}
                 disabled={!indoorUnlocked}
               >
-                {indoorUnlocked ? 'Resume indoor navigation' : 'Indoor unlocks at the entrance'}
+                {enteredBuilding || !wantsLiveGps
+                  ? 'Start indoor navigation'
+                  : 'Waiting until you enter the building'}
               </button>
               <span className="demo-hint">
-                {wantsLiveGps && metersToEntrance != null && !indoorUnlocked
-                  ? `Keep following outdoor · ${Math.round(metersToEntrance)} m to entrance`
+                {wantsLiveGps && !enteredBuilding
+                  ? metersToEntrance != null
+                    ? `Stay on outdoor · ${Math.round(metersToEntrance)} m to entrance — indoor starts when you enter`
+                    : 'Turn on / wait for Live GPS — indoor starts only after you enter the building'
                   : wantsLiveGps
-                    ? `Near the door · ${indoorStepCount} indoor step${indoorStepCount === 1 ? '' : 's'}`
-                    : `Preview indoor · ${indoorStepCount} step${indoorStepCount === 1 ? '' : 's'} (Live GPS gates at the door)`}
+                    ? `Entered · ${indoorStepCount} indoor step${indoorStepCount === 1 ? '' : 's'}`
+                    : `Demo preview · ${indoorStepCount} step${indoorStepCount === 1 ? '' : 's'} (Live GPS required to gate on entry)`}
               </span>
             </div>
           ) : null}

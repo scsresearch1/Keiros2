@@ -23,8 +23,8 @@ type Props = {
   focus?: Pin | null
 }
 
-/** Beyond this, don't zoom out to fit you↔unit (looks like indoor “starts from far”). */
-const NEAR_BUILDING_M = 150
+/** At/inside the building — only then frame you → unit tightly. */
+const NEAR_BUILDING_M = 40
 
 function pinSvg(fill: string, label: string) {
   const safe = label.slice(0, 1).toUpperCase().replace(/[<>&"]/g, '')
@@ -252,7 +252,7 @@ export function IndoorMiniMap({ liveFix, destination, focus }: Props) {
     setCue(
       nearBuilding
         ? `${relativeCue(heading, bearing, 'Unit')} · ~${distLabel}`
-        : `Head to ${aimLabel} first · ~${distLabel} (indoor unlocks at the door)`,
+        : `Head to ${aimLabel} · ~${distLabel} — indoor starts after you enter`,
     )
   }, [
     liveFix,
