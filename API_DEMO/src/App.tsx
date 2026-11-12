@@ -8,8 +8,7 @@ import {
   type NavigateResult,
 } from './api'
 import { OutdoorMap } from './components/OutdoorMap'
-import { Indoor3D } from './components/Indoor3D'
-import { IndoorFloorMap } from './components/IndoorFloorMap'
+import { IndoorGuide } from './components/IndoorGuide'
 import { StartLocationPanel } from './components/StartLocationPanel'
 import { NavGuidanceBanner } from './components/NavGuidanceBanner'
 import { AutocompleteField, type AutocompleteOption } from './components/AutocompleteField'
@@ -133,7 +132,6 @@ export default function App() {
   const [customOrigin, setCustomOrigin] = useState<StartPoint | null>(null)
   const [pickerOpen, setPickerOpen] = useState(false)
   const [locating, setLocating] = useState(false)
-  const [indoorView, setIndoorView] = useState<'floor' | 'building'>('building')
   /** Google Maps–style live GPS follow. Next/Previous stay available as optional manual control. */
   const [liveNav, setLiveNav] = useState(false)
   const [liveProgress, setLiveProgress] = useState<LiveProgress | null>(null)
@@ -886,7 +884,6 @@ export default function App() {
       : baseSteps
   const active = steps[journeyIndex] ?? null
   const phase = active?.phase === 'outdoor' ? 'drive' : (active?.phase ?? 'drive')
-  const indoorStep = active?.phase === 'indoor' ? (active.indoorIndex ?? 0) : 0
   const showOutdoorMap = phase === 'drive' || phase === 'walk'
   const firstIndoorIndex = steps.findIndex((s) => s.phase === 'indoor')
   const indoorStepCount = steps.filter((s) => s.phase === 'indoor').length
@@ -1170,7 +1167,7 @@ export default function App() {
               </button>
               <span className="demo-hint">
                 Indoor starts automatically after Navigate · {indoorStepCount} step
-                {indoorStepCount === 1 ? '' : 's'} on the floor map
+                {indoorStepCount === 1 ? '' : 's'} inside
               </span>
             </div>
           ) : null}
@@ -1226,74 +1223,22 @@ export default function App() {
               }}
             />
             </>
-          ) : (
-            <div className="demo-indoor-wrap">
-              <div className="demo-indoor-head">
-                <p className="demo-indoor-banner">
-                  {indoorView === 'floor'
-                    ? 'Inside — follow the path on this floor'
-                    : 'Inside — 3D building · drag to rotate, yellow path is your indoor route'}
-                </p>
-                <div className="demo-indoor-toggle" role="tablist" aria-label="Indoor map">
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={indoorView === 'floor'}
-                    className={indoorView === 'floor' ? 'is-active' : ''}
-                    onClick={() => setIndoorView('floor')}
-                  >
-                    Floor map
-                  </button>
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={indoorView === 'building'}
-                    className={indoorView === 'building' ? 'is-active' : ''}
-                    onClick={() => setIndoorView('building')}
-                  >
-                    3D building
-                  </button>
-                </div>
-              </div>
-              <div className="demo-indoor-actions">
-                <button
-                  type="button"
-                  className="demo-indoor-next"
-                  disabled={journeyIndex >= steps.length - 1}
-                  onClick={() => bumpJourney(1)}
-                >
-                  {journeyIndex >= steps.length - 1 ? 'Arrived' : 'Next indoor step'}
-                </button>
-                <span className="demo-hint">
-                  {wantsLiveGps && liveFix
-                    ? liveFix.accuracy >= 25
-                      ? `Following your phone · weak GPS ±${Math.round(liveFix.accuracy)} m`
-                      : `Following your phone · ±${Math.round(liveFix.accuracy)} m`
-                    : wantsLiveGps
-                      ? 'Waiting for phone GPS indoors…'
-                      : 'Turn on Live GPS to follow your phone indoors'}
-                </span>
-              </div>
-              {indoorView === 'floor' ? (
-                <IndoorFloorMap
-                  map3d={result.map3d}
-                  activeStep={indoorStep}
-                  instruction={active?.instruction}
-                  liveFix={wantsLiveGps ? liveFix : null}
-                />
-              ) : (
-                <Indoor3D
-                  map3d={result.map3d}
-                  activeStep={indoorStep}
-                  instruction={active?.instruction}
-                  complexName={result.selection.complex?.name}
-                  liveFix={wantsLiveGps ? liveFix : null}
-                />
-              )}
-            </div>
-          )}
+          ) : active ? (
+            <IndoorGuide
+              map3d={result.map3d}
+              steps={steps}
+              journeyIndex={journeyIndex}
+              active={active}
+              upcoming={steps[journeyIndex + 1] ?? null}
+              complexName={result.selection.complex?.name}
+              liveFix={wantsLiveGps ? liveFix : null}
+              wantsLiveGps={wantsLiveGps}
+              onPrev={() => bumpJourney(-1)}
+              onNext={() => bumpJourney(1)}
+            />
+          ) : null}
 
-          {active && (showOutdoorMap || phase === 'indoor') ? (
+          {active && showOutdoorMap ? (
             <div className="demo-map-guidance">
               <NavGuidanceBanner
                 active={active}
