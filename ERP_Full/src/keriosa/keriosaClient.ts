@@ -28,13 +28,10 @@ export async function fetchKeriosaLock(lockKey: string): Promise<KeriosaLockRaw 
 }
 
 export async function fetchAllKeriosaLocks(): Promise<KeriosaLockedEntry[]> {
-  const keys = await listKeriosaLockKeys()
-  const rows: KeriosaLockedEntry[] = []
-  for (const lockKey of keys) {
-    const data = await fetchKeriosaLock(lockKey)
-    if (data && typeof data === 'object') {
-      rows.push({ lockKey, data })
-    }
-  }
-  return rows
+  const tree = await fetchJson<Record<string, KeriosaLockRaw> | null>('/keiros/locked.json')
+  if (!tree || typeof tree !== 'object') return []
+  return Object.entries(tree)
+    .filter((entry): entry is [string, KeriosaLockRaw] => Boolean(entry[1]) && typeof entry[1] === 'object')
+    .sort(([a], [b]) => (a < b ? 1 : a > b ? -1 : 0))
+    .map(([lockKey, data]) => ({ lockKey, data }))
 }

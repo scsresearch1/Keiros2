@@ -233,19 +233,20 @@ export function KeriosaImportPanel() {
     try {
       const locks = await fetchAllKeriosaLocks()
       const existing = new Map(data.keriosaImports.map((i) => [i.lockKey, i]))
-      let added = 0
-      for (const { lockKey, data: raw } of locks) {
-        if (existing.has(lockKey)) continue
-        const row = buildKeriosaImport(
-          lockKey,
-          raw,
-          data.complexes,
-          data.buildings,
-          data.floors,
-        )
-        await upsert('keriosaImports', row)
-        added += 1
-      }
+      const fresh = locks.filter(({ lockKey }) => !existing.has(lockKey))
+      await Promise.all(
+        fresh.map(async ({ lockKey, data: raw }) => {
+          const row = buildKeriosaImport(
+            lockKey,
+            raw,
+            data.complexes,
+            data.buildings,
+            data.floors,
+          )
+          await upsert('keriosaImports', row)
+        }),
+      )
+      const added = fresh.length
       setNotice(
         added
           ? `${added} new field lock(s) ready for review.`
