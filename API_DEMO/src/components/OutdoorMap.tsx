@@ -58,6 +58,77 @@ function trafficColor(level?: string | null) {
 }
 
 const LIVE_BLUE = '#1a73e8'
+/** Already-traveled corridor after recalculate (Google-style grey trail — not a 2nd active route). */
+const ROUTE_RETAINED = '#94a3b8'
+
+function metersBetweenLit(a: google.maps.LatLngLiteral, b: google.maps.LatLngLiteral) {
+  const R = 6371000
+  const toRad = (d: number) => (d * Math.PI) / 180
+  const dLat = toRad(b.lat - a.lat)
+  const dLng = toRad(b.lng - a.lng)
+  const s =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * Math.sin(dLng / 2) ** 2
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(s)))
+}
+
+/** Keep the portion of the painted corridor up to the live fix (actual path taken). */
+function pathPrefixToPoint(
+  path: google.maps.LatLngLiteral[],
+  target: google.maps.LatLngLiteral,
+): google.maps.LatLngLiteral[] {
+  if (path.length < 2) return path.map((p) => ({ ...p }))
+  let bestI = 0
+  let bestT = 0
+  let bestD = Infinity
+  for (let i = 0; i < path.length - 1; i += 1) {
+    const a = path[i]
+    const b = path[i + 1]
+    const abx = b.lng - a.lng
+    const aby = b.lat - a.lat
+    const len2 = abx * abx + aby * aby
+    const t =
+      len2 > 0
+        ? Math.max(0, Math.min(1, ((target.lng - a.lng) * abx + (target.lat - a.lat) * aby) / len2))
+        : 0
+    const snap = { lat: a.lat + aby * t, lng: a.lng + abx * t }
+    const d = metersBetweenLit(target, snap)
+    if (d < bestD) {
+      bestD = d
+      bestI = i
+      bestT = t
+    }
+  }
+  const out = path.slice(0, bestI + 1).map((p) => ({ ...p }))
+  const a = path[bestI]
+  const b = path[bestI + 1]
+  const snap = {
+    lat: a.lat + (b.lat - a.lat) * bestT,
+    lng: a.lng + (b.lng - a.lng) * bestT,
+  }
+  if (metersBetweenLit(out[out.length - 1], snap) > 0.5) out.push(snap)
+  return out
+}
+
+function mergeTraveledPath(
+  prev: google.maps.LatLngLiteral[],
+  prefix: google.maps.LatLngLiteral[],
+): google.maps.LatLngLiteral[] {
+  if (!prefix.length) return prev.map((p) => ({ ...p }))
+  if (!prev.length) return prefix.map((p) => ({ ...p }))
+  const end = prev[prev.length - 1]
+  let startIdx = 0
+  let best = Infinity
+  for (let i = 0; i < prefix.length; i += 1) {
+    const d = metersBetweenLit(end, prefix[i])
+    if (d < best) {
+      best = d
+      startIdx = i
+    }
+  }
+  if (best < 45) return [...prev, ...prefix.slice(startIdx + 1).map((p) => ({ ...p }))]
+  return [...prev, ...prefix.map((p) => ({ ...p }))]
+}
 
 function readCollapsed(key: string) {
   try {
@@ -208,6 +279,10 @@ export function OutdoorMap({
   const userPanningRef = useRef(false)
   const panTimerRef = useRef<number | null>(null)
   const routeSessionRef = useRef(0)
+  /** Actual painted active corridor from the last draw (drive+walk). Used to retain path taken. */
+  const lastActivePathRef = useRef<google.maps.LatLngLiteral[]>([])
+  /** Accumulated traveled trail behind the puck after recalculates — never a 2nd Google route. */
+  const traveledPathRef = useRef<google.maps.LatLngLiteral[]>([])
   /** After Navigate in Live mode, snap once to GPS at street zoom (don't wait on fitBounds). */
   const liveSnapDoneRef = useRef(false)
   const liveFixRef = useRef(liveFix)
@@ -240,7 +315,15 @@ export function OutdoorMap({
     overlaysRef.current = []
   }
 
-  function track<T extends { setMap?: (map: google.maps.Map | null) => void; map?: google.maps.Map | null }>(obj: T) {
+  function track<T extends { setMap?: (map: google.maps.Map | null) => void; map?: google.maps.Map | null }>(
+    obj: T,
+    session?: number,
+  ) {
+    if (session != null && session !== routeSessionRef.current) {
+      if (typeof obj.setMap === 'function') obj.setMap(null)
+      else obj.map = null
+      return obj
+    }
     overlaysRef.current.push(obj)
     return obj
   }
@@ -345,6 +428,24 @@ export function OutdoorMap({
       Number(result.origin.latitude),
       Number(result.origin.longitude),
     )
+    // Retain the *actual* corridor already driven/walked. Never re-Google S→GPS
+    // (that painted a second active blue fork next to the recalculated remaining route).
+    const liveFrom = result.origin.liveFrom
+    if (
+      liveFrom &&
+      Number.isFinite(liveFrom.latitude) &&
+      Number.isFinite(liveFrom.longitude) &&
+      lastActivePathRef.current.length > 1
+    ) {
+      const prefix = pathPrefixToPoint(lastActivePathRef.current, {
+        lat: liveFrom.latitude,
+        lng: liveFrom.longitude,
+      })
+      traveledPathRef.current = mergeTraveledPath(traveledPathRef.current, prefix)
+    } else if (!liveFrom) {
+      traveledPathRef.current = []
+      lastActivePathRef.current = []
+    }
     // D always sits on the unit / building destination (e.g. Fig Garden brown-roof Unit 202).
     // Entrance is a separate green waypoint — never steal the red D into a parking-lot entry pin.
     const unitDest = latLngLiteral(
@@ -498,17 +599,46 @@ export function OutdoorMap({
       path: google.maps.LatLngLiteral[],
       from: google.maps.LatLngLiteral,
       to: google.maps.LatLngLiteral,
-      style: 'drive' | 'walk-dots',
+      style: 'drive' | 'walk-dots' | 'retained',
       zIndex: number,
     ) {
+      if (session !== routeSessionRef.current) return
       // Drive: keep network end. Walk: always reach the real destination pin.
       const pinned =
-        style === 'drive'
-          ? pinPathToEndpoints(path, from, path[path.length - 1] ?? to, 12, 8)
-          : pinPathToEndpoints(path, from, to, 18, 80, { alwaysReachEnd: true })
+        style === 'retained'
+          ? path.map((p) => ({ ...p }))
+          : style === 'drive'
+            ? pinPathToEndpoints(path, from, path[path.length - 1] ?? to, 12, 8)
+            : pinPathToEndpoints(path, from, to, 18, 80, { alwaysReachEnd: true })
       if (pinned.length < 2) return
+      if (session !== routeSessionRef.current) return
 
-      if (style === 'walk-dots') {
+      if (style === 'retained') {
+        track(
+          new google.maps.Polyline({
+            map,
+            path: pinned,
+            strokeColor: '#ffffff',
+            strokeOpacity: 0.45,
+            strokeWeight: 10,
+            zIndex: zIndex - 1,
+            geodesic: false,
+          }),
+          session,
+        )
+        track(
+          new google.maps.Polyline({
+            map,
+            path: pinned,
+            strokeColor: ROUTE_RETAINED,
+            strokeOpacity: 0.85,
+            strokeWeight: 6,
+            zIndex,
+            geodesic: false,
+          }),
+          session,
+        )
+      } else if (style === 'walk-dots') {
         track(
           new google.maps.Polyline({
             map,
@@ -533,6 +663,7 @@ export function OutdoorMap({
               },
             ],
           }),
+          session,
         )
       } else {
         // Outer halo + firm blue core (reads better on satellite like Google Maps).
@@ -546,6 +677,7 @@ export function OutdoorMap({
             zIndex: zIndex - 1,
             geodesic: false,
           }),
+          session,
         )
         track(
           new google.maps.Polyline({
@@ -557,9 +689,16 @@ export function OutdoorMap({
             zIndex,
             geodesic: false,
           }),
+          session,
         )
       }
       pinned.forEach((p) => bounds.extend(p))
+    }
+
+    function paintRetainedTrail() {
+      const trail = traveledPathRef.current
+      if (trail.length < 2) return
+      drawPath(trail, trail[0], trail[trail.length - 1], 'retained', 16)
     }
 
     function drawExtractedNetworks(extract: SiteWaysExtract) {
@@ -707,6 +846,9 @@ export function OutdoorMap({
         index: number,
         extract: SiteWaysExtract | null,
       ) {
+        // Never Google-route a "from start" stub — retained trail owns history behind the puck.
+        if (leg.id === 'from-session-start' || leg.skipGuidance) return
+
         // Drive legs stay on roads. Walk legs prefer sidewalks/pathways when OSM is ready.
         const plan =
           leg.mode === 'WALK'
@@ -780,6 +922,9 @@ export function OutdoorMap({
         ])
       }
 
+      // Path already taken stays muted behind the puck; only remaining corridor is active blue/red.
+      paintRetainedTrail()
+
       await Promise.all(
         legsToDraw.map(async (leg, index) => {
           try {
@@ -794,6 +939,8 @@ export function OutdoorMap({
       )
 
       if (session !== routeSessionRef.current) return
+      const activePath = [...corridorDrive, ...corridorWalk]
+      if (activePath.length > 1) lastActivePathRef.current = activePath
       const src = [...sources].join('+') || 'google'
       setSiteNet((prev) => ({
         driveways: prev?.driveways ?? extractForDraw?.driveways.length ?? 0,
@@ -831,7 +978,7 @@ export function OutdoorMap({
       void extractPromise.then(async (extract) => {
         if (session !== routeSessionRef.current || !extract?.sidewalks.length) return
         if (extractForDraw?.sidewalks.length) return
-        const walkLegs = legsToDraw.filter((l) => l.mode === 'WALK')
+        const walkLegs = legsToDraw.filter((l) => l.mode === 'WALK' && !l.skipGuidance)
         if (!walkLegs.length) return
         clearOverlays()
         // Restore S / D pins after clear (route redraw does not recreate them).
@@ -843,6 +990,7 @@ export function OutdoorMap({
             zIndex: 40,
             svg: pinSvg('#0ea5e9', 'S'),
           }),
+          session,
         )
         track(
           createAdvancedMarker({
@@ -852,7 +1000,9 @@ export function OutdoorMap({
             zIndex: 45,
             svg: pinSvg('#ea4335', 'D'),
           }),
+          session,
         )
+        paintRetainedTrail()
         drawExtractedNetworks(extract)
         corridorDrive.length = 0
         corridorWalk.length = 0
@@ -866,6 +1016,9 @@ export function OutdoorMap({
             /* keep prior attempt */
           }
         }
+        if (session !== routeSessionRef.current) return
+        const rebuilt = [...corridorDrive, ...corridorWalk]
+        if (rebuilt.length > 1) lastActivePathRef.current = rebuilt
         if (onRouteCorridor) {
           onRouteCorridor({
             drive: corridorDrive.length
@@ -1150,7 +1303,9 @@ export function OutdoorMap({
               <br />
               <span style={{ color: SIDEWALK_LAYER }}>···</span> Extracted sidewalks (OSM)
               <br />
-              <span style={{ color: ROUTE_DRIVE_BLUE }}>━━</span> Drive on driveway toward destination
+              <span style={{ color: ROUTE_DRIVE_BLUE }}>━━</span> Active drive (remaining)
+              <br />
+              <span style={{ color: ROUTE_RETAINED }}>━━</span> Path already taken (kept after reroute)
               <br />
               <span style={{ color: ROUTE_WALK_DOT }}>●●●</span> Walk (red dots) to actual destination
               <br />

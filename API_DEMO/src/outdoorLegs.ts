@@ -125,20 +125,8 @@ export function resolveOutdoorLegs(result: NavigateResult): OutdoorPlan {
 
   const legs: OutdoorLeg[] = []
 
-  // After live drive recalculate, keep blue from S → live GPS.
-  // While live walking, do NOT paint a drive stub from S — only footpath from current GPS.
-  const gapFromStartM = metersBetween(sessionOrigin, corridorFrom)
-  if (lf && gapFromStartM > 20 && !liveWalking) {
-    legs.push({
-      id: 'from-session-start',
-      mode: 'DRIVE',
-      from: sessionOrigin,
-      to: corridorFrom,
-      label: 'From start',
-      color: DRIVE_COLOR,
-      skipGuidance: true,
-    })
-  }
+  // Do NOT Google-route S → live GPS as a second blue drive (that forked with the
+  // recalculated remaining path). OutdoorMap keeps the *actual* traveled corridor muted.
 
   if (liveWalking) {
     if (metersBetween(corridorFrom, outdoorEnd) > 8) {
