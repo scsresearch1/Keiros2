@@ -32,6 +32,7 @@ import type { StartPoint } from './startLocation'
 
 const DEMO_KEY = 'keiros_live_ot_demo_map_nav_2026'
 const KEY_STORAGE = 'keiros_api_demo_key'
+const OPERATOR_STORAGE = 'keiros_api_demo_operator'
 
 type StartMode = 'demo' | 'live' | 'custom'
 
@@ -114,6 +115,12 @@ function readCurrentLocation(): Promise<{ latitude: number; longitude: number }>
 export default function App() {
   const [apiKey, setApiKey] = useState(() => localStorage.getItem(KEY_STORAGE) || '')
   const [keyInput, setKeyInput] = useState(apiKey || DEMO_KEY)
+  const [operatorName, setOperatorName] = useState(
+    () => localStorage.getItem(OPERATOR_STORAGE) || '',
+  )
+  const [operatorInput, setOperatorInput] = useState(
+    () => localStorage.getItem(OPERATOR_STORAGE) || '',
+  )
   const [apiOk, setApiOk] = useState<boolean | null>(null)
   const [dataMode, setDataMode] = useState<string | null>(null)
   const [hierarchy, setHierarchy] = useState<Hierarchy | null>(null)
@@ -182,6 +189,11 @@ export default function App() {
   async function unlock(e: FormEvent) {
     e.preventDefault()
     const key = keyInput.trim()
+    const operator = operatorInput.trim()
+    if (!operator) {
+      setError('Enter an operator name to continue.')
+      return
+    }
     if (!key) {
       setError('Enter an API key to continue.')
       return
@@ -194,7 +206,9 @@ export default function App() {
       const h = await fetchHierarchy(key)
       setHierarchy(h)
       setApiKey(key)
+      setOperatorName(operator)
       localStorage.setItem(KEY_STORAGE, key)
+      localStorage.setItem(OPERATOR_STORAGE, operator)
       setComplexId('')
       setBuildingId('')
       setFloorId('')
@@ -589,6 +603,7 @@ export default function App() {
     setFloorId('')
     setUnitId('')
     setKeyInput(DEMO_KEY)
+    setOperatorInput(operatorName || localStorage.getItem(OPERATOR_STORAGE) || '')
     setStartMode('demo')
     setStartReady(true)
     setLiveSelected(false)
@@ -853,6 +868,16 @@ export default function App() {
           </p>
           <form onSubmit={unlock} className="demo-gate__form">
             <label>
+              Operator name
+              <input
+                value={operatorInput}
+                onChange={(e) => setOperatorInput(e.target.value)}
+                placeholder="Your name"
+                autoComplete="name"
+                spellCheck={false}
+              />
+            </label>
+            <label>
               API key
               <input
                 value={keyInput}
@@ -924,7 +949,15 @@ export default function App() {
     <div className="demo-shell">
       <header className="demo-top">
         <div>
-          <p className="demo-brand">Keiros · API Demo</p>
+          <p className="demo-brand">
+            Keiros · API Demo
+            {operatorName ? (
+              <>
+                {' · '}
+                <span className="demo-operator">{operatorName}</span>
+              </>
+            ) : null}
+          </p>
           <h1>Navigate to unit</h1>
         </div>
         <button type="button" className="demo-ghost" onClick={signOut}>

@@ -49,6 +49,13 @@ body,
   font-weight: 700;
 }
 
+.demo-operator {
+  color: #fde68a;
+  letter-spacing: 0.06em;
+  text-transform: none;
+  font-weight: 750;
+}
+
 .demo-gate {
   width: min(520px, 100%);
   padding: 2rem;
