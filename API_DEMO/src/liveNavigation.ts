@@ -5,7 +5,10 @@ export type LiveFix = {
   latitude: number
   longitude: number
   accuracy: number
+  /** Best travel/facing direction (clockwise from north). */
   heading: number | null
+  /** Where `heading` came from — OutdoorMap trusts gps/course over compass. */
+  headingSource?: 'gps' | 'compass' | null
   speed: number | null
   timestamp: number
 }
@@ -541,6 +544,7 @@ export function useGeolocationWatch(
         longitude: seedAnchor.longitude,
         accuracy: 45,
         heading: lastCompassHeading.current,
+        headingSource: lastCompassHeading.current != null ? 'compass' : null,
         speed: null,
         timestamp: Date.now(),
       }
@@ -548,14 +552,26 @@ export function useGeolocationWatch(
       setFix(seed)
     }
 
-    const pickHeading = (gpsHeading: number | null, speed: number | null): number | null => {
+    const pickHeading = (
+      gpsHeading: number | null,
+      speed: number | null,
+    ): { heading: number | null; source: 'gps' | 'compass' | null } => {
       const compass = lastCompassHeading.current
-      const moving = speed != null && Number.isFinite(speed) && speed > 3.5 // ~12 km/h
-      // Driving: GPS course-over-ground is stabler. Walking / standing: phone compass.
-      if (moving && gpsHeading != null) return gpsHeading
-      if (compass != null) return compass
-      if (gpsHeading != null) return gpsHeading
-      return lastGpsHeading.current
+      const spd = speed != null && Number.isFinite(speed) ? speed : null
+      // GPS course is usable well below driving speed; parking-lot walk ~1–2 m/s.
+      const moving = spd != null && spd > 0.8
+      if (moving && gpsHeading != null) return { heading: gpsHeading, source: 'gps' }
+      if (moving && lastGpsHeading.current != null) {
+        return { heading: lastGpsHeading.current, source: 'gps' }
+      }
+      // Compass only when nearly stopped — magnetic noise near cars/buildings is terrible.
+      if ((spd == null || spd < 0.6) && compass != null) {
+        return { heading: compass, source: 'compass' }
+      }
+      if (gpsHeading != null) return { heading: gpsHeading, source: 'gps' }
+      if (lastGpsHeading.current != null) return { heading: lastGpsHeading.current, source: 'gps' }
+      if (compass != null) return { heading: compass, source: 'compass' }
+      return { heading: null, source: null }
     }
 
     const id = navigator.geolocation.watchPosition(
@@ -566,11 +582,13 @@ export function useGeolocationWatch(
             : null
         if (gpsHeading != null) lastGpsHeading.current = gpsHeading
         const speed = typeof pos.coords.speed === 'number' ? pos.coords.speed : null
+        const picked = pickHeading(gpsHeading, speed)
         const candidate: LiveFix = {
           latitude: pos.coords.latitude,
           longitude: pos.coords.longitude,
           accuracy: pos.coords.accuracy,
-          heading: pickHeading(gpsHeading, speed),
+          heading: picked.heading,
+          headingSource: picked.source,
           speed,
           timestamp: pos.timestamp,
         }
@@ -613,14 +631,22 @@ export function useGeolocationWatch(
       lastCompassHeading.current = compass
       const prev = lastFixRef.current
       if (!prev) return
-      const heading = pickHeading(lastGpsHeading.current, prev.speed)
-      if (heading == null) return
+      // Do not override a GPS course with compass while the phone is moving.
+      const spd = prev.speed != null && Number.isFinite(prev.speed) ? prev.speed : null
+      if (spd != null && spd > 0.8) return
+      const picked = pickHeading(lastGpsHeading.current, prev.speed)
+      if (picked.heading == null || picked.source !== 'compass') return
       if (prev.heading != null) {
-        const delta = Math.abs(((heading - prev.heading + 540) % 360) - 180)
+        const delta = Math.abs(((picked.heading - prev.heading + 540) % 360) - 180)
         // Ignore tiny compass noise — was republishing every frame and thrashing the map.
-        if (delta < 4) return
+        if (delta < 6) return
       }
-      const next: LiveFix = { ...prev, heading, timestamp: Date.now() }
+      const next: LiveFix = {
+        ...prev,
+        heading: picked.heading,
+        headingSource: 'compass',
+        timestamp: Date.now(),
+      }
       lastFixRef.current = next
       setFix(next)
     }

@@ -918,19 +918,39 @@ export function OutdoorMap({
     const speed = liveFix.speed != null && Number.isFinite(liveFix.speed) ? liveFix.speed : 0
     const moving = speed > 1.2 || movedM > 2.5
 
-    // Travel direction for heading-up: prefer GPS course / movement, then compass.
-    // (Compass-only while stopped made the map fight the road and flipped left/right.)
+    // Travel direction for the puck (north-up Satellite especially):
+    // 1) GPS displacement bearing while walking — most reliable in parking lots
+    // 2) GPS course-over-ground when the OS provides it
+    // 3) Route step ahead (keeps arrow on the blue/red path)
+    // 4) Compass only when nearly stopped (magnetic noise near cars is bad)
     let rawHeading: number | null = null
-    if (moving && liveFix.heading != null && Number.isFinite(liveFix.heading) && speed > 1.2) {
+    const source = liveFix.headingSource
+    if (prev && movedM > 1.5 && (speed > 0.35 || movedM > 2.0)) {
+      rawHeading = bearingDeg(
+        prev.latitude,
+        prev.longitude,
+        liveFix.latitude,
+        liveFix.longitude,
+      )
+    } else if (
+      moving &&
+      source === 'gps' &&
+      liveFix.heading != null &&
+      Number.isFinite(liveFix.heading)
+    ) {
       rawHeading = liveFix.heading
-    } else if (moving && prev && movedM > 2.5) {
-      rawHeading = bearingDeg(prev.latitude, prev.longitude, liveFix.latitude, liveFix.longitude)
-    } else if (liveFix.heading != null && Number.isFinite(liveFix.heading)) {
+    } else if (
+      !moving &&
+      source === 'compass' &&
+      liveFix.heading != null &&
+      Number.isFinite(liveFix.heading)
+    ) {
+      rawHeading = liveFix.heading
+    } else if (moving && liveFix.heading != null && Number.isFinite(liveFix.heading) && speed > 2.5) {
       rawHeading = liveFix.heading
     }
-    // Aim slightly along the active step toward the destination when we have one.
+    // Bias toward the active guidance point so the arrow matches "Head west".
     if (
-      moving &&
       activeStep &&
       activeStep.phase !== 'indoor' &&
       Number.isFinite(activeStep.latitude) &&
@@ -942,10 +962,14 @@ export function OutdoorMap({
         activeStep.latitude,
         activeStep.longitude,
       )
-      if (rawHeading == null) rawHeading = toStep
-      else {
+      if (rawHeading == null) {
+        rawHeading = toStep
+      } else if (moving || movedM > 1.2) {
         const delta = ((toStep - rawHeading + 540) % 360) - 180
-        if (Math.abs(delta) < 70) rawHeading = normalizeDeg(rawHeading + delta * 0.35)
+        // Stronger pull onto the route when compass/GPS disagree with the path.
+        if (Math.abs(delta) < 100) {
+          rawHeading = normalizeDeg(rawHeading + delta * (source === 'compass' ? 0.55 : 0.4))
+        }
       }
     }
     if (rawHeading != null && Number.isFinite(rawHeading)) {
