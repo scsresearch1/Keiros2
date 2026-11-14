@@ -263,24 +263,30 @@ export default function App() {
         unitCount,
       }
     })
-    // Duplicate names (e.g. empty Cameron Crossing clone): put the populated one first.
+    // Alphabetical by name; same-name duplicates keep the richer (more units) entry first.
     return rows
-      .sort((a, b) => b.unitCount - a.unitCount || a.label.localeCompare(b.label))
+      .sort(
+        (a, b) =>
+          a.label.localeCompare(b.label, undefined, { sensitivity: 'base' }) ||
+          b.unitCount - a.unitCount,
+      )
       .map(({ unitCount: _unitCount, ...option }) => option)
   }, [hierarchy])
 
   const buildingOptions = useMemo<AutocompleteOption[]>(() => {
     if (!hierarchy) return []
-    return buildings.map((b) => {
-      const floorCount = hierarchy.floors.filter((f) => f.buildingId === b.id).length
-      const unitCount = hierarchy.units.filter((u) => u.buildingId === b.id).length
-      return {
-        id: b.id,
-        label: b.name,
-        hint: `${floorCount} floors · ${unitCount} locations`,
-        searchText: `${b.name} ${b.complexName ?? ''}`,
-      }
-    })
+    return buildings
+      .map((b) => {
+        const floorCount = hierarchy.floors.filter((f) => f.buildingId === b.id).length
+        const unitCount = hierarchy.units.filter((u) => u.buildingId === b.id).length
+        return {
+          id: b.id,
+          label: b.name,
+          hint: `${floorCount} floors · ${unitCount} locations`,
+          searchText: `${b.name} ${b.complexName ?? ''}`,
+        }
+      })
+      .sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: 'base' }))
   }, [buildings, hierarchy])
 
   const floorOptions = useMemo<AutocompleteOption[]>(() => {
@@ -298,12 +304,14 @@ export default function App() {
 
   /** Unit list is scoped to the selected floor (cascade). */
   const unitOptions = useMemo<AutocompleteOption[]>(() => {
-    return units.map((u) => ({
-      id: u.id,
-      label: u.name,
-      hint: u.type,
-      searchText: `${u.name} ${u.type} ${u.code}`,
-    }))
+    return units
+      .map((u) => ({
+        id: u.id,
+        label: u.name,
+        hint: u.type,
+        searchText: `${u.name} ${u.type} ${u.code}`,
+      }))
+      .sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: 'base' }))
   }, [units])
 
   /** Via parking: Parking from Keiros DB (type=Parking). Stubbed while via parking is off (Hooks order). */
