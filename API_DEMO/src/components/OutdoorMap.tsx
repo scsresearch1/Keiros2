@@ -616,7 +616,11 @@ export function OutdoorMap({
           ? path.map((p) => ({ ...p }))
           : style === 'drive'
             ? pinPathToEndpoints(path, from, path[path.length - 1] ?? to, 12, 8)
-            : pinPathToEndpoints(path, from, to, 18, 80, { alwaysReachEnd: true })
+            : // Cap last-meter connect — unlimited alwaysReachEnd cut through buildings.
+              pinPathToEndpoints(path, from, to, 18, 35, {
+                alwaysReachEnd: true,
+                maxAlwaysReachM: 45,
+              })
       if (pinned.length < 2) return
       if (session !== routeSessionRef.current) return
 
