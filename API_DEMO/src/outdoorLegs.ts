@@ -125,17 +125,17 @@ export function resolveOutdoorLegs(result: NavigateResult): OutdoorPlan {
 
   const legs: OutdoorLeg[] = []
 
-  // After live walk↔drive recalculate, keep the corridor from session S → current GPS
-  // so the blue line / walk dots are not erased when remaining route starts at liveFrom.
+  // After live drive recalculate, keep blue from S → live GPS.
+  // While live walking, do NOT paint a drive stub from S — only footpath from current GPS.
   const gapFromStartM = metersBetween(sessionOrigin, corridorFrom)
-  if (lf && gapFromStartM > 20) {
+  if (lf && gapFromStartM > 20 && !liveWalking) {
     legs.push({
       id: 'from-session-start',
-      mode: liveWalking ? 'WALK' : 'DRIVE',
+      mode: 'DRIVE',
       from: sessionOrigin,
       to: corridorFrom,
       label: 'From start',
-      color: liveWalking ? WALK_COLOR : DRIVE_COLOR,
+      color: DRIVE_COLOR,
       skipGuidance: true,
     })
   }

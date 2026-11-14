@@ -633,6 +633,8 @@ export default function App() {
 
   const voiceSteps = useMemo(() => {
     const base = result?.journey.steps ?? []
+    // Live walk recalculate owns guidance — ignore stale drive mapGuidance.
+    if (result?.origin.liveTravelMode === 'walk') return base
     if (!mapGuidance?.length) return base
     const indoor = base.filter((s) => s.phase === 'indoor')
     return [
@@ -761,12 +763,21 @@ export default function App() {
     } else {
       travelModeSwitchStreak.current = 0
     }
+    // Walk switch: act on first confirmed slow sample (parking-lot walk). Drive needs 2 ticks.
     const confirmedModeSwitch =
-      travelModeSwitchStreak.current >= 2 && inferred !== travelModeRef.current
+      inferred !== travelModeRef.current &&
+      (inferred === 'walk'
+        ? travelModeSwitchStreak.current >= 1
+        : travelModeSwitchStreak.current >= 2)
     // Painted corridor lags motion mode when a prior recalculate failed — keep retrying.
     const corridorMode = corridorTravelMode(result)
     const stuckModeMismatch =
       travelModeRef.current != null && travelModeRef.current !== corridorMode
+    // First GPS already said walk but Navigate still painted a drive corridor — force walk now.
+    const initialWalkNeedsCorridor =
+      travelModeRef.current === 'walk' &&
+      corridorMode === 'drive' &&
+      !result.origin.liveTravelMode
 
     // Match the SAME turn-by-turn list the banner shows (mapGuidance), so D / instruction
     // update as you drive. Fall back to server steps + drawn corridor when guidance isn't ready.
@@ -808,36 +819,44 @@ export default function App() {
     // Recalculate when off-route OR walk↔drive flips OR corridor still mismatches motion mode.
     const confirmedOff = offRouteStreak.current >= 2
     const shouldReroute =
-      (confirmedOff || confirmedModeSwitch || stuckModeMismatch) &&
+      (confirmedOff || confirmedModeSwitch || stuckModeMismatch || initialWalkNeedsCorridor) &&
       !rerouteInFlight.current &&
       now > rerouteLockUntil.current
     if (shouldReroute) {
       // Commit motion mode only after a successful recalculate (avoids Walking + Drive steps).
       const mode: TravelMode = confirmedModeSwitch
         ? inferred
-        : stuckModeMismatch
+        : initialWalkNeedsCorridor || stuckModeMismatch
           ? (travelModeRef.current as TravelMode)
           : (travelModeRef.current ?? inferred)
       lastOffRouteAt.current = now
       rerouteInFlight.current = true
       setRecalculating(true)
+      // Drop stale drive guidance immediately so the UI cannot stay on "Drive" while Walking.
+      if (mode === 'walk') {
+        setMapGuidance(null)
+        mapGuidanceSig.current = ''
+      }
       const phaseHint = mode === 'walk' ? 'walk' : 'drive'
       void rerouteFromLiveFix(result, liveFix, { phaseHint, travelMode: mode })
         .then((next) => {
           if (!next) {
             // Short backoff so walk/drive can retry instead of getting stuck.
-            rerouteLockUntil.current = Date.now() + 1500
+            rerouteLockUntil.current = Date.now() + 1200
             return
           }
           travelModeRef.current = mode
           setTravelMode(mode)
           travelModeSwitchStreak.current = 0
+          // Always replace painted drive guidance after a mode recalculate.
+          setMapGuidance(null)
+          mapGuidanceSig.current = ''
+          routeCorridorRef.current = {}
           setResult(next)
           setJourneyIndex(0)
           manualHoldUntil.current = 0
           offRouteStreak.current = 0
-          routeCorridorRef.current = {}
-          rerouteLockUntil.current = Date.now() + 4000
+          rerouteLockUntil.current = Date.now() + 2500
         })
         .finally(() => {
           rerouteInFlight.current = false
@@ -913,13 +932,20 @@ export default function App() {
   // Prefer turn-by-turn from the painted Google path so left/right matches the blue line.
   // (Plain const — must stay after the gate return; do not use hooks here.)
   const baseSteps = result?.journey.steps ?? []
+  const liveWalkMode = result?.origin.liveTravelMode === 'walk'
+  const liveDriveMode = result?.origin.liveTravelMode === 'drive'
+  // Never keep a stale drive mapGuidance over a live walk recalculation (Walking + Drive bug).
+  const guidanceUsable =
+    Boolean(mapGuidance?.length) &&
+    !liveWalkMode &&
+    !(liveDriveMode && mapGuidance!.every((s) => s.phase === 'walk'))
   const steps =
-    mapGuidance?.length && result
+    guidanceUsable && result
       ? [
-          ...mapGuidance.map((s, i) => ({ ...s, index: i })),
+          ...mapGuidance!.map((s, i) => ({ ...s, index: i })),
           ...baseSteps
             .filter((s) => s.phase === 'indoor')
-            .map((s, i) => ({ ...s, index: mapGuidance.length + i })),
+            .map((s, i) => ({ ...s, index: mapGuidance!.length + i })),
         ]
       : baseSteps
   const active = steps[journeyIndex] ?? null
