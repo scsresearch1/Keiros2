@@ -590,9 +590,13 @@ export function OutdoorMap({
       bounds.extend(wp.position)
     }
 
-    // Frame start immediately (Live = GPS street zoom; Demo = route bounds after paths).
-    liveSnapDoneRef.current = false
-    fitRouteView()
+    // First Navigate only: frame the camera. Live walk↔drive recalculate must NOT
+    // reset zoom (that caused the map to zoom in/out on every mode flip).
+    const isLiveRecalc = Boolean(result.origin.liveFrom)
+    if (!isLiveRecalc) {
+      liveSnapDoneRef.current = false
+      fitRouteView()
+    }
 
     const trafficLayer = new google.maps.TrafficLayer()
     trafficLayer.setMap(gmap)
@@ -752,17 +756,20 @@ export function OutdoorMap({
       }
     }
 
-    function fitRouteView() {
+    function fitRouteView(opts?: { forceZoom?: boolean }) {
       const gmap = mapRef.current
       if (!gmap || bounds.isEmpty()) return
 
-      // Phone Live: jump to start/GPS at street zoom immediately — don't fit the whole trip
-      // (that left the camera zoomed out for a long time).
+      // Phone Live: center once at street zoom. Later recalculates only pan — never re-zoom.
       if (followLiveRef.current) {
         const fix = liveFixRef.current
         const focus = fix
           ? latLngLiteral(fix.latitude, fix.longitude)
           : origin
+        if (liveSnapDoneRef.current && !opts?.forceZoom) {
+          gmap.panTo(focus)
+          return
+        }
         gmap.setCenter(focus)
         gmap.setZoom(17)
         liveSnapDoneRef.current = true
@@ -906,7 +913,8 @@ export function OutdoorMap({
             : 'Driving · roads / driveways',
         }))
         setMapError('')
-        fitRouteView()
+        // Live recalc: keep current zoom (walk↔drive must not zoom in/out).
+        if (!isLiveRecalc) fitRouteView()
         if (onRouteCorridor) {
           onRouteCorridor({
             drive: corridorDrive.length
@@ -1054,7 +1062,9 @@ export function OutdoorMap({
       } else {
         setMapError('')
       }
-      fitRouteView()
+      // After first frame, live follow must not re-fit zoom on redraws.
+      if (!isLiveRecalc) fitRouteView()
+      else if (followLiveRef.current) fitRouteView() // pan only — zoom held
 
       if (onRouteCorridor) {
         onRouteCorridor({
@@ -1213,9 +1223,10 @@ export function OutdoorMap({
     const pos = latLngLiteral(smoothed.lat, smoothed.lng)
 
     const shouldFollow = followLive && !userPanningRef.current
-    const driving = speed > 8
-    const targetZoom = driving ? 16 : 18
-    const needStreetZoom = !liveSnapDoneRef.current || (map.getZoom() ?? 0) < 15
+    // Hold zoom steady — never bounce 16↔18 when speed flips walk↔drive.
+    const needStreetZoom = !liveSnapDoneRef.current || (map.getZoom() ?? 0) < 14
+    const holdZoom = map.getZoom() ?? 17
+    const zoom = needStreetZoom ? 17 : holdZoom
 
     // Keep the user's Map / Satellite / Hybrid choice (esp. iOS Safari).
     // Never force roadmap for heading-up — that was flipping Satellite → Map on Live.
@@ -1234,13 +1245,13 @@ export function OutdoorMap({
     const canHeadingUp = mapTypeId === 'roadmap' || preferredType === 'roadmap'
 
     if (shouldFollow && heading != null && canHeadingUp) {
-      const zoom = needStreetZoom ? targetZoom : Math.max(map.getZoom() ?? targetZoom, 15)
       const h = normalizeDeg(heading)
       try {
+        // Pass current zoom only — do not change it on mode switches.
         map.moveCamera({ center: pos, zoom, heading: h, tilt: 0 })
       } catch {
         map.setCenter(pos)
-        map.setZoom(zoom)
+        if (needStreetZoom) map.setZoom(zoom)
         if (typeof map.setHeading === 'function') map.setHeading(h)
       }
       try {
@@ -1268,7 +1279,7 @@ export function OutdoorMap({
       lastCameraHeadingRef.current = 0
       if (needStreetZoom) {
         map.setCenter(pos)
-        map.setZoom(targetZoom)
+        map.setZoom(zoom)
         liveSnapDoneRef.current = true
       } else {
         map.panTo(pos)
