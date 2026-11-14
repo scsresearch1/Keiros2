@@ -430,3 +430,38 @@ export async function fetchRoadRoute(
     }
   }
 }
+
+/**
+ * Live nav recalculate — race REST + JS Routes and take the first success.
+ * Walking/driving both need sub-second response; waiting on one slow channel feels broken.
+ */
+export async function fetchRoadRouteLive(
+  origin: google.maps.LatLngLiteral,
+  destination: google.maps.LatLngLiteral,
+  mode: RouteTravelMode,
+): Promise<RoadRoute> {
+  if (!Number.isFinite(origin.lat) || !Number.isFinite(origin.lng)) {
+    throw new Error('Start coordinates are missing')
+  }
+  if (!Number.isFinite(destination.lat) || !Number.isFinite(destination.lng)) {
+    throw new Error('Destination coordinates are missing')
+  }
+  const rest = computeRoadRouteRest(origin, destination, mode)
+  const js = computeRoadRouteJs(origin, destination, mode)
+  try {
+    return await Promise.any([rest, js])
+  } catch {
+    // Promise.any aggregates — surface something useful.
+    try {
+      return await rest
+    } catch (a) {
+      try {
+        return await js
+      } catch (b) {
+        const am = a instanceof Error ? a.message : String(a)
+        const bm = b instanceof Error ? b.message : String(b)
+        throw new Error(`${am} | ${bm}`)
+      }
+    }
+  }
+}

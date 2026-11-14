@@ -1,7 +1,5 @@
 import type { JourneyStep, NavigateResult } from './api'
-import { bestSidewalkWalk } from './driveWalkHandoff'
-import { extractSiteWays } from './extractSiteWays'
-import { fetchRoadRoute } from './googleRoute'
+import { fetchRoadRouteLive } from './googleRoute'
 import { AT_ENTRANCE_M, metersBetween } from './outdoorLegs'
 
 type LatLng = { latitude: number; longitude: number }
@@ -89,12 +87,8 @@ export async function rerouteFromLiveFix(
       const walkTarget = dest
       const fromLit = toLit(fix)
       const toLitDest = toLit(walkTarget)
-      // Google-speed: one WALK Routes call only — never block on Overpass/OSM.
-      const googleWalk = await fetchRoadRoute(fromLit, toLitDest, 'WALK').catch(() => null)
-      // Optional OSM refine in background (map may upgrade later on next paint).
-      void extractSiteWays([fromLit, toLitDest])
-        .then((extract) => bestSidewalkWalk(fromLit, toLitDest, extract))
-        .catch(() => null)
+      // Walk must be as fast as drive: one raced Routes call, zero Overpass.
+      const googleWalk = await fetchRoadRouteLive(fromLit, toLitDest, 'WALK').catch(() => null)
       const path = googleWalk?.path ?? null
       if (!path?.length) return null
       const distanceM =
@@ -163,7 +157,7 @@ export async function rerouteFromLiveFix(
     const driveTarget: LatLng = parking ?? dest
     // One DRIVE call only — second WALK fetch was doubling latency at 10–40 mph.
     // Keep prior walk steps for after parking; OutdoorMap paints drive geometry immediately.
-    const route = await fetchRoadRoute(toLit(fix), toLit(driveTarget), 'DRIVE')
+    const route = await fetchRoadRouteLive(toLit(fix), toLit(driveTarget), 'DRIVE')
     const driveSteps = route.steps.map((s, i) => ({
       ...s,
       index: i,

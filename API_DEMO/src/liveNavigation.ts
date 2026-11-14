@@ -75,8 +75,8 @@ export type LiveProgress = {
 const EARTH_M = 6371000
 /** Drive corridor — leave the planned polyline by this much → off route (Google ~40–75 m). */
 export const OFF_ROUTE_DRIVE_M = 60
-/** Walk corridor — tighter than drive. */
-export const OFF_ROUTE_WALK_M = 35
+/** Walk corridor — tighter than drive so footpath leave-route snaps like Google. */
+export const OFF_ROUTE_WALK_M = 22
 /** @deprecated use OFF_ROUTE_DRIVE_M */
 export const OFF_ROUTE_M = OFF_ROUTE_DRIVE_M
 

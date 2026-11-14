@@ -841,13 +841,9 @@ export function OutdoorMap({
             : 'Google drive → walk to D',
       })
 
-      // Live recalculate: paint geometry already computed in smartReroute — do NOT
-      // re-call Google Routes / wait 2.8s for OSM (that made 10–40 mph reroutes feel stuck).
-      const liveRecalc =
-        Boolean(result.origin.liveFrom) &&
-        /live recalculate/i.test(
-          `${result.outdoor?.provider || ''} ${result.walk?.provider || ''}`,
-        )
+      // Live recalculate (walk or drive): paint smartReroute geometry immediately.
+      // Never re-fetch Google or wait on OSM — walking must feel faster than Google.
+      const liveRecalc = Boolean(result.origin.liveFrom)
       if (liveRecalc) {
         paintRetainedTrail()
         const liveWalk = result.origin.liveTravelMode === 'walk'
@@ -993,14 +989,14 @@ export function OutdoorMap({
         }
       }
 
-      // For walk legs, wait briefly for OSM sidewalks so we don't paint parking aisles first.
-      const needsSidewalks = legsToDraw.some((l) => l.mode === 'WALK')
+      // First Navigate only: brief OSM wait. Live walk/drive never reaches here.
+      const needsSidewalks = legsToDraw.some((l) => l.mode === 'WALK' && !l.skipGuidance)
       let extractForDraw: SiteWaysExtract | null = null
       if (needsSidewalks) {
         extractForDraw = await Promise.race([
           extractPromise,
           new Promise<null>((resolve) => {
-            window.setTimeout(() => resolve(null), 2800)
+            window.setTimeout(() => resolve(null), 600)
           }),
         ])
       }

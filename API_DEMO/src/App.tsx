@@ -155,6 +155,8 @@ export default function App() {
   /** Google-like: require consecutive off-route fixes before recalculating. */
   const offRouteStreak = useRef(0)
   const rerouteInFlight = useRef(false)
+  /** Bumped so a walk recalculate can supersede an in-flight drive request. */
+  const rerouteGen = useRef(0)
   /** GPS walk vs drive — hysteresis in inferTravelMode; streak confirms a switch. */
   const travelModeRef = useRef<TravelMode | null>(null)
   const travelModeSwitchStreak = useRef(0)
@@ -818,36 +820,42 @@ export default function App() {
     }
 
     // Recalculate when off-route OR walk↔drive flips OR corridor still mismatches motion mode.
-    // Highway / city speeds: confirm on 1 fix (Google-class). Crawl/walk: need 2 to avoid GPS noise.
+    // Walk: confirm on 1 fix (must feel faster than Google). Drive: 1 fix at speed, else 2.
     const speedMps =
       liveFix.speed != null && Number.isFinite(liveFix.speed) ? liveFix.speed : derivedSpeed ?? 0
-    const offRouteNeed = speedMps >= 6 ? 1 : 2
+    const likelyWalk = travelModeRef.current === 'walk' || inferred === 'walk'
+    const offRouteNeed = likelyWalk || speedMps >= 6 ? 1 : 2
     const confirmedOff = offRouteStreak.current >= offRouteNeed
+    const wantsReroute =
+      confirmedOff || confirmedModeSwitch || stuckModeMismatch || initialWalkNeedsCorridor
+    // Commit motion mode for this attempt (walk preempts an in-flight drive recalculate).
+    const mode: TravelMode = confirmedModeSwitch
+      ? inferred
+      : initialWalkNeedsCorridor || stuckModeMismatch
+        ? (travelModeRef.current as TravelMode)
+        : (travelModeRef.current ?? inferred)
+    const preemptForWalk = mode === 'walk' && rerouteInFlight.current
     const shouldReroute =
-      (confirmedOff || confirmedModeSwitch || stuckModeMismatch || initialWalkNeedsCorridor) &&
-      !rerouteInFlight.current &&
+      wantsReroute &&
+      (!rerouteInFlight.current || preemptForWalk) &&
       now > rerouteLockUntil.current
     if (shouldReroute) {
-      // Commit motion mode only after a successful recalculate (avoids Walking + Drive steps).
-      const mode: TravelMode = confirmedModeSwitch
-        ? inferred
-        : initialWalkNeedsCorridor || stuckModeMismatch
-          ? (travelModeRef.current as TravelMode)
-          : (travelModeRef.current ?? inferred)
       lastOffRouteAt.current = now
+      const gen = ++rerouteGen.current
       rerouteInFlight.current = true
       setRecalculating(true)
       // Drop stale drive guidance immediately so the UI cannot stay on "Drive" while Walking.
       if (mode === 'walk') {
         setMapGuidance(null)
         mapGuidanceSig.current = ''
+        routeCorridorRef.current = { walk: routeCorridorRef.current.walk }
       }
       const phaseHint = mode === 'walk' ? 'walk' : 'drive'
       void rerouteFromLiveFix(result, liveFix, { phaseHint, travelMode: mode })
         .then((next) => {
+          if (gen !== rerouteGen.current) return
           if (!next) {
-            // Short backoff so walk/drive can retry instead of getting stuck.
-            rerouteLockUntil.current = Date.now() + 400
+            rerouteLockUntil.current = Date.now() + 300
             return
           }
           travelModeRef.current = mode
@@ -861,12 +869,14 @@ export default function App() {
           setJourneyIndex(0)
           manualHoldUntil.current = 0
           offRouteStreak.current = 0
-          // Brief lock only — was 2.5s and felt broken at 40 mph.
-          rerouteLockUntil.current = Date.now() + 700
+          // Walk lock shorter than drive — footpath leave-route must feel instant.
+          rerouteLockUntil.current = Date.now() + (mode === 'walk' ? 350 : 650)
         })
         .finally(() => {
-          rerouteInFlight.current = false
-          setRecalculating(false)
+          if (gen === rerouteGen.current) {
+            rerouteInFlight.current = false
+            setRecalculating(false)
+          }
         })
     }
   }, [liveWatchOn, liveFix, result, journeyIndex, mapGuidance, voiceSteps])
