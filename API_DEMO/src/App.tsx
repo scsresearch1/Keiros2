@@ -30,6 +30,9 @@ import { rerouteFromLiveFix } from './smartReroute'
 import { hardRefreshIfStale, watchBuildOnGate } from './buildRefresh'
 import type { StartPoint } from './startLocation'
 
+/** Prefill on the gate (issued ERP secret). */
+const DEFAULT_API_KEY = 'keiros_live_ot_69fc05d1ed415f342d367f68fa7100309a2febd1b5a4818b'
+/** Legacy demo prefix — shown as a hint only. */
 const DEMO_KEY = 'keiros_live_ot_demo_map_nav_2026'
 const KEY_STORAGE = 'keiros_api_demo_key'
 const OPERATOR_STORAGE = 'keiros_api_demo_operator'
@@ -114,7 +117,7 @@ function readCurrentLocation(): Promise<{ latitude: number; longitude: number }>
 
 export default function App() {
   const [apiKey, setApiKey] = useState(() => localStorage.getItem(KEY_STORAGE) || '')
-  const [keyInput, setKeyInput] = useState(apiKey || DEMO_KEY)
+  const [keyInput, setKeyInput] = useState(apiKey || DEFAULT_API_KEY)
   const [operatorName, setOperatorName] = useState(
     () => localStorage.getItem(OPERATOR_STORAGE) || '',
   )
@@ -604,7 +607,7 @@ export default function App() {
     setBuildingId('')
     setFloorId('')
     setUnitId('')
-    setKeyInput(DEMO_KEY)
+    setKeyInput(DEFAULT_API_KEY)
     setOperatorInput(operatorName || localStorage.getItem(OPERATOR_STORAGE) || '')
     setStartMode('demo')
     setStartReady(true)
