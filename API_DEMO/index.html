@@ -6,7 +6,91 @@
       name="viewport"
       content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1"
     />
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
     <title>Keiros Map API Demo</title>
+    <!--
+      Runs before React. Polls a fresh index.html so open tabs hard-reload
+      when Netlify publishes a new hashed bundle — even if the old JS had no watcher.
+    -->
+    <script>
+      (function () {
+        var STORE = 'keiros_asset_sig'
+        var FLAG = 'keiros_hard_reload_for'
+        function sigFromHtml(html) {
+          var m = html && html.match(/\/assets\/index-[^"'?\s]+\.js/)
+          return m ? m[0] : null
+        }
+        function currentSig() {
+          var el = document.querySelector('script[type="module"][src]')
+          if (!el) return null
+          var src = el.getAttribute('src') || el.src || ''
+          try {
+            if (/^https?:/i.test(src) || src.indexOf('//') === 0) {
+              return new URL(src, location.origin).pathname
+            }
+          } catch (e) {}
+          var m = src.match(/\/assets\/[^"'?\s]+/)
+          return m ? m[0] : null
+        }
+        function hardReload(token) {
+          try {
+            if (sessionStorage.getItem(FLAG) === token) return
+            sessionStorage.setItem(FLAG, token)
+            localStorage.setItem(STORE, token)
+          } catch (e) {}
+          var go = function () {
+            location.replace(location.pathname + location.search.replace(/[?&]_keiros=[^&]*/g, '') + (location.search ? '&' : '?') + '_keiros=' + encodeURIComponent(String(token).slice(0, 24)) + '&_=' + Date.now())
+          }
+          if (window.caches && caches.keys) {
+            caches
+              .keys()
+              .then(function (keys) {
+                return Promise.all(
+                  keys.map(function (k) {
+                    return caches.delete(k)
+                  }),
+                )
+              })
+              .finally(go)
+          } else {
+            go()
+          }
+        }
+        function check() {
+          fetch('/index.html?_=' + Date.now(), {
+            cache: 'no-store',
+            credentials: 'same-origin',
+            headers: { Accept: 'text/html', 'Cache-Control': 'no-cache' },
+          })
+            .then(function (r) {
+              return r.ok ? r.text() : ''
+            })
+            .then(function (html) {
+              var remote = sigFromHtml(html)
+              if (!remote) return
+              var local = currentSig()
+              var known = null
+              try {
+                known = localStorage.getItem(STORE)
+              } catch (e) {}
+              if ((local && remote !== local) || (known && remote !== known)) {
+                hardReload(remote)
+                return
+              }
+              try {
+                localStorage.setItem(STORE, remote)
+              } catch (e) {}
+            })
+            .catch(function () {})
+        }
+        check()
+        setInterval(check, 8000)
+        document.addEventListener('visibilitychange', function () {
+          if (document.visibilityState === 'visible') check()
+        })
+        window.addEventListener('focus', check)
+      })()
+    </script>
   </head>
   <body>
     <div id="root"></div>

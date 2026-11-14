@@ -7,12 +7,52 @@ const BUILD_ID =
     : 'dev'
 
 const RELOAD_FLAG = 'keiros_hard_reload_for'
+const ASSET_STORE = 'keiros_asset_sig'
+
+function normalizeAssetPath(src: string | null | undefined): string | null {
+  if (!src) return null
+  try {
+    if (src.startsWith('http://') || src.startsWith('https://') || src.startsWith('//')) {
+      return new URL(src, window.location.origin).pathname
+    }
+  } catch {
+    /* ignore */
+  }
+  const m = src.match(/\/assets\/[^"'?\s]+/)
+  return m ? m[0] : src.startsWith('/') ? src.split('?')[0] : null
+}
+
+function assetSigFromHtml(html: string): string | null {
+  const m = html.match(/\/assets\/index-[^"'?\s]+\.js/)
+  return m ? m[0] : null
+}
+
+function currentPageAssetSig(): string | null {
+  const el = document.querySelector('script[type="module"][src]') as HTMLScriptElement | null
+  return normalizeAssetPath(el?.getAttribute('src') || el?.src || null)
+}
+
+async function fetchRemoteAssetSig(): Promise<string | null> {
+  try {
+    const res = await fetch(`/index.html?_=${Date.now()}`, {
+      cache: 'no-store',
+      credentials: 'same-origin',
+      headers: { Accept: 'text/html', 'Cache-Control': 'no-cache' },
+    })
+    if (!res.ok) return null
+    const html = await res.text()
+    return assetSigFromHtml(html)
+  } catch {
+    return null
+  }
+}
 
 async function fetchRemoteBuildId(): Promise<string | null> {
   try {
     const res = await fetch(`/build-id.json?_=${Date.now()}`, {
       cache: 'no-store',
-      headers: { Accept: 'application/json' },
+      credentials: 'same-origin',
+      headers: { Accept: 'application/json', 'Cache-Control': 'no-cache' },
     })
     if (!res.ok) return null
     const ct = res.headers.get('content-type') || ''
@@ -35,30 +75,49 @@ async function clearCaches() {
   }
 }
 
-/**
- * Hard-refresh once when the deployed build-id differs from this JS bundle.
- * Used on the API-key gate so open tabs pick up Netlify deploys.
- */
-export async function hardRefreshIfStale(): Promise<boolean> {
-  const remote = await fetchRemoteBuildId()
-  if (!remote || remote === BUILD_ID) return false
-
+async function performHardReload(token: string) {
   try {
-    if (sessionStorage.getItem(RELOAD_FLAG) === remote) return false
-    sessionStorage.setItem(RELOAD_FLAG, remote)
+    if (sessionStorage.getItem(RELOAD_FLAG) === token) return false
+    sessionStorage.setItem(RELOAD_FLAG, token)
   } catch {
     /* private mode — still reload */
   }
-
   await clearCaches()
   const url = new URL(window.location.href)
-  url.searchParams.set('_keiros', remote)
+  url.searchParams.set('_keiros', token.slice(0, 24))
   window.location.replace(url.toString())
   return true
 }
 
+/**
+ * Hard-refresh when the live Netlify shell points at a different JS bundle
+ * than the one currently running in this tab.
+ */
+export async function hardRefreshIfStale(): Promise<boolean> {
+  const remoteAsset = await fetchRemoteAssetSig()
+  const localAsset = currentPageAssetSig()
+
+  if (remoteAsset) {
+    try {
+      localStorage.setItem(ASSET_STORE, remoteAsset)
+    } catch {
+      /* ignore */
+    }
+    if (localAsset && remoteAsset !== localAsset) {
+      return performHardReload(remoteAsset)
+    }
+  }
+
+  const remoteBuild = await fetchRemoteBuildId()
+  if (remoteBuild && remoteBuild !== BUILD_ID && BUILD_ID !== 'dev') {
+    return performHardReload(remoteBuild)
+  }
+
+  return false
+}
+
 /** Poll while the gate screen stays open (tab left open across deploys). */
-export function watchBuildOnGate(intervalMs = 20000): () => void {
+export function watchBuildOnGate(intervalMs = 8000): () => void {
   let stopped = false
   let timer: number | undefined
 
@@ -69,18 +128,19 @@ export function watchBuildOnGate(intervalMs = 20000): () => void {
     })
   }
 
-  // Immediate check when the gate appears.
   tick()
 
   const onVisible = () => {
     if (document.visibilityState === 'visible') void hardRefreshIfStale()
   }
   document.addEventListener('visibilitychange', onVisible)
+  window.addEventListener('focus', onVisible)
 
   return () => {
     stopped = true
     if (timer != null) window.clearTimeout(timer)
     document.removeEventListener('visibilitychange', onVisible)
+    window.removeEventListener('focus', onVisible)
   }
 }
 

@@ -1,0 +1,9 @@
+/
+  Cache-Control: no-cache, no-store, must-revalidate
+
+/index.html
+  Cache-Control: no-cache, no-store, must-revalidate
+
+/build-id.json
+  Cache-Control: no-store, max-age=0
+  Content-Type: application/json

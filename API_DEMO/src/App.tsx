@@ -27,7 +27,7 @@ import {
   type TravelMode,
 } from './liveNavigation'
 import { rerouteFromLiveFix } from './smartReroute'
-import { watchBuildOnGate } from './buildRefresh'
+import { hardRefreshIfStale, watchBuildOnGate } from './buildRefresh'
 import type { StartPoint } from './startLocation'
 
 const DEMO_KEY = 'keiros_live_ot_demo_map_nav_2026'
@@ -183,11 +183,13 @@ export default function App() {
   const onGateScreen = !apiKey || !hierarchy
   useEffect(() => {
     if (!onGateScreen) return
-    return watchBuildOnGate(20_000)
+    return watchBuildOnGate(8_000)
   }, [onGateScreen])
 
   async function unlock(e: FormEvent) {
     e.preventDefault()
+    // Pull the newest deploy before continuing (covers tabs that missed the poll).
+    if (await hardRefreshIfStale()) return
     const key = keyInput.trim()
     const operator = operatorInput.trim()
     if (!operator) {
