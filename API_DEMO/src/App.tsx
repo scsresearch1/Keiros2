@@ -818,7 +818,11 @@ export default function App() {
     }
 
     // Recalculate when off-route OR walk↔drive flips OR corridor still mismatches motion mode.
-    const confirmedOff = offRouteStreak.current >= 2
+    // Highway / city speeds: confirm on 1 fix (Google-class). Crawl/walk: need 2 to avoid GPS noise.
+    const speedMps =
+      liveFix.speed != null && Number.isFinite(liveFix.speed) ? liveFix.speed : derivedSpeed ?? 0
+    const offRouteNeed = speedMps >= 6 ? 1 : 2
+    const confirmedOff = offRouteStreak.current >= offRouteNeed
     const shouldReroute =
       (confirmedOff || confirmedModeSwitch || stuckModeMismatch || initialWalkNeedsCorridor) &&
       !rerouteInFlight.current &&
@@ -843,7 +847,7 @@ export default function App() {
         .then((next) => {
           if (!next) {
             // Short backoff so walk/drive can retry instead of getting stuck.
-            rerouteLockUntil.current = Date.now() + 1200
+            rerouteLockUntil.current = Date.now() + 400
             return
           }
           travelModeRef.current = mode
@@ -857,7 +861,8 @@ export default function App() {
           setJourneyIndex(0)
           manualHoldUntil.current = 0
           offRouteStreak.current = 0
-          rerouteLockUntil.current = Date.now() + 2500
+          // Brief lock only — was 2.5s and felt broken at 40 mph.
+          rerouteLockUntil.current = Date.now() + 700
         })
         .finally(() => {
           rerouteInFlight.current = false

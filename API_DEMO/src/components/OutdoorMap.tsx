@@ -841,6 +841,89 @@ export function OutdoorMap({
             : 'Google drive → walk to D',
       })
 
+      // Live recalculate: paint geometry already computed in smartReroute — do NOT
+      // re-call Google Routes / wait 2.8s for OSM (that made 10–40 mph reroutes feel stuck).
+      const liveRecalc =
+        Boolean(result.origin.liveFrom) &&
+        /live recalculate/i.test(
+          `${result.outdoor?.provider || ''} ${result.walk?.provider || ''}`,
+        )
+      if (liveRecalc) {
+        paintRetainedTrail()
+        const liveWalk = result.origin.liveTravelMode === 'walk'
+        const drivePath = geoJsonToLatLngs(result.outdoor?.geometry?.coordinates)
+        const walkPath = geoJsonToLatLngs(result.walk?.geometry?.coordinates)
+        const liveOrigin = result.origin.liveFrom
+          ? latLngLiteral(result.origin.liveFrom.latitude, result.origin.liveFrom.longitude)
+          : origin
+
+        if (liveWalk) {
+          const path = walkPath.length > 1 ? walkPath : drivePath
+          if (path.length > 1) {
+            corridorWalk.push(...path)
+            drawPath(path, path[0] ?? liveOrigin, destination, 'walk-dots', 22)
+            sources.add('live-google-walk')
+          }
+          for (const step of result.walk?.steps?.length ? result.walk.steps : result.journey.steps) {
+            if (step.phase !== 'walk') continue
+            guidanceAcc.push({ ...step, index: guidanceAcc.length })
+          }
+        } else if (drivePath.length > 1) {
+          corridorDrive.push(...drivePath)
+          drawPath(
+            drivePath,
+            drivePath[0] ?? liveOrigin,
+            drivePath[drivePath.length - 1] ?? destination,
+            'drive',
+            20,
+          )
+          sources.add('live-google-drive')
+          for (const step of result.outdoor?.steps?.length
+            ? result.outdoor.steps
+            : result.journey.steps) {
+            if (step.phase !== 'drive' && step.phase !== 'outdoor') continue
+            guidanceAcc.push({ ...step, index: guidanceAcc.length, phase: 'drive' })
+          }
+          // Future walk after parking — only if it does not sit on the same drive corridor.
+          if (
+            walkPath.length > 1 &&
+            outdoorPlan.viaParking &&
+            metersBetween(walkPath[0], drivePath[drivePath.length - 1]) < 80
+          ) {
+            corridorWalk.push(...walkPath)
+            drawPath(walkPath, walkPath[0], destination, 'walk-dots', 22)
+            sources.add('live-walk-after-park')
+          }
+        } else if (walkPath.length > 1) {
+          corridorWalk.push(...walkPath)
+          drawPath(walkPath, walkPath[0] ?? liveOrigin, destination, 'walk-dots', 22)
+          sources.add('live-google-walk')
+        }
+
+        if (session !== routeSessionRef.current) return
+        const activePath = [...corridorDrive, ...corridorWalk]
+        if (activePath.length > 1) lastActivePathRef.current = activePath
+        setSiteNet((prev) => ({
+          driveways: prev?.driveways ?? 0,
+          sidewalks: prev?.sidewalks ?? 0,
+          routedOn: `Live recalculate · ${[...sources].join('+') || 'google'}`,
+        }))
+        setMapError('')
+        fitRouteView()
+        if (onRouteCorridor) {
+          onRouteCorridor({
+            drive: corridorDrive.length
+              ? corridorDrive.map((p) => [p.lng, p.lat] as [number, number])
+              : undefined,
+            walk: corridorWalk.length
+              ? corridorWalk.map((p) => [p.lng, p.lat] as [number, number])
+              : undefined,
+          })
+        }
+        if (onRouteGuidance && guidanceAcc.length) onRouteGuidance([...guidanceAcc])
+        return
+      }
+
       async function drawLegPlan(
         leg: OutdoorLeg,
         index: number,
