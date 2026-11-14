@@ -715,6 +715,7 @@ export default function App() {
         toNextManeuverM: bestDist,
         snapped: { latitude: liveFix.latitude, longitude: liveFix.longitude },
         offRoute: bestDist > Math.max(40, arriveR * 2),
+        routeHeadingDeg: null,
       })
       if (now >= manualHoldUntil.current && liveFix.accuracy < 35) {
         // Advance when near the next indoor pin (or snapped onto a later one).
@@ -1285,6 +1286,7 @@ export default function App() {
                 weather={result.weather}
                 traffic={result.outdoor.traffic}
                 liveFix={wantsLiveGps ? liveFix : null}
+                liveProgress={wantsLiveGps ? liveProgress : null}
                 followLive={wantsLiveGps}
               onRouteCorridor={(corridor) => {
                 routeCorridorRef.current = corridor

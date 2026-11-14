@@ -65,6 +65,11 @@ export type LiveProgress = {
   toNextManeuverM: number
   snapped: { latitude: number; longitude: number } | null
   offRoute: boolean
+  /**
+   * Forward bearing along the painted corridor at the snap (look-ahead).
+   * This is what makes Google’s blue arrow stay on the path — use it for the puck.
+   */
+  routeHeadingDeg: number | null
 }
 
 const EARTH_M = 6371000
@@ -169,6 +174,41 @@ function remainingAlongGeometry(
   return rem
 }
 
+/**
+ * Bearing looking ~lookAheadM forward along the route from a segment index.
+ * Anticipates turns the way Google Maps does (arrow leads the corner slightly).
+ */
+function lookAheadBearingDeg(
+  points: RoutePoint[],
+  segIndex: number,
+  fromLat: number,
+  fromLng: number,
+  lookAheadM = 28,
+): number | null {
+  if (points.length < 2) return null
+  let i = Math.max(0, Math.min(segIndex, points.length - 2))
+  let lat = fromLat
+  let lng = fromLng
+  let budget = lookAheadM
+  let lastBearing: number | null = null
+  while (budget > 0 && i < points.length - 1) {
+    const next = points[i + 1]
+    const segLen = haversineM(lat, lng, next.lat, next.lng)
+    lastBearing = bearingDeg(lat, lng, next.lat, next.lng)
+    if (segLen >= budget || segLen < 0.05) {
+      return lastBearing
+    }
+    budget -= segLen
+    lat = next.lat
+    lng = next.lng
+    i += 1
+  }
+  if (lastBearing != null) return lastBearing
+  const a = points[Math.max(0, points.length - 2)]
+  const b = points[points.length - 1]
+  return bearingDeg(a.lat, a.lng, b.lat, b.lng)
+}
+
 function projectOnSegment(
   lat: number,
   lng: number,
@@ -212,6 +252,7 @@ export function matchLiveProgress(
       toNextManeuverM: 0,
       snapped: null,
       offRoute: true,
+      routeHeadingDeg: null,
     }
   }
 
@@ -227,6 +268,7 @@ export function matchLiveProgress(
       toNextManeuverM: rem,
       snapped: { latitude: only.lat, longitude: only.lng },
       offRoute: rem > arrivalRadiusM(fix.accuracy),
+      routeHeadingDeg: bearingDeg(fix.latitude, fix.longitude, only.lat, only.lng),
     }
   }
 
@@ -330,6 +372,8 @@ export function matchLiveProgress(
     walkPhase ? OFF_ROUTE_WALK_M : OFF_ROUTE_DRIVE_M,
     (fix.accuracy || 15) * 1.35,
   )
+  const routeHeadingDeg = lookAheadBearingDeg(points, best.seg, best.lat, best.lng, 32)
+
   return {
     stepIndex,
     distanceToRouteM: best.distM,
@@ -338,7 +382,95 @@ export function matchLiveProgress(
     toNextManeuverM,
     snapped: { latitude: best.lat, longitude: best.lng },
     offRoute: best.distM > threshold,
+    routeHeadingDeg,
   }
+}
+
+/**
+ * Google-class puck pose: stick to the corridor and point along it while on-route.
+ * Off-route → GPS movement / course. Compass is last resort only.
+ */
+export function resolvePuckPose(
+  fix: LiveFix,
+  progress: LiveProgress | null | undefined,
+  prevFix: LiveFix | null,
+): {
+  lat: number
+  lng: number
+  heading: number | null
+  onRoute: boolean
+  source: 'route' | 'gps-move' | 'gps-course' | 'compass' | 'step' | null
+} {
+  const onRoute =
+    Boolean(progress) &&
+    !progress!.offRoute &&
+    progress!.distanceToRouteM < Math.max(28, (fix.accuracy || 15) * 1.1) &&
+    progress!.snapped != null &&
+    progress!.routeHeadingDeg != null
+
+  if (onRoute && progress!.snapped && progress!.routeHeadingDeg != null) {
+    // Soft stick-to-road: mostly snapped, slight pull toward raw GPS (feels alive).
+    const snap = progress!.snapped
+    const t = Math.min(0.35, Math.max(0.08, (fix.accuracy || 15) / 80))
+    return {
+      lat: snap.latitude * (1 - t) + fix.latitude * t,
+      lng: snap.longitude * (1 - t) + fix.longitude * t,
+      heading: normalizeHeading(progress!.routeHeadingDeg),
+      onRoute: true,
+      source: 'route',
+    }
+  }
+
+  let movedBearing: number | null = null
+  if (prevFix) {
+    const moved = haversineM(prevFix.latitude, prevFix.longitude, fix.latitude, fix.longitude)
+    if (moved > 1.2) {
+      movedBearing = bearingDeg(prevFix.latitude, prevFix.longitude, fix.latitude, fix.longitude)
+    }
+  }
+
+  if (movedBearing != null) {
+    return {
+      lat: fix.latitude,
+      lng: fix.longitude,
+      heading: movedBearing,
+      onRoute: false,
+      source: 'gps-move',
+    }
+  }
+
+  if (fix.headingSource === 'gps' && fix.heading != null) {
+    return {
+      lat: fix.latitude,
+      lng: fix.longitude,
+      heading: normalizeHeading(fix.heading),
+      onRoute: false,
+      source: 'gps-course',
+    }
+  }
+
+  // Even off-route, if we still have a corridor heading nearby, prefer it over compass.
+  if (progress?.routeHeadingDeg != null && progress.distanceToRouteM < 55) {
+    return {
+      lat: fix.latitude,
+      lng: fix.longitude,
+      heading: normalizeHeading(progress.routeHeadingDeg),
+      onRoute: false,
+      source: 'route',
+    }
+  }
+
+  if (fix.heading != null) {
+    return {
+      lat: fix.latitude,
+      lng: fix.longitude,
+      heading: normalizeHeading(fix.heading),
+      onRoute: false,
+      source: fix.headingSource === 'compass' ? 'compass' : 'gps-course',
+    }
+  }
+
+  return { lat: fix.latitude, lng: fix.longitude, heading: null, onRoute: false, source: null }
 }
 
 /** @deprecated use matchLiveProgress */

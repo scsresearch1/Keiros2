@@ -12,8 +12,7 @@ import {
 import { planDrivePlusWalk, planWalkOnly } from '../driveWalkHandoff'
 import { extractSiteWays, type SiteWaysExtract } from '../extractSiteWays'
 import { pinPathToEndpoints } from '../googleRoute'
-import type { LiveFix } from '../liveNavigation'
-import { bearingDeg } from '../liveNavigation'
+import { bearingDeg, resolvePuckPose, type LiveFix, type LiveProgress } from '../liveNavigation'
 import { metersBetween, resolveOutdoorLegs, type OutdoorLeg } from '../outdoorLegs'
 
 /** Highlight extracted site driveways so the visible driveway is obvious. */
@@ -30,6 +29,8 @@ type Props = {
   weather: NavigateResult['weather']
   traffic: NavigateResult['outdoor']['traffic']
   liveFix?: LiveFix | null
+  /** Live route match — enables Google-class stick-to-path puck heading. */
+  liveProgress?: LiveProgress | null
   followLive?: boolean
   /** Dense polylines actually drawn — used for Google-like off-route / reroute. */
   onRouteCorridor?: (corridor: {
@@ -189,6 +190,7 @@ export function OutdoorMap({
   weather,
   traffic,
   liveFix = null,
+  liveProgress = null,
   followLive = false,
   onRouteCorridor,
   onRouteGuidance,
@@ -906,83 +908,57 @@ export function OutdoorMap({
     }
 
     const prev = lastLiveRef.current
-    const movedM =
-      prev != null
-        ? Math.hypot(
-            (liveFix.latitude - prev.latitude) * 111_320,
-            (liveFix.longitude - prev.longitude) *
-              111_320 *
-              Math.cos((liveFix.latitude * Math.PI) / 180),
-          )
-        : 0
     const speed = liveFix.speed != null && Number.isFinite(liveFix.speed) ? liveFix.speed : 0
-    const moving = speed > 1.2 || movedM > 2.5
 
-    // Travel direction for the puck (north-up Satellite especially):
-    // 1) GPS displacement bearing while walking — most reliable in parking lots
-    // 2) GPS course-over-ground when the OS provides it
-    // 3) Route step ahead (keeps arrow on the blue/red path)
-    // 4) Compass only when nearly stopped (magnetic noise near cars is bad)
-    let rawHeading: number | null = null
-    const source = liveFix.headingSource
-    if (prev && movedM > 1.5 && (speed > 0.35 || movedM > 2.0)) {
-      rawHeading = bearingDeg(
-        prev.latitude,
-        prev.longitude,
-        liveFix.latitude,
-        liveFix.longitude,
-      )
-    } else if (
-      moving &&
-      source === 'gps' &&
-      liveFix.heading != null &&
-      Number.isFinite(liveFix.heading)
-    ) {
-      rawHeading = liveFix.heading
-    } else if (
-      !moving &&
-      source === 'compass' &&
-      liveFix.heading != null &&
-      Number.isFinite(liveFix.heading)
-    ) {
-      rawHeading = liveFix.heading
-    } else if (moving && liveFix.heading != null && Number.isFinite(liveFix.heading) && speed > 2.5) {
-      rawHeading = liveFix.heading
-    }
-    // Bias toward the active guidance point so the arrow matches "Head west".
+    // Google-class pose: on-route → stick to corridor + point along look-ahead tangent.
+    const pose = resolvePuckPose(liveFix, liveProgress, prev)
+    let rawHeading = pose.heading
+    // If off-route and we have a clear next step, keep a light pull toward it.
     if (
+      !pose.onRoute &&
+      rawHeading != null &&
       activeStep &&
       activeStep.phase !== 'indoor' &&
       Number.isFinite(activeStep.latitude) &&
       Number.isFinite(activeStep.longitude)
     ) {
       const toStep = bearingDeg(
-        liveFix.latitude,
-        liveFix.longitude,
+        pose.lat,
+        pose.lng,
         activeStep.latitude,
         activeStep.longitude,
       )
-      if (rawHeading == null) {
-        rawHeading = toStep
-      } else if (moving || movedM > 1.2) {
-        const delta = ((toStep - rawHeading + 540) % 360) - 180
-        // Stronger pull onto the route when compass/GPS disagree with the path.
-        if (Math.abs(delta) < 100) {
-          rawHeading = normalizeDeg(rawHeading + delta * (source === 'compass' ? 0.55 : 0.4))
-        }
-      }
+      const delta = ((toStep - rawHeading + 540) % 360) - 180
+      if (Math.abs(delta) < 90) rawHeading = normalizeDeg(rawHeading + delta * 0.25)
     }
+
+    // Route heading is high-trust → snappy blend; compass/GPS noise → heavier damp.
     if (rawHeading != null && Number.isFinite(rawHeading)) {
-      smoothHeadingRef.current = blendHeading(smoothHeadingRef.current, rawHeading)
+      const prevH = smoothHeadingRef.current
+      if (prevH == null || pose.source === 'route') {
+        const delta = prevH == null ? 180 : headingDeltaDeg(prevH, rawHeading)
+        // Catch corners fast when following the painted path.
+        const t = pose.source === 'route' ? (delta > 25 ? 0.85 : 0.55) : 0.28
+        if (prevH == null) smoothHeadingRef.current = rawHeading
+        else {
+          const d = ((rawHeading - prevH + 540) % 360) - 180
+          smoothHeadingRef.current = normalizeDeg(prevH + d * t)
+        }
+      } else {
+        smoothHeadingRef.current = blendHeading(smoothHeadingRef.current, rawHeading)
+      }
     }
     const heading = smoothHeadingRef.current
     lastLiveRef.current = liveFix
 
-    // Keep puck + accuracy circle on the SAME smoothed point (never diverge).
+    // Stick-to-path position when on corridor; otherwise smooth raw GPS.
     const smoothed = blendPosition(
       smoothPosRef.current,
-      { lat: liveFix.latitude, lng: liveFix.longitude },
-      { speedMps: liveFix.speed, accuracyM: liveFix.accuracy },
+      { lat: pose.lat, lng: pose.lng },
+      {
+        speedMps: pose.onRoute ? Math.max(speed, 2) : liveFix.speed,
+        accuracyM: pose.onRoute ? Math.min(liveFix.accuracy || 15, 10) : liveFix.accuracy,
+      },
     )
     smoothPosRef.current = smoothed
     const pos = latLngLiteral(smoothed.lat, smoothed.lng)
@@ -1104,7 +1080,7 @@ export function OutdoorMap({
       accuracyRef.current.setCenter(pos)
       accuracyRef.current.setRadius(accRadius)
     }
-  }, [liveFix, followLive, mapReady, activeStep])
+  }, [liveFix, liveProgress, followLive, mapReady, activeStep])
 
   // When Live GPS turns off, reset to north-up and re-assert the stored basemap.
   useEffect(() => {
