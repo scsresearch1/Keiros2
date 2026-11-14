@@ -1302,6 +1302,7 @@ export default function App() {
                 traffic={result.outdoor.traffic}
                 liveFix={wantsLiveGps ? liveFix : null}
                 liveProgress={wantsLiveGps ? liveProgress : null}
+                travelMode={wantsLiveGps ? travelMode : null}
                 followLive={wantsLiveGps}
               onRouteCorridor={(corridor) => {
                 routeCorridorRef.current = corridor

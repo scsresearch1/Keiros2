@@ -164,14 +164,11 @@ export async function rerouteFromLiveFix(
       phase: 'drive' as const,
     })) as JourneyStep[]
 
-    const walkSteps: JourneyStep[] = result.journey.steps
-      .filter((s) => s.phase === 'walk')
-      .map((s, i) => ({ ...s, index: i, phase: 'walk' as const }))
-
+    // While driving: drive corridor ONLY (roads/driveways). Do not keep walk geometry
+    // that paints red dots on top of the blue line — walk resumes after park / mode flip.
     const steps = [
       ...driveSteps,
-      ...walkSteps.map((s, i) => ({ ...s, index: driveSteps.length + i, phase: 'walk' as const })),
-      ...indoor.map((s, i) => ({ ...s, index: driveSteps.length + walkSteps.length + i })),
+      ...indoor.map((s, i) => ({ ...s, index: driveSteps.length + i })),
     ]
 
     return {
@@ -188,34 +185,29 @@ export async function rerouteFromLiveFix(
         traffic: {
           ...result.outdoor.traffic,
           note: parking
-            ? `Recalculated drive to ${result.parking?.label || 'parking'}.`
-            : 'Recalculated drive on map roads.',
+            ? `Driving on roads to ${result.parking?.label || 'parking'}.`
+            : 'Driving on roads / driveways.',
           updatedAt: new Date().toISOString(),
         },
       },
-      walk: walkSteps.length
-        ? {
-            provider: 'Google Routes',
-            distanceM: walkSteps.reduce((n, s) => n + (s.distanceM || 0), 0),
-            distanceMiles: 0,
-            durationMinutes: 0,
-            geometry: {
-              type: 'LineString',
-              coordinates: walkSteps.flatMap((s) => s.geometry ?? []),
-            },
-            steps: walkSteps,
-          }
-        : result.walk,
+      walk: {
+        provider: 'deferred until walk',
+        distanceM: 0,
+        distanceMiles: 0,
+        durationMinutes: 0,
+        geometry: { type: 'LineString', coordinates: [] },
+        steps: [],
+      },
       journey: {
         ...result.journey,
         totalSteps: steps.length,
         driveSteps: driveSteps.length,
         outdoorSteps: driveSteps.length,
-        walkSteps: walkSteps.length,
+        walkSteps: 0,
         steps,
         summary: parking
-          ? 'Recalculated: drive to parking, then walk pathways.'
-          : 'Recalculated driving route from your location.',
+          ? 'Driving on roads to parking (walk pathways after you leave the car).'
+          : 'Driving on roads / driveways from your location.',
       },
     }
   } catch {

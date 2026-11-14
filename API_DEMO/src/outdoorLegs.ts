@@ -100,10 +100,13 @@ export function resolveOutdoorLegs(result: NavigateResult): OutdoorPlan {
   const toEntranceM = Math.round(metersBetween(corridorFrom, outdoorEnd))
   const parking = isRealParkingStop(result, sessionOrigin)
   const viaParking = Boolean(parking)
-  // Live GPS said we're walking — never plan a blue drive corridor on roads.
+  // Live GPS mode is exclusive: walk → footpaths only; drive → roads/driveways only.
   const liveWalking =
     result.origin.liveTravelMode === 'walk' ||
     /live recalculate · walk/i.test(String(result.outdoor?.provider || ''))
+  const liveDriving =
+    result.origin.liveTravelMode === 'drive' ||
+    /live recalculate · drive/i.test(String(result.outdoor?.provider || ''))
 
   const waypoints: OutdoorWaypoint[] = []
   if (parking && !liveWalking) {
@@ -148,8 +151,11 @@ export function resolveOutdoorLegs(result: NavigateResult): OutdoorPlan {
       label: 'Drive to parking',
       color: DRIVE_COLOR,
     })
-    // Walk on pathways from parking → unit/building.
-    if (metersBetween(parking, outdoorEnd) > AT_DESTINATION_M) {
+    // Walk after parking — never while live-driving (that painted red on the blue road).
+    if (
+      !liveDriving &&
+      metersBetween(parking, outdoorEnd) > AT_DESTINATION_M
+    ) {
       legs.push({
         id: 'walk-parking-to-destination',
         mode: 'WALK',

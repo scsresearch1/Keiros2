@@ -16,9 +16,9 @@ export type LiveFix = {
 export type TravelMode = 'walk' | 'drive'
 
 /**
- * Infer walk vs drive from GPS speed with hysteresis so noisy phone GPS
- * does not flip modes every tick (Google Maps–style).
- * Thresholds in m/s: walk stays until ~14 km/h; drive drops to walk under ~7 km/h.
+ * Auto-detect walk vs drive from GPS speed (Google-class hysteresis).
+ * Drive → keep on roads/driveways. Walk → keep on footpaths/walkways.
+ * Thresholds m/s: leave-car ~1.8 (~4 mph); start-drive ~3.5 (~8 mph).
  * `derivedSpeedMps` fills in when the OS leaves coords.speed null (common on Android).
  */
 export function inferTravelMode(
@@ -33,11 +33,15 @@ export function inferTravelMode(
       ? Math.max(0, Number(derivedSpeedMps))
       : null
   // Prefer reported speed when present; otherwise use displacement-based estimate.
-  const speed = reported ?? derived
+  // When both exist, take the higher so a moving car with stale speed=0 still flips to drive.
+  const speed =
+    reported != null && derived != null
+      ? Math.max(reported, derived)
+      : (reported ?? derived)
   if (speed == null) return prev ?? 'walk'
-  if (prev === 'drive') return speed < 2.0 ? 'walk' : 'drive'
-  if (prev === 'walk') return speed > 4.0 ? 'drive' : 'walk'
-  return speed >= 3.0 ? 'drive' : 'walk'
+  if (prev === 'drive') return speed < 1.8 ? 'walk' : 'drive'
+  if (prev === 'walk') return speed > 3.5 ? 'drive' : 'walk'
+  return speed >= 2.8 ? 'drive' : 'walk'
 }
 
 /** What corridor the current NavigateResult is painted as (after last successful recalculate). */

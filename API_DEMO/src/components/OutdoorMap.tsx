@@ -31,6 +31,8 @@ type Props = {
   liveFix?: LiveFix | null
   /** Live route match — enables Google-class stick-to-path puck heading. */
   liveProgress?: LiveProgress | null
+  /** GPS auto-detect: walk → footpaths only; drive → roads/driveways only. */
+  travelMode?: 'walk' | 'drive' | null
   followLive?: boolean
   /** Dense polylines actually drawn — used for Google-like off-route / reroute. */
   onRouteCorridor?: (corridor: {
@@ -262,6 +264,7 @@ export function OutdoorMap({
   traffic,
   liveFix = null,
   liveProgress = null,
+  travelMode = null,
   followLive = false,
   onRouteCorridor,
   onRouteGuidance,
@@ -844,9 +847,17 @@ export function OutdoorMap({
       // Live recalculate (walk or drive): paint smartReroute geometry immediately.
       // Never re-fetch Google or wait on OSM — walking must feel faster than Google.
       const liveRecalc = Boolean(result.origin.liveFrom)
+      // Exclusive active corridor from GPS auto-detect (stamped mode wins, else live prop).
+      const exclusiveMode: 'walk' | 'drive' | null =
+        result.origin.liveTravelMode === 'walk' || result.origin.liveTravelMode === 'drive'
+          ? result.origin.liveTravelMode
+          : followLive && (travelMode === 'walk' || travelMode === 'drive')
+            ? travelMode
+            : null
       if (liveRecalc) {
         paintRetainedTrail()
-        const liveWalk = result.origin.liveTravelMode === 'walk'
+        const liveWalk = exclusiveMode === 'walk'
+        const liveDrive = exclusiveMode !== 'walk'
         const drivePath = geoJsonToLatLngs(result.outdoor?.geometry?.coordinates)
         const walkPath = geoJsonToLatLngs(result.walk?.geometry?.coordinates)
         const liveOrigin = result.origin.liveFrom
@@ -854,17 +865,19 @@ export function OutdoorMap({
           : origin
 
         if (liveWalk) {
-          const path = walkPath.length > 1 ? walkPath : drivePath
+          // Footpaths / walkways ONLY — never leave a blue drive line under the red dots.
+          const path = walkPath.length > 1 ? walkPath : drivePath.length > 1 ? drivePath : []
           if (path.length > 1) {
             corridorWalk.push(...path)
             drawPath(path, path[0] ?? liveOrigin, destination, 'walk-dots', 22)
-            sources.add('live-google-walk')
+            sources.add('live-footpaths')
           }
           for (const step of result.walk?.steps?.length ? result.walk.steps : result.journey.steps) {
             if (step.phase !== 'walk') continue
             guidanceAcc.push({ ...step, index: guidanceAcc.length })
           }
-        } else if (drivePath.length > 1) {
+        } else if (liveDrive && drivePath.length > 1) {
+          // Roads / driveways ONLY — never paint walk dots alongside the blue line.
           corridorDrive.push(...drivePath)
           drawPath(
             drivePath,
@@ -873,36 +886,24 @@ export function OutdoorMap({
             'drive',
             20,
           )
-          sources.add('live-google-drive')
+          sources.add('live-driveways')
           for (const step of result.outdoor?.steps?.length
             ? result.outdoor.steps
             : result.journey.steps) {
             if (step.phase !== 'drive' && step.phase !== 'outdoor') continue
             guidanceAcc.push({ ...step, index: guidanceAcc.length, phase: 'drive' })
           }
-          // Future walk after parking — only if it does not sit on the same drive corridor.
-          if (
-            walkPath.length > 1 &&
-            outdoorPlan.viaParking &&
-            metersBetween(walkPath[0], drivePath[drivePath.length - 1]) < 80
-          ) {
-            corridorWalk.push(...walkPath)
-            drawPath(walkPath, walkPath[0], destination, 'walk-dots', 22)
-            sources.add('live-walk-after-park')
-          }
-        } else if (walkPath.length > 1) {
-          corridorWalk.push(...walkPath)
-          drawPath(walkPath, walkPath[0] ?? liveOrigin, destination, 'walk-dots', 22)
-          sources.add('live-google-walk')
         }
 
         if (session !== routeSessionRef.current) return
-        const activePath = [...corridorDrive, ...corridorWalk]
+        const activePath = liveWalk ? [...corridorWalk] : [...corridorDrive]
         if (activePath.length > 1) lastActivePathRef.current = activePath
         setSiteNet((prev) => ({
           driveways: prev?.driveways ?? 0,
           sidewalks: prev?.sidewalks ?? 0,
-          routedOn: `Live recalculate · ${[...sources].join('+') || 'google'}`,
+          routedOn: liveWalk
+            ? 'Walking · footpaths / walkways'
+            : 'Driving · roads / driveways',
         }))
         setMapError('')
         fitRouteView()
@@ -927,8 +928,11 @@ export function OutdoorMap({
       ) {
         // Never Google-route a "from start" stub — retained trail owns history behind the puck.
         if (leg.id === 'from-session-start' || leg.skipGuidance) return
+        // Live exclusive mode: ignore the other mode's legs entirely.
+        if (exclusiveMode === 'walk' && leg.mode !== 'WALK') return
+        if (exclusiveMode === 'drive' && leg.mode !== 'DRIVE') return
 
-        // Drive legs stay on roads. Walk legs prefer sidewalks/pathways when OSM is ready.
+        // Drive → roads/driveways. Walk → sidewalks/footpaths.
         const plan =
           leg.mode === 'WALK'
             ? await planWalkOnly(leg.from, leg.to, extract)
@@ -940,8 +944,17 @@ export function OutdoorMap({
           return
         }
 
+        const segs =
+          exclusiveMode === 'drive'
+            ? plan.segments.filter((s) => s.mode === 'DRIVE')
+            : exclusiveMode === 'walk'
+              ? plan.segments.filter((s) => s.mode === 'WALK')
+              : plan.segments
+
         if (!leg.skipGuidance && plan.guidanceSteps?.length) {
           for (const step of plan.guidanceSteps) {
+            if (exclusiveMode === 'drive' && step.phase === 'walk') continue
+            if (exclusiveMode === 'walk' && step.phase === 'drive') continue
             guidanceAcc.push({
               ...step,
               index: guidanceAcc.length,
@@ -950,8 +963,8 @@ export function OutdoorMap({
           }
         }
 
-        if (plan.label === 'drive+walk') driveWalkCount += 1
-        for (const seg of plan.segments) {
+        if (plan.label === 'drive+walk' && !exclusiveMode) driveWalkCount += 1
+        for (const seg of segs) {
           // Via-parking drive leg: never paint a walk stub past the lot as "drive".
           if (
             outdoorPlan.viaParking &&
@@ -975,7 +988,11 @@ export function OutdoorMap({
           )
         }
 
-        if (plan.handoff && !(outdoorPlan.viaParking && leg.id === 'drive-to-parking')) {
+        if (
+          plan.handoff &&
+          exclusiveMode !== 'drive' &&
+          !(outdoorPlan.viaParking && leg.id === 'drive-to-parking')
+        ) {
           track(
             createAdvancedMarker({
               map: gmap,
@@ -1111,7 +1128,7 @@ export function OutdoorMap({
         if (onRouteGuidance && guidanceAcc.length) onRouteGuidance([...guidanceAcc])
       })
     })()
-  }, [mapReady, result, outdoorPlan])
+  }, [mapReady, result, outdoorPlan, travelMode, followLive])
 
   // Optional camera nudge for journey steps (no extra yellow waypoint markers)
   useEffect(() => {
