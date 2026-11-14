@@ -30,6 +30,23 @@
   to = "/index.html"
   status = 200
 
+# Never cache the SPA shell or build stamp — hashed JS/CSS can stay immutable.
+[[headers]]
+  for = "/index.html"
+  [headers.values]
+    Cache-Control = "no-cache, no-store, must-revalidate"
+
+[[headers]]
+  for = "/build-id.json"
+  [headers.values]
+    Cache-Control = "no-store, max-age=0"
+    Content-Type = "application/json"
+
+[[headers]]
+  for = "/"
+  [headers.values]
+    Cache-Control = "no-cache, no-store, must-revalidate"
+
 [build.environment]
   NODE_VERSION = "22"
   SECRETS_SCAN_OMIT_KEYS = "VITE_GOOGLE_MAPS_API_KEY,VITE_GOOGLE_MAPS_MAP_ID"

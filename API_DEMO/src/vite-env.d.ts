@@ -1,6 +1,8 @@
 /// <reference types="vite/client" />
 /// <reference types="google.maps" />
 
+declare const __KEIROS_BUILD_ID__: string
+
 interface ImportMetaEnv {
   readonly VITE_API_BASE?: string
   /** Google Maps JavaScript API key (Maps JS + Routes API) */
