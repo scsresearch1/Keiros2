@@ -8,7 +8,6 @@ import {
   type NavigateResult,
 } from './api'
 import { OutdoorMap } from './components/OutdoorMap'
-import { Indoor3D } from './components/Indoor3D'
 import { IndoorFloorMap } from './components/IndoorFloorMap'
 import { StartLocationPanel } from './components/StartLocationPanel'
 import { NavGuidanceBanner } from './components/NavGuidanceBanner'
@@ -144,7 +143,8 @@ export default function App() {
   const [customOrigin, setCustomOrigin] = useState<StartPoint | null>(null)
   const [pickerOpen, setPickerOpen] = useState(false)
   const [locating, setLocating] = useState(false)
-  const [indoorView, setIndoorView] = useState<'floor' | 'building'>('building')
+  /** Indoor 2D + voice only starts when the user taps Start — never auto. */
+  const [indoorNavStarted, setIndoorNavStarted] = useState(false)
   /** Google Maps–style live GPS follow. Next/Previous stay available as optional manual control. */
   const [liveNav, setLiveNav] = useState(false)
   const [liveProgress, setLiveProgress] = useState<LiveProgress | null>(null)
@@ -513,7 +513,7 @@ export default function App() {
       })
       // Point-to-point starts at the first step (origin → destination).
       setJourneyIndex(0)
-      // Do not force Floor/3D here — keep whatever the user last selected.
+      setIndoorNavStarted(false)
       // Live / custom: keep GPS follow + re-route on. Demo: leave live off (simulated start).
       setLiveNav(mode === 'live' || mode === 'custom')
       setLiveProgress(null)
@@ -693,8 +693,9 @@ export default function App() {
     const phaseNow = result.journey.steps[journeyIndex]?.phase
     const now = Date.now()
 
-    // Indoor: follow phone GPS against indoor stop pins (no outdoor re-route).
+    // Indoor: only after user starts indoor nav — follow GPS against stop pins.
     if (phaseNow === 'indoor') {
+      if (!indoorNavStarted) return
       const indoorSteps = result.journey.steps.filter((s) => s.phase === 'indoor')
       if (!indoorSteps.length) return
       let bestIdx = journeyIndex
@@ -879,15 +880,17 @@ export default function App() {
           }
         })
     }
-  }, [liveWatchOn, liveFix, result, journeyIndex, mapGuidance, voiceSteps])
-
-  // Indoor Floor ↔ 3D is user-controlled only (never auto-flip on step advance).
+  }, [liveWatchOn, liveFix, result, journeyIndex, mapGuidance, voiceSteps, indoorNavStarted])
 
   function bumpJourney(delta: number) {
     manualHoldUntil.current = Date.now() + 10000
     setJourneyIndex((i) => {
-      const max = Math.max(0, (result?.journey.steps.length ?? 1) - 1)
-      return Math.min(max, Math.max(0, i + delta))
+      const list = result?.journey.steps ?? []
+      const max = Math.max(0, list.length - 1)
+      const next = Math.min(max, Math.max(0, i + delta))
+      // Never enter indoor steps until the user taps Start indoor navigation.
+      if (!indoorNavStarted && list[next]?.phase === 'indoor') return i
+      return next
     })
   }
 
@@ -967,17 +970,31 @@ export default function App() {
   const active = steps[journeyIndex] ?? null
   const phase = active?.phase === 'outdoor' ? 'drive' : (active?.phase ?? 'drive')
   const indoorStep = active?.phase === 'indoor' ? (active.indoorIndex ?? 0) : 0
-  const showOutdoorMap = phase === 'drive' || phase === 'walk'
   const firstIndoorIndex = steps.findIndex((s) => s.phase === 'indoor')
   const indoorStepCount = steps.filter((s) => s.phase === 'indoor').length
+  const showIndoorNav = indoorNavStarted && firstIndoorIndex >= 0
+  // Stay on outdoor map until the user explicitly starts indoor navigation.
+  const showOutdoorMap = !showIndoorNav
   const canNavigate = Boolean(complexId && buildingId && floorId && unitId)
 
   function jumpToPhase(target: 'drive' | 'walk' | 'indoor') {
+    if (target === 'indoor') {
+      startIndoorNavigation()
+      return
+    }
+    setIndoorNavStarted(false)
     const idx = steps.findIndex((s) => {
       if (target === 'drive') return s.phase === 'drive' || s.phase === 'outdoor'
       return s.phase === target
     })
     if (idx >= 0) jumpJourney(idx)
+  }
+
+  function startIndoorNavigation() {
+    if (firstIndoorIndex < 0) return
+    unlockVoiceFromGesture()
+    setIndoorNavStarted(true)
+    jumpJourney(firstIndoorIndex)
   }
   const selectedUnit =
     (hierarchy?.units.find((unit) => unit.id === unitId) ?? null) ||
@@ -1212,7 +1229,7 @@ export default function App() {
                 </button>
                 <button
                   type="button"
-                  className={phase === 'indoor' ? 'is-active phase-inside' : 'phase-inside'}
+                  className={showIndoorNav ? 'is-active phase-inside' : 'phase-inside'}
                   onClick={() => jumpToPhase('indoor')}
                   disabled={firstIndoorIndex < 0}
                 >
@@ -1224,14 +1241,14 @@ export default function App() {
               <>
                 <button
                   type="button"
-                  className={phase === 'walk' ? 'is-active phase-walk' : 'phase-walk'}
+                  className={phase === 'walk' && !showIndoorNav ? 'is-active phase-walk' : 'phase-walk'}
                   onClick={() => jumpToPhase('walk')}
                 >
                   1 · Walk to entrance
                 </button>
                 <button
                   type="button"
-                  className={phase === 'indoor' ? 'is-active phase-inside' : 'phase-inside'}
+                  className={showIndoorNav ? 'is-active phase-inside' : 'phase-inside'}
                   onClick={() => jumpToPhase('indoor')}
                   disabled={firstIndoorIndex < 0}
                 >
@@ -1242,7 +1259,7 @@ export default function App() {
             ) : (
               <button
                 type="button"
-                className={phase === 'indoor' ? 'is-active phase-inside' : 'phase-inside'}
+                className={showIndoorNav ? 'is-active phase-inside' : 'phase-inside'}
                 onClick={() => jumpToPhase('indoor')}
                 disabled={firstIndoorIndex < 0}
               >
@@ -1251,14 +1268,14 @@ export default function App() {
               </button>
             )}
           </div>
-          {firstIndoorIndex >= 0 && phase !== 'indoor' ? (
+          {firstIndoorIndex >= 0 && !indoorNavStarted ? (
             <div className="demo-indoor-jump">
-              <button type="button" className="demo-indoor-next" onClick={() => jumpToPhase('indoor')}>
-                Resume indoor navigation
+              <button type="button" className="demo-indoor-next" onClick={startIndoorNavigation}>
+                Start indoor navigation
               </button>
               <span className="demo-hint">
-                Indoor starts automatically after Navigate · {indoorStepCount} step
-                {indoorStepCount === 1 ? '' : 's'} on the floor map
+                Optional — tap when you enter the building · 2D floor map · text + voice ·{' '}
+                {indoorStepCount} step{indoorStepCount === 1 ? '' : 's'}
               </span>
             </div>
           ) : null}
@@ -1320,39 +1337,31 @@ export default function App() {
             <div className="demo-indoor-wrap">
               <div className="demo-indoor-head">
                 <p className="demo-indoor-banner">
-                  {indoorView === 'floor'
-                    ? 'Inside — follow the path on this floor'
-                    : 'Inside — 3D building · drag to rotate, yellow path is your indoor route'}
+                  Indoor · 2D floor map — blue dot is you · red pin is your unit · text + voice guide each
+                  step
                 </p>
-                <div className="demo-indoor-toggle" role="tablist" aria-label="Indoor map">
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={indoorView === 'floor'}
-                    className={indoorView === 'floor' ? 'is-active' : ''}
-                    onClick={() => setIndoorView('floor')}
-                  >
-                    Floor map
-                  </button>
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={indoorView === 'building'}
-                    className={indoorView === 'building' ? 'is-active' : ''}
-                    onClick={() => setIndoorView('building')}
-                  >
-                    3D building
-                  </button>
-                </div>
               </div>
               <div className="demo-indoor-actions">
                 <button
                   type="button"
                   className="demo-indoor-next"
                   disabled={journeyIndex >= steps.length - 1}
-                  onClick={() => bumpJourney(1)}
+                  onClick={() => {
+                    unlockVoiceFromGesture()
+                    bumpJourney(1)
+                  }}
                 >
                   {journeyIndex >= steps.length - 1 ? 'Arrived' : 'Next indoor step'}
+                </button>
+                <button
+                  type="button"
+                  className="demo-ghost demo-ghost--small"
+                  onClick={() => {
+                    setIndoorNavStarted(false)
+                    jumpToPhase('walk')
+                  }}
+                >
+                  Back to outdoor
                 </button>
                 <span className="demo-hint">
                   {wantsLiveGps && liveFix
@@ -1364,26 +1373,16 @@ export default function App() {
                       : 'Turn on Live GPS to follow your phone indoors'}
                 </span>
               </div>
-              {indoorView === 'floor' ? (
-                <IndoorFloorMap
-                  map3d={result.map3d}
-                  activeStep={indoorStep}
-                  instruction={active?.instruction}
-                  liveFix={wantsLiveGps ? liveFix : null}
-                />
-              ) : (
-                <Indoor3D
-                  map3d={result.map3d}
-                  activeStep={indoorStep}
-                  instruction={active?.instruction}
-                  complexName={result.selection.complex?.name}
-                  liveFix={wantsLiveGps ? liveFix : null}
-                />
-              )}
+              <IndoorFloorMap
+                map3d={result.map3d}
+                activeStep={indoorStep}
+                instruction={active?.instruction}
+                liveFix={wantsLiveGps ? liveFix : null}
+              />
             </div>
           )}
 
-          {active && (showOutdoorMap || phase === 'indoor') ? (
+          {active && (showOutdoorMap || showIndoorNav) ? (
             <div className="demo-map-guidance">
               <NavGuidanceBanner
                 active={active}

@@ -195,6 +195,41 @@ export function IndoorFloorMap({
                 />
               </>
             ) : null}
+            {/* Route stop dots — next indoor point is emphasized */}
+            {scene.stopDots.map((stop) => (
+              <g key={`stop-${stop.id}-${stop.index}`} transform={`translate(${stop.x} ${stop.y})`}>
+                <circle
+                  r={stop.isTarget ? 9 : 5}
+                  fill={stop.isTarget ? '#ea4335' : '#fff'}
+                  stroke={stop.isTarget ? '#fff' : '#1a73e8'}
+                  strokeWidth={stop.isTarget ? 2.5 : 2}
+                />
+              </g>
+            ))}
+            {/* Destination unit marker (pin) */}
+            {scene.destPin ? (
+              <g transform={`translate(${scene.destPin.x} ${scene.destPin.y - 22})`}>
+                <path
+                  d="M0 0 C-11 -14 -11 -28 0 -28 C11 -28 11 -14 0 0 Z"
+                  fill="#ea4335"
+                  stroke="#fff"
+                  strokeWidth={2}
+                />
+                <circle cx={0} cy={-18} r={5} fill="#fff" />
+                <text
+                  x={0}
+                  y={-16}
+                  textAnchor="middle"
+                  fill="#ea4335"
+                  fontSize={8}
+                  fontWeight={800}
+                  fontFamily="system-ui,sans-serif"
+                >
+                  D
+                </text>
+              </g>
+            ) : null}
+            {/* You-are-here blue dot / puck */}
             {walker ? (
               <g transform={`translate(${walker.x} ${walker.y})`}>
                 {walker.live ? (
@@ -372,6 +407,16 @@ function buildScene(map3d: NavigateResult['map3d'], floorId: string, activeStep:
   for (let i = activeStep; i < stops.length - 1; i += 1) {
     remainM += haversine(stops[i], stops[i + 1])
   }
+  const targetStop = stops[Math.min(activeStep + 1, stops.length - 1)]
+  const stopDots = floorStops.map((stop) => ({
+    id: stop.id,
+    index: stop.index,
+    x: stop.x,
+    y: stop.y,
+    isTarget: Boolean(targetStop && stop.id === targetStop.id && stop.floorId === floorId),
+  }))
+  const destOnFloor = dest && dest.floorId === floorId ? toXY(dest.latitude, dest.longitude) : null
+
   return {
     plate,
     rooms,
@@ -381,6 +426,8 @@ function buildScene(map3d: NavigateResult['map3d'], floorId: string, activeStep:
     then,
     remainM: Math.round(remainM),
     toXY,
+    stopDots,
+    destPin: destOnFloor,
   }
 }
 
