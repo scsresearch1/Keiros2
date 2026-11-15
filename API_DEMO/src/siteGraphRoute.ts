@@ -193,7 +193,7 @@ function routeOnce(
 export function snapPointToSidewalks(
   point: { lat: number; lng: number },
   sidewalks: SiteWay[],
-  maxMeters = 18,
+  maxMeters = 32,
 ): { lat: number; lng: number; distM: number } | null {
   const preferred = sidewalks.filter((w) => (w.walkPriority ?? 2) <= 2)
   const pool = preferred.length ? preferred : sidewalks
@@ -229,7 +229,7 @@ export function snapPointToSidewalks(
 export function snapPathToSidewalks(
   path: google.maps.LatLngLiteral[],
   sidewalks: SiteWay[],
-  maxMeters = 18,
+  maxMeters = 32,
 ): google.maps.LatLngLiteral[] {
   if (!path.length || !sidewalks.length) return path
   const kerb = sidewalks.filter((w) => (w.walkPriority ?? 2) <= 2)
@@ -241,8 +241,40 @@ export function snapPathToSidewalks(
     snapped += 1
     return { lat: hit.lat, lng: hit.lng }
   })
-  // Only keep snap if enough vertices moved onto sidewalks (avoid jittering a good path).
-  if (snapped < Math.max(2, Math.floor(path.length * 0.35))) return path
+  // Keep snap when a meaningful share of vertices moved onto the kerb.
+  if (snapped < Math.max(2, Math.floor(path.length * 0.22))) return path
+  return out
+}
+
+/**
+ * Last resort when OSM has no footways: shift Google's road-center walk onto the
+ * left kerb (India LHT) so red dots are not painted in the middle of the carriageway.
+ */
+export function offsetPathToKerb(
+  path: google.maps.LatLngLiteral[],
+  offsetM = 5,
+  side: 'left' | 'right' = 'left',
+): google.maps.LatLngLiteral[] {
+  if (path.length < 2) return path.map((p) => ({ ...p }))
+  const sign = side === 'left' ? 1 : -1
+  const out: google.maps.LatLngLiteral[] = []
+  for (let i = 0; i < path.length; i += 1) {
+    const prev = path[Math.max(0, i - 1)]
+    const next = path[Math.min(path.length - 1, i + 1)]
+    const cur = path[i]
+    const dLat = next.lat - prev.lat
+    const dLng = next.lng - prev.lng
+    const midLat = (cur.lat * Math.PI) / 180
+    const mLat = 1 / 111_320
+    const mLng = 1 / (111_320 * Math.max(0.2, Math.cos(midLat)))
+    const len = Math.hypot(dLat / mLat, dLng / mLng) || 1
+    const nx = (-(dLng / mLng) / len) * sign
+    const ny = ((dLat / mLat) / len) * sign
+    out.push({
+      lat: cur.lat + ny * offsetM * mLat,
+      lng: cur.lng + nx * offsetM * mLng,
+    })
+  }
   return out
 }
 

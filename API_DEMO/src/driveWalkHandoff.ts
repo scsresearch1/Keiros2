@@ -7,7 +7,7 @@
 import type { JourneyStep } from './api'
 import type { SiteWaysExtract } from './extractSiteWays'
 import { fetchRoadRoute, pathEndGapM, type RoadRoute, type RouteTravelMode } from './googleRoute'
-import { routeOnSiteWays, snapPathToSidewalks } from './siteGraphRoute'
+import { offsetPathToKerb, routeOnSiteWays, snapPathToSidewalks } from './siteGraphRoute'
 
 /** Only switch to walk when the drive network ends this far from the entry door. */
 export const LAST_MILE_WALK_M = 30
@@ -191,16 +191,26 @@ export async function bestSidewalkWalk(
   try {
     const g: RoadRoute = await fetchRoadRoute(from, to, 'WALK')
     if (g.path.length >= 2) {
-      // Google walk often follows the road / grass verge — snap onto kerb sidewalks.
-      const snapped =
-        extract?.sidewalks?.length
-          ? snapPathToSidewalks(g.path, extract.sidewalks, 20)
-          : g.path
+      // Google walk often follows the road median — snap onto kerb sidewalks / synthetic kerbs.
+      let path = g.path
+      let source = 'google-walk'
+      if (extract?.sidewalks?.length) {
+        const snapped = snapPathToSidewalks(g.path, extract.sidewalks, 32)
+        if (snapped !== g.path) {
+          path = snapped
+          source = 'google-walk-snapped-sidewalk'
+        }
+      }
+      if (source === 'google-walk') {
+        // No usable sidewalk geometry — shift off the carriageway centerline.
+        path = offsetPathToKerb(g.path, 5, 'left')
+        source = 'google-walk-kerb-offset'
+      }
       candidates.push({
-        path: snapped,
+        path,
         distanceM: g.distanceM,
-        source: snapped !== g.path ? 'google-walk-snapped-sidewalk' : 'google-walk',
-        gap: pathEndGapM(snapped, to),
+        source,
+        gap: pathEndGapM(path, to),
         steps: g.steps,
       })
     }
@@ -209,10 +219,16 @@ export async function bestSidewalkWalk(
   }
 
   if (!candidates.length) return null
-  // Prefer OSM sidewalks even if a bit longer / slightly larger end gap than Google aisles.
+  // Prefer real / snapped sidewalks over road-center Google walk.
   candidates.sort((a, b) => {
     const rank = (s: string) =>
-      s === 'osm-sidewalks' ? 0 : s === 'google-walk-snapped-sidewalk' ? 1 : 2
+      s === 'osm-sidewalks'
+        ? 0
+        : s === 'google-walk-snapped-sidewalk'
+          ? 1
+          : s === 'google-walk-kerb-offset'
+            ? 2
+            : 3
     const ra = rank(a.source)
     const rb = rank(b.source)
     if (ra !== rb) {

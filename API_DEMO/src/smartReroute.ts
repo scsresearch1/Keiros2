@@ -89,44 +89,38 @@ export async function rerouteFromLiveFix(
       const walkTarget = dest
       const fromLit = toLit(fix)
       const toLitDest = toLit(walkTarget)
-      // Fast Google WALK + short race for OSM sidewalks/footways (prefer kerb when available).
-      const googleWalkPromise = fetchRoadRouteLive(fromLit, toLitDest, 'WALK').catch(() => null)
-      const sidewalkPromise = extractSiteWays([fromLit, toLitDest])
-        .then((extract) => bestSidewalkWalk(fromLit, toLitDest, extract))
-        .catch(() => null)
-      const googleWalk = await googleWalkPromise
-      // Don't block long on Overpass — take sidewalks if they win within 500ms of Google.
-      const ped = await Promise.race([
-        sidewalkPromise,
-        new Promise<null>((resolve) => {
-          window.setTimeout(() => resolve(null), 500)
-        }),
-      ])
+      // Google WALK for guidance, then force onto kerbs/footways (synthetic OSM kerbs when needed).
+      // Never leave the red dots in the middle of the carriageway.
+      const googleWalk = await fetchRoadRouteLive(fromLit, toLitDest, 'WALK').catch(() => null)
+      const extract = await extractSiteWays([fromLit, toLitDest]).catch(() => null)
+      const ped = await bestSidewalkWalk(fromLit, toLitDest, extract).catch(() => null)
       const useOsm =
         ped?.source === 'osm-sidewalks' &&
         ped.path?.length >= 2 &&
         metersBetween(ped.path[ped.path.length - 1]!, toLitDest) <= 55
       const useSnapped =
         !useOsm &&
-        ped?.source === 'google-walk-snapped-sidewalk' &&
+        (ped?.source === 'google-walk-snapped-sidewalk' ||
+          ped?.source === 'google-walk-kerb-offset') &&
         ped.path?.length >= 2
       const path =
-        (useOsm || useSnapped ? ped!.path : null) || googleWalk?.path || ped?.path || null
+        (useOsm || useSnapped ? ped!.path : null) || ped?.path || googleWalk?.path || null
       if (!path?.length) return null
-      const distanceM = useOsm || useSnapped
-        ? ped!.distanceM
-        : (googleWalk?.distanceM ??
-          Math.round(
-            path.reduce((sum, p, i) => {
-              if (i === 0) return 0
-              return sum + metersBetween(path[i - 1], p)
-            }, 0),
-          ))
+      const distanceM =
+        ped?.distanceM ??
+        googleWalk?.distanceM ??
+        Math.round(
+          path.reduce((sum, p, i) => {
+            if (i === 0) return 0
+            return sum + metersBetween(path[i - 1], p)
+          }, 0),
+        )
       const walkSteps =
-        (!(useOsm || useSnapped) && googleWalk?.steps?.length
-          ? googleWalk.steps
-          : ped?.steps
-        )?.map((s, i) => ({ ...s, index: i, phase: 'walk' as const })) ??
+        (ped?.steps?.length ? ped.steps : googleWalk?.steps)?.map((s, i) => ({
+          ...s,
+          index: i,
+          phase: 'walk' as const,
+        })) ??
         [
           {
             id: 'live-walk-1',
@@ -143,7 +137,14 @@ export async function rerouteFromLiveFix(
         ...walkSteps,
         ...indoor.map((s, i) => ({ ...s, index: walkSteps.length + i })),
       ]
-      const onSidewalk = useOsm || useSnapped
+      const provider =
+        ped?.source === 'osm-sidewalks'
+          ? 'OSM sidewalks'
+          : ped?.source === 'google-walk-snapped-sidewalk'
+            ? 'Google WALK snapped to sidewalks'
+            : ped?.source === 'google-walk-kerb-offset'
+              ? 'Google WALK on kerb (offset)'
+              : 'Google Routes WALK'
       return {
         ...result,
         origin: stampedOrigin,
@@ -157,18 +158,12 @@ export async function rerouteFromLiveFix(
           steps: [],
           traffic: {
             ...result.outdoor.traffic,
-            note: onSidewalk
-              ? 'Walking on sidewalks / footpaths.'
-              : 'Walking · Google pedestrian path (sidewalks unavailable here).',
+            note: 'Walking on sidewalks / footpaths (kerb), not road center.',
             updatedAt: new Date().toISOString(),
           },
         },
         walk: {
-          provider: useOsm
-            ? 'OSM sidewalks'
-            : useSnapped
-              ? 'Google WALK snapped to sidewalks'
-              : 'Google Routes WALK',
+          provider,
           distanceM,
           distanceMiles: Math.round((distanceM / 1609.344) * 10) / 10,
           durationMinutes: Math.round((distanceM / 1.35 / 60) * 10) / 10,
@@ -182,9 +177,7 @@ export async function rerouteFromLiveFix(
           outdoorSteps: 0,
           walkSteps: walkSteps.length,
           steps,
-          summary: onSidewalk
-            ? 'Recalculated walking route on sidewalks / footpaths.'
-            : 'Recalculated Google pedestrian walk (no local sidewalk graph).',
+          summary: 'Recalculated walking route on sidewalks / footpaths.',
         },
       }
     }

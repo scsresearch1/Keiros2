@@ -913,7 +913,7 @@ export function OutdoorMap({
           driveways: prev?.driveways ?? 0,
           sidewalks: prev?.sidewalks ?? 0,
           routedOn: liveWalk
-            ? 'Walking · footpaths / walkways'
+            ? `Walking · ${result.walk?.provider || 'footpaths / kerbs'}`
             : 'Driving · roads / driveways',
         }))
         setMapError('')
