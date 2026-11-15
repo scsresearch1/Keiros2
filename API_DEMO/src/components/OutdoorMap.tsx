@@ -14,6 +14,7 @@ import { extractSiteWays, type SiteWaysExtract } from '../extractSiteWays'
 import { pinPathToEndpoints } from '../googleRoute'
 import { bearingDeg, resolvePuckPose, type LiveFix, type LiveProgress } from '../liveNavigation'
 import { metersBetween, resolveOutdoorLegs, type OutdoorLeg } from '../outdoorLegs'
+import { offsetPathToKerb } from '../siteGraphRoute'
 
 /** Highlight extracted site driveways so the visible driveway is obvious. */
 const DRIVEWAY_LAYER = '#f59e0b'
@@ -610,14 +611,16 @@ export function OutdoorMap({
       zIndex: number,
     ) {
       if (session !== routeSessionRef.current) return
-      // Drive: keep network end. Walk: always reach the real destination pin.
+      // Walk: ALWAYS pull red dots off the road midline onto the kerb (~8 m).
+      // Google WALK returns carriageway center — without this, walk looks like driving.
+      const walkSource =
+        style === 'walk-dots' ? offsetPathToKerb(path, 8, 'left') : path
       const pinned =
         style === 'retained'
           ? path.map((p) => ({ ...p }))
           : style === 'drive'
             ? pinPathToEndpoints(path, from, path[path.length - 1] ?? to, 12, 8)
-            : // Cap last-meter connect — unlimited alwaysReachEnd cut through buildings.
-              pinPathToEndpoints(path, from, to, 18, 35, {
+            : pinPathToEndpoints(walkSource, from, to, 18, 35, {
                 alwaysReachEnd: true,
                 maxAlwaysReachM: 45,
               })
@@ -877,11 +880,14 @@ export function OutdoorMap({
 
         if (liveWalk) {
           // Footpaths / walkways ONLY — never leave a blue drive line under the red dots.
-          const path = walkPath.length > 1 ? walkPath : drivePath.length > 1 ? drivePath : []
+          const raw = walkPath.length > 1 ? walkPath : drivePath.length > 1 ? drivePath : []
+          // Same kerb shift as drawPath so off-route matching matches the painted dots.
+          const path = raw.length > 1 ? offsetPathToKerb(raw, 8, 'left') : raw
           if (path.length > 1) {
             corridorWalk.push(...path)
-            drawPath(path, path[0] ?? liveOrigin, destination, 'walk-dots', 22)
-            sources.add('live-footpaths')
+            // Path already on kerb — drawPath will offset again; pass raw into drawPath instead.
+            drawPath(raw, raw[0] ?? liveOrigin, destination, 'walk-dots', 22)
+            sources.add('live-footpaths-kerb')
           }
           for (const step of result.walk?.steps?.length ? result.walk.steps : result.journey.steps) {
             if (step.phase !== 'walk') continue

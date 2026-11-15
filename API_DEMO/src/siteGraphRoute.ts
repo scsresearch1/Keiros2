@@ -247,33 +247,35 @@ export function snapPathToSidewalks(
 }
 
 /**
- * Last resort when OSM has no footways: shift Google's road-center walk onto the
- * left kerb (India LHT) so red dots are not painted in the middle of the carriageway.
+ * Shift a walk polyline off the carriageway centerline onto the kerb.
+ * Uses bearing + perpendicular so north/south roads actually move east/west (visible).
+ * India LHT: default left of travel direction.
  */
 export function offsetPathToKerb(
   path: google.maps.LatLngLiteral[],
-  offsetM = 5,
+  offsetM = 8,
   side: 'left' | 'right' = 'left',
 ): google.maps.LatLngLiteral[] {
   if (path.length < 2) return path.map((p) => ({ ...p }))
-  const sign = side === 'left' ? 1 : -1
   const out: google.maps.LatLngLiteral[] = []
   for (let i = 0; i < path.length; i += 1) {
-    const prev = path[Math.max(0, i - 1)]
-    const next = path[Math.min(path.length - 1, i + 1)]
+    const a = path[Math.max(0, i - 1)]
+    const b = path[Math.min(path.length - 1, i + 1)]
     const cur = path[i]
-    const dLat = next.lat - prev.lat
-    const dLng = next.lng - prev.lng
-    const midLat = (cur.lat * Math.PI) / 180
-    const mLat = 1 / 111_320
-    const mLng = 1 / (111_320 * Math.max(0.2, Math.cos(midLat)))
-    const len = Math.hypot(dLat / mLat, dLng / mLng) || 1
-    const nx = (-(dLng / mLng) / len) * sign
-    const ny = ((dLat / mLat) / len) * sign
-    out.push({
-      lat: cur.lat + ny * offsetM * mLat,
-      lng: cur.lng + nx * offsetM * mLng,
-    })
+    const toRad = (d: number) => (d * Math.PI) / 180
+    const φ1 = toRad(a.lat)
+    const φ2 = toRad(b.lat)
+    const Δλ = toRad(b.lng - a.lng)
+    const y = Math.sin(Δλ) * Math.cos(φ2)
+    const x = Math.cos(φ1) * Math.sin(φ2) - Math.sin(φ1) * Math.cos(φ2) * Math.cos(Δλ)
+    let bearing = (Math.atan2(y, x) * 180) / Math.PI
+    bearing = ((bearing % 360) + 360) % 360
+    const perp = side === 'left' ? bearing - 90 : bearing + 90
+    const rad = (perp * Math.PI) / 180
+    const dLat = (offsetM * Math.cos(rad)) / 111_320
+    const dLng =
+      (offsetM * Math.sin(rad)) / (111_320 * Math.max(0.2, Math.cos(toRad(cur.lat))))
+    out.push({ lat: cur.lat + dLat, lng: cur.lng + dLng })
   }
   return out
 }
