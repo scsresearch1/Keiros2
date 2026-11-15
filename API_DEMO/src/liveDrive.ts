@@ -97,7 +97,6 @@ const DRIVING_BASES = [
 const FOOT_BASES = [
   'https://router.project-osrm.org/route/v1/foot',
   'https://routing.openstreetmap.de/routed-foot/route/v1/foot',
-  ...DRIVING_BASES,
 ]
 
 async function fetchOsrmRoute(bases: string[], origin: LatLng, destination: LatLng) {
@@ -224,7 +223,7 @@ async function fetchWalkAlongRoads(parking: LatLng, entrance: LatLng) {
     distanceM,
     durationMinutes: Math.round((route.duration / 60) * 10) / 10,
     geometry: { type: 'LineString' as const, coordinates: route.geometry.coordinates },
-    provider: 'OSRM foot (road-snapped)',
+    provider: 'OSRM foot (pedestrian network)',
   }
 }
 

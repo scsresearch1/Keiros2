@@ -1,8 +1,7 @@
 import type { JourneyStep, NavigateResult } from './api'
-import { bestSidewalkWalk } from './driveWalkHandoff'
-import { extractSiteWays } from './extractSiteWays'
 import { fetchRoadRouteLive } from './googleRoute'
 import { AT_ENTRANCE_M, metersBetween } from './outdoorLegs'
+import { fetchPedestrianRoute } from './pedestrianRoute'
 
 type LatLng = { latitude: number; longitude: number }
 
@@ -89,68 +88,22 @@ export async function rerouteFromLiveFix(
       const walkTarget = dest
       const fromLit = toLit(fix)
       const toLitDest = toLit(walkTarget)
-      // Google WALK for guidance, then force onto kerbs/footways (synthetic OSM kerbs when needed).
-      // Never leave the red dots in the middle of the carriageway.
-      const googleWalk = await fetchRoadRouteLive(fromLit, toLitDest, 'WALK').catch(() => null)
-      const extract = await extractSiteWays([fromLit, toLitDest]).catch(() => null)
-      const ped = await bestSidewalkWalk(fromLit, toLitDest, extract).catch(() => null)
-      const useOsm =
-        ped?.source === 'osm-sidewalks' &&
-        ped.path?.length >= 2 &&
-        metersBetween(ped.path[ped.path.length - 1]!, toLitDest) <= 55
-      const useSnapped =
-        !useOsm &&
-        (ped?.source === 'google-walk-snapped-sidewalk' ||
-          ped?.source === 'google-walk-kerb-offset') &&
-        ped.path?.length >= 2
-      const path =
-        (useOsm || useSnapped ? ped!.path : null) || ped?.path || googleWalk?.path || null
-      if (!path?.length) return null
-      const distanceM =
-        ped?.distanceM ??
-        googleWalk?.distanceM ??
-        Math.round(
-          path.reduce((sum, p, i) => {
-            if (i === 0) return 0
-            return sum + metersBetween(path[i - 1], p)
-          }, 0),
-        )
-      const walkSteps =
-        (ped?.steps?.length ? ped.steps : googleWalk?.steps)?.map((s, i) => ({
-          ...s,
-          index: i,
-          phase: 'walk' as const,
-        })) ??
-        [
-          {
-            id: 'live-walk-1',
-            phase: 'walk' as const,
-            index: 0,
-            instruction: 'Walk on sidewalks / footpaths toward your destination',
-            latitude: fix.latitude,
-            longitude: fix.longitude,
-            distanceM,
-            geometry: pathToGeoJson(path),
-          },
-        ]
+      // NEW strategy: OSRM foot pedestrian network (not Google-centerline + kerb hacks).
+      const ped = await fetchPedestrianRoute(fromLit, toLitDest).catch(() => null)
+      if (!ped?.path?.length) return null
+      const path = ped.path
+      const distanceM = ped.distanceM
+      const walkSteps = ped.steps.map((s, i) => ({ ...s, index: i, phase: 'walk' as const }))
       const steps = [
         ...walkSteps,
         ...indoor.map((s, i) => ({ ...s, index: walkSteps.length + i })),
       ]
-      const provider =
-        ped?.source === 'osm-sidewalks'
-          ? 'OSM sidewalks'
-          : ped?.source === 'google-walk-snapped-sidewalk'
-            ? 'Google WALK snapped to sidewalks'
-            : ped?.source === 'google-walk-kerb-offset'
-              ? 'Google WALK on kerb (offset)'
-              : 'Google Routes WALK'
       return {
         ...result,
         origin: stampedOrigin,
         outdoor: {
           ...result.outdoor,
-          provider: 'Google Routes (live recalculate · walk)',
+          provider: 'OSRM foot (live recalculate · walk)',
           distanceM: 0,
           distanceMiles: 0,
           durationMinutes: 0,
@@ -158,15 +111,15 @@ export async function rerouteFromLiveFix(
           steps: [],
           traffic: {
             ...result.outdoor.traffic,
-            note: 'Walking on sidewalks / footpaths (kerb), not road center.',
+            note: `Walking on pedestrian network · ${ped.provider}`,
             updatedAt: new Date().toISOString(),
           },
         },
         walk: {
-          provider,
+          provider: ped.provider,
           distanceM,
           distanceMiles: Math.round((distanceM / 1609.344) * 10) / 10,
-          durationMinutes: Math.round((distanceM / 1.35 / 60) * 10) / 10,
+          durationMinutes: Math.round((ped.durationSec / 60) * 10) / 10,
           geometry: { type: 'LineString', coordinates: pathToGeoJson(path) },
           steps: walkSteps,
         },
@@ -177,7 +130,7 @@ export async function rerouteFromLiveFix(
           outdoorSteps: 0,
           walkSteps: walkSteps.length,
           steps,
-          summary: 'Recalculated walking route on sidewalks / footpaths.',
+          summary: 'Recalculated on OSM pedestrian network (OSRM foot).',
         },
       }
     }

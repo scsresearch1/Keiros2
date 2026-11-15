@@ -7,7 +7,8 @@
 import type { JourneyStep } from './api'
 import type { SiteWaysExtract } from './extractSiteWays'
 import { fetchRoadRoute, pathEndGapM, type RoadRoute, type RouteTravelMode } from './googleRoute'
-import { offsetPathToKerb, routeOnSiteWays, snapPathToSidewalks } from './siteGraphRoute'
+import { fetchPedestrianRoute } from './pedestrianRoute'
+import { routeOnSiteWays } from './siteGraphRoute'
 
 /** Only switch to walk when the drive network ends this far from the entry door. */
 export const LAST_MILE_WALK_M = 30
@@ -146,8 +147,8 @@ function forceReach(
 }
 
 /**
- * Pedestrian route: prefer OSM sidewalks/footways. Google WALK often follows
- * parking aisles — only use it when sidewalks cannot reach the destination.
+ * Pedestrian route via OSRM foot network (primary). Optional local OSM graph
+ * only when it clearly reaches the door — never kerb-offset Google geometry.
  */
 export async function bestSidewalkWalk(
   from: google.maps.LatLngLiteral,
@@ -159,87 +160,34 @@ export async function bestSidewalkWalk(
   source: string
   steps?: JourneyStep[]
 } | null> {
-  const candidates: {
-    path: google.maps.LatLngLiteral[]
-    distanceM: number
-    source: string
-    gap: number
-    steps?: JourneyStep[]
-  }[] = []
-
+  // Campus extract: real mapped footways only (no synthetic kerbs for routing).
   if (extract?.sidewalks?.length) {
-    const sidewalksOnly = routeOnSiteWays(extract, from, to, 'WALK', { sidewalksOnly: true })
-    if (sidewalksOnly && sidewalksOnly.path.length >= 2) {
-      candidates.push({
-        path: sidewalksOnly.path,
-        distanceM: sidewalksOnly.distanceM,
-        source: 'osm-sidewalks',
-        gap: pathEndGapM(sidewalksOnly.path, to),
+    const real = extract.sidewalks.filter((w) => !String(w.id).includes('osm-kerb-'))
+    if (real.length) {
+      const local = routeOnSiteWays({ ...extract, sidewalks: real }, from, to, 'WALK', {
+        sidewalksOnly: true,
       })
-    }
-  }
-
-  // Sidewalk graph reached the destination closely enough — never fall back to aisle routing.
-  const sidewalkHit = candidates.find((c) => c.source === 'osm-sidewalks' && c.gap <= 45)
-  if (sidewalkHit) {
-    return {
-      ...sidewalkHit,
-      path: forceReach(sidewalkHit.path, to),
+      if (local && local.path.length >= 2 && pathEndGapM(local.path, to) <= 45) {
+        return {
+          path: forceReach(local.path, to),
+          distanceM: local.distanceM,
+          source: 'osm-sidewalks',
+        }
+      }
     }
   }
 
   try {
-    const g: RoadRoute = await fetchRoadRoute(from, to, 'WALK')
-    if (g.path.length >= 2) {
-      // Google walk often follows the road median — snap onto kerb sidewalks / synthetic kerbs.
-      let path = g.path
-      let source = 'google-walk'
-      if (extract?.sidewalks?.length) {
-        const snapped = snapPathToSidewalks(g.path, extract.sidewalks, 32)
-        if (snapped !== g.path) {
-          path = snapped
-          source = 'google-walk-snapped-sidewalk'
-        }
-      }
-      if (source === 'google-walk') {
-        // No usable sidewalk geometry — shift off the carriageway centerline.
-        path = offsetPathToKerb(g.path, 5, 'left')
-        source = 'google-walk-kerb-offset'
-      }
-      candidates.push({
-        path,
-        distanceM: g.distanceM,
-        source,
-        gap: pathEndGapM(path, to),
-        steps: g.steps,
-      })
+    const ped = await fetchPedestrianRoute(from, to)
+    return {
+      path: forceReach(ped.path, to),
+      distanceM: ped.distanceM,
+      source: ped.provider.includes('OSRM') ? 'osrm-foot' : 'google-walk',
+      steps: ped.steps,
     }
   } catch {
-    /* ignore */
+    return null
   }
-
-  if (!candidates.length) return null
-  // Prefer real / snapped sidewalks over road-center Google walk.
-  candidates.sort((a, b) => {
-    const rank = (s: string) =>
-      s === 'osm-sidewalks'
-        ? 0
-        : s === 'google-walk-snapped-sidewalk'
-          ? 1
-          : s === 'google-walk-kerb-offset'
-            ? 2
-            : 3
-    const ra = rank(a.source)
-    const rb = rank(b.source)
-    if (ra !== rb) {
-      if (ra < rb && a.gap <= Math.max(55, b.gap + 25)) return -1
-      if (rb < ra && b.gap <= Math.max(55, a.gap + 25)) return 1
-    }
-    if (Math.abs(a.gap - b.gap) > 12) return a.gap - b.gap
-    return a.distanceM - b.distanceM
-  })
-  const best = candidates[0]
-  return { ...best, path: forceReach(best.path, to) }
 }
 
 function collectGuidance(segments: HandoffSegment[]): JourneyStep[] {
