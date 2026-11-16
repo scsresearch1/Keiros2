@@ -163,6 +163,11 @@ export default function App() {
   const travelModeRef = useRef<TravelMode | null>(null)
   const travelModeSwitchStreak = useRef(0)
   const [travelMode, setTravelMode] = useState<TravelMode | null>(null)
+  /**
+   * After Navigate (or toggling Walk/Drive), honor the user's choice and do not let a
+   * slow GPS sample immediately repaint Drive as red walk dots.
+   */
+  const userModeHoldUntil = useRef(0)
   /** Prior GPS sample — derive speed when the OS leaves coords.speed null. */
   const prevMotionFixRef = useRef<LiveFix | null>(null)
   /** Dense map polylines from OutdoorMap (lng,lat) — preferred for off-route. */
@@ -536,6 +541,7 @@ export default function App() {
       travelModeRef.current = routeMode
       travelModeSwitchStreak.current = 0
       setTravelMode(routeMode)
+      userModeHoldUntil.current = Date.now() + 90_000
       prevMotionFixRef.current = null
       // Short hold so step voice settles — do not block off-route recalculation for long.
       manualHoldUntil.current = Date.now() + (mode === 'demo' ? 4000 : 1500)
@@ -771,7 +777,13 @@ export default function App() {
     prevMotionFixRef.current = liveFix
 
     const inferred = inferTravelMode(liveFix.speed, travelModeRef.current, derivedSpeed)
-    if (travelModeRef.current == null) {
+    const holdUserMode = Date.now() < userModeHoldUntil.current
+    // While the user hold is active, keep their Walk/Drive toggle — ignore slow GPS flips.
+    if (holdUserMode) {
+      travelModeRef.current = routeMode
+      if (travelMode !== routeMode) setTravelMode(routeMode)
+      travelModeSwitchStreak.current = 0
+    } else if (travelModeRef.current == null) {
       travelModeRef.current = inferred
       setTravelMode(inferred)
       travelModeSwitchStreak.current = 0
@@ -781,7 +793,9 @@ export default function App() {
       travelModeSwitchStreak.current = 0
     }
     // Walk switch: act on first confirmed slow sample (parking-lot walk). Drive needs 2 ticks.
+    // Never auto-flip during the post-Navigate user-mode hold.
     const confirmedModeSwitch =
+      !holdUserMode &&
       inferred !== travelModeRef.current &&
       (inferred === 'walk'
         ? travelModeSwitchStreak.current >= 1
@@ -789,9 +803,14 @@ export default function App() {
     // Painted corridor lags motion mode when a prior recalculate failed — keep retrying.
     const corridorMode = corridorTravelMode(result)
     const stuckModeMismatch =
-      travelModeRef.current != null && travelModeRef.current !== corridorMode
+      !holdUserMode &&
+      travelModeRef.current != null &&
+      travelModeRef.current !== corridorMode
     // First GPS already said walk but Navigate still painted a drive corridor — force walk now.
+    // Do not override an explicit Drive selection.
     const initialWalkNeedsCorridor =
+      !holdUserMode &&
+      routeMode === 'walk' &&
       travelModeRef.current === 'walk' &&
       corridorMode === 'drive' &&
       !result.origin.liveTravelMode
@@ -843,11 +862,13 @@ export default function App() {
     const wantsReroute =
       confirmedOff || confirmedModeSwitch || stuckModeMismatch || initialWalkNeedsCorridor
     // Commit motion mode for this attempt (walk preempts an in-flight drive recalculate).
-    const mode: TravelMode = confirmedModeSwitch
-      ? inferred
-      : initialWalkNeedsCorridor || stuckModeMismatch
-        ? (travelModeRef.current as TravelMode)
-        : (travelModeRef.current ?? inferred)
+    const mode: TravelMode = holdUserMode
+      ? routeMode
+      : confirmedModeSwitch
+        ? inferred
+        : initialWalkNeedsCorridor || stuckModeMismatch
+          ? (travelModeRef.current as TravelMode)
+          : (travelModeRef.current ?? inferred)
     const preemptForWalk = mode === 'walk' && rerouteInFlight.current
     const shouldReroute =
       wantsReroute &&
@@ -893,7 +914,7 @@ export default function App() {
           }
         })
     }
-  }, [liveWatchOn, liveFix, result, journeyIndex, mapGuidance, voiceSteps, indoorNavStarted])
+  }, [liveWatchOn, liveFix, result, journeyIndex, mapGuidance, voiceSteps, indoorNavStarted, routeMode, travelMode])
 
   function bumpJourney(delta: number) {
     manualHoldUntil.current = Date.now() + 10000
@@ -1201,7 +1222,20 @@ export default function App() {
                   type="button"
                   className={routeMode === 'walk' ? 'is-active' : ''}
                   disabled={loading || locating}
-                  onClick={() => setRouteMode('walk')}
+                  onClick={() => {
+                    setRouteMode('walk')
+                    userModeHoldUntil.current = Date.now() + 90_000
+                    travelModeRef.current = 'walk'
+                    setTravelMode('walk')
+                    setResult((prev) =>
+                      prev
+                        ? {
+                            ...prev,
+                            origin: { ...prev.origin, liveTravelMode: 'walk' },
+                          }
+                        : prev,
+                    )
+                  }}
                 >
                   Walk
                 </button>
@@ -1214,9 +1248,23 @@ export default function App() {
                     routeMode === 'drive' ? 'Drive selected' : 'Walk selected'
                   }
                   disabled={loading || locating}
-                  onClick={() =>
-                    setRouteMode((m) => (m === 'walk' ? 'drive' : 'walk'))
-                  }
+                  onClick={() => {
+                    setRouteMode((m) => {
+                      const next = m === 'walk' ? 'drive' : 'walk'
+                      userModeHoldUntil.current = Date.now() + 90_000
+                      travelModeRef.current = next
+                      setTravelMode(next)
+                      setResult((prev) =>
+                        prev
+                          ? {
+                              ...prev,
+                              origin: { ...prev.origin, liveTravelMode: next },
+                            }
+                          : prev,
+                      )
+                      return next
+                    })
+                  }}
                 >
                   <span className="demo-route-mode__knob" />
                 </button>
@@ -1224,7 +1272,20 @@ export default function App() {
                   type="button"
                   className={routeMode === 'drive' ? 'is-active' : ''}
                   disabled={loading || locating}
-                  onClick={() => setRouteMode('drive')}
+                  onClick={() => {
+                    setRouteMode('drive')
+                    userModeHoldUntil.current = Date.now() + 90_000
+                    travelModeRef.current = 'drive'
+                    setTravelMode('drive')
+                    setResult((prev) =>
+                      prev
+                        ? {
+                            ...prev,
+                            origin: { ...prev.origin, liveTravelMode: 'drive' },
+                          }
+                        : prev,
+                    )
+                  }}
                 >
                   Drive
                 </button>

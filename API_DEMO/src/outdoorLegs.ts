@@ -109,8 +109,10 @@ export function resolveOutdoorLegs(result: NavigateResult): OutdoorPlan {
     /live recalculate · drive/i.test(String(result.outdoor?.provider || ''))
   // withLiveDrive on-site / short trips stamp walk geometry and zero drive steps.
   // Must NOT open a DRIVE leg (that re-fetched Google and painted a crow-flies chord).
+  // Explicit Drive selection always wins over leftover walk geometry.
   const walkOnlyTrip =
     !liveDriving &&
+    !liveWalking &&
     ((result.journey.driveSteps ?? 0) === 0 &&
       ((result.journey.walkSteps ?? 0) > 0 ||
         (result.walk?.geometry?.coordinates?.length ?? 0) > 1 ||

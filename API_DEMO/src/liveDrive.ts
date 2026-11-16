@@ -589,15 +589,14 @@ export async function withLiveDrive(
     options?.label?.trim() ||
     (startMode === 'custom' ? `Chosen start (${coordLabel})` : `Current location (${coordLabel})`)
 
-  // User chose Drive — always build a road-network drive to the entrance/unit.
+  // User chose Drive — always build a road-network drive (never fall into walk dots).
   if (preferDrive && toEntrance > AT_ENTRANCE_M) {
     const driveTarget = {
       latitude: result.destination.latitude,
       longitude: result.destination.longitude,
     }
     const indoorSteps = result.journey.steps.filter((step) => step.phase === 'indoor')
-    try {
-      const drive = await fetchDrive(origin, driveTarget)
+    const packDrive = (drive: Awaited<ReturnType<typeof fetchDrive>>) => {
       const steps = [
         ...drive.steps,
         ...indoorSteps.map((step, index) => ({
@@ -613,7 +612,7 @@ export async function withLiveDrive(
           label,
           offsetMiles: Math.round(milesBetween(origin, driveTarget) * 10) / 10,
           startMode,
-          liveTravelMode: 'drive',
+          liveTravelMode: 'drive' as const,
         },
         outdoor: {
           ...result.outdoor,
@@ -633,7 +632,7 @@ export async function withLiveDrive(
           distanceM: 0,
           distanceMiles: 0,
           durationMinutes: 0,
-          geometry: { type: 'LineString', coordinates: [] },
+          geometry: { type: 'LineString' as const, coordinates: [] as [number, number][] },
           steps: [],
         },
         journey: {
@@ -646,13 +645,38 @@ export async function withLiveDrive(
           summary: 'Drive on roads to the destination.',
         },
       }
+    }
+    try {
+      return packDrive(await fetchDrive(origin, driveTarget))
     } catch {
-      /* fall through to walk / prior logic */
+      try {
+        const route = await fetchOsrmRoute(DRIVING_BASES, origin, driveTarget)
+        const steps = stepsFromRoute(route)
+        const distanceM = Math.round(route.distance)
+        const durationS = route.duration
+        return packDrive({
+          steps,
+          distanceM,
+          durationMinutes: Math.round((durationS / 60) * 10) / 10,
+          geometry: { type: 'LineString' as const, coordinates: route.geometry.coordinates },
+          provider: 'OSRM driving (user selected Drive)',
+          traffic: {
+            level: 'Unknown',
+            congestionIndex: 0,
+            averageSpeedMph: durationS > 0 ? Math.round(((distanceM / 1609.344) / (durationS / 3600)) * 10) / 10 : 0,
+            updatedAt: new Date().toISOString(),
+            note: 'OSRM road network (Drive selected).',
+            segments: [],
+          },
+        })
+      } catch {
+        /* keep trying normal drive path below — still not walk */
+      }
     }
   }
 
-  // Walk (default) or nearby — street-network walk, never a crow-flies chord.
-  if (preferWalk || toEntrance <= WALK_FROM_HERE_M) {
+  // Walk (default) only — never steal a user Drive selection into red walk dots.
+  if (!preferDrive && (preferWalk || toEntrance <= WALK_FROM_HERE_M)) {
     const indoorSteps = result.journey.steps.filter((step) => step.phase === 'indoor')
     let walkSteps: JourneyStep[] = []
     let walkGeom: [number, number][] = [[origin.longitude, origin.latitude]]
