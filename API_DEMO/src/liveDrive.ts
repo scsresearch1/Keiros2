@@ -569,7 +569,12 @@ const WALK_FROM_HERE_M = 900
 export async function withLiveDrive(
   result: NavigateResult,
   origin: LatLng,
-  options?: { label?: string; startMode?: 'live' | 'custom' },
+  options?: {
+    label?: string
+    startMode?: 'live' | 'custom'
+    /** User toggle before Navigate — default walk. */
+    travelMode?: 'walk' | 'drive'
+  },
 ): Promise<NavigateResult> {
   const entrance = {
     latitude: result.entrance?.latitude ?? result.destination.latitude,
@@ -577,13 +582,77 @@ export async function withLiveDrive(
   }
   const toEntrance = meters(origin, entrance)
   const startMode = options?.startMode ?? 'live'
+  const preferDrive = options?.travelMode === 'drive'
+  const preferWalk = options?.travelMode !== 'drive'
   const coordLabel = `${origin.latitude.toFixed(5)}, ${origin.longitude.toFixed(5)}`
   const label =
     options?.label?.trim() ||
     (startMode === 'custom' ? `Chosen start (${coordLabel})` : `Current location (${coordLabel})`)
 
-  // Already on site or nearby — never send the user to parking and walk back.
-  if (toEntrance <= WALK_FROM_HERE_M) {
+  // User chose Drive — always build a road-network drive to the entrance/unit.
+  if (preferDrive && toEntrance > AT_ENTRANCE_M) {
+    const driveTarget = {
+      latitude: result.destination.latitude,
+      longitude: result.destination.longitude,
+    }
+    const indoorSteps = result.journey.steps.filter((step) => step.phase === 'indoor')
+    try {
+      const drive = await fetchDrive(origin, driveTarget)
+      const steps = [
+        ...drive.steps,
+        ...indoorSteps.map((step, index) => ({
+          ...step,
+          index: drive.steps.length + index,
+        })),
+      ]
+      return {
+        ...result,
+        origin: {
+          latitude: origin.latitude,
+          longitude: origin.longitude,
+          label,
+          offsetMiles: Math.round(milesBetween(origin, driveTarget) * 10) / 10,
+          startMode,
+          liveTravelMode: 'drive',
+        },
+        outdoor: {
+          ...result.outdoor,
+          provider: drive.provider,
+          distanceM: drive.distanceM,
+          distanceMiles: Math.round((drive.distanceM / 1609.344) * 10) / 10,
+          durationMinutes: drive.durationMinutes,
+          geometry: drive.geometry,
+          steps: drive.steps,
+          traffic: {
+            ...drive.traffic,
+            note: 'Driving on roads to destination (user selected Drive).',
+          },
+        },
+        walk: {
+          provider: 'deferred until walk',
+          distanceM: 0,
+          distanceMiles: 0,
+          durationMinutes: 0,
+          geometry: { type: 'LineString', coordinates: [] },
+          steps: [],
+        },
+        journey: {
+          ...result.journey,
+          totalSteps: steps.length,
+          driveSteps: drive.steps.length,
+          outdoorSteps: drive.steps.length,
+          walkSteps: 0,
+          steps,
+          summary: 'Drive on roads to the destination.',
+        },
+      }
+    } catch {
+      /* fall through to walk / prior logic */
+    }
+  }
+
+  // Walk (default) or nearby — street-network walk, never a crow-flies chord.
+  if (preferWalk || toEntrance <= WALK_FROM_HERE_M) {
     const indoorSteps = result.journey.steps.filter((step) => step.phase === 'indoor')
     let walkSteps: JourneyStep[] = []
     let walkGeom: [number, number][] = [[origin.longitude, origin.latitude]]
@@ -657,6 +726,7 @@ export async function withLiveDrive(
         label,
         offsetMiles: Math.round(milesBetween(origin, entrance) * 10) / 10,
         startMode,
+        liveTravelMode: 'walk',
       },
       parking: {
         latitude: origin.latitude,
@@ -680,7 +750,7 @@ export async function withLiveDrive(
           note:
             toEntrance <= AT_ENTRANCE_M
               ? 'You are already at the building — skip driving to parking.'
-              : 'Close enough to walk — no drive to parking.',
+              : 'Walking on the street network (user selected Walk).',
           segments: [],
         },
       },

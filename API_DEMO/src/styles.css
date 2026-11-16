@@ -290,7 +290,65 @@ button:disabled {
   display: flex;
   align-items: center;
   justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 0.85rem;
+}
+
+.demo-route-mode {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 42px;
+  white-space: nowrap;
+  margin-right: auto;
+}
+
+.demo-route-mode > button:not(.demo-route-mode__switch) {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  padding: 0;
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.demo-route-mode > button:not(.demo-route-mode__switch).is-active {
+  color: var(--ink);
+}
+
+.demo-route-mode__switch {
+  position: relative;
+  width: 46px;
+  height: 26px;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: #0f766e;
+  box-shadow: none;
+  cursor: pointer;
+}
+
+.demo-route-mode__switch.is-drive {
+  background: linear-gradient(135deg, #0ea5e9, #2563eb);
+  border-color: transparent;
+}
+
+.demo-route-mode__knob {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 160ms ease;
+}
+
+.demo-route-mode__switch.is-drive .demo-route-mode__knob {
+  transform: translateX(20px);
 }
 
 /* Via parking checkbox — disabled for now

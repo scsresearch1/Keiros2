@@ -137,6 +137,8 @@ export default function App() {
   const [startMode, setStartMode] = useState<StartMode>('live')
   /** Via parking UI/flow disabled for now — always point-to-point to the unit. */
   // const [viaParking, setViaParking] = useState(false)
+  /** Outdoor mode before Navigate — Walk is default. */
+  const [routeMode, setRouteMode] = useState<'walk' | 'drive'>('walk')
   /** Live is the default start — GPS is read when the user taps Navigate. */
   const [startReady, setStartReady] = useState(true)
   const [liveSelected, setLiveSelected] = useState(true)
@@ -495,17 +497,18 @@ export default function App() {
         routed = await withLiveDrive(nav, origin, {
           label: origin.label,
           startMode: mode === 'custom' ? 'custom' : 'live',
+          travelMode: routeMode,
         })
       }
       // Stamp viaParking false — outdoor map goes straight toward destination (no parking stop).
+      // Keep the user's Walk/Drive choice as liveTravelMode so the map paints the right corridor.
       setResult({
         ...routed,
-        // Fresh Navigate: clear live recalculate anchors so S is only this session start.
         origin: {
           ...routed.origin,
           viaParking: false,
           liveFrom: undefined,
-          liveTravelMode: undefined,
+          liveTravelMode: routeMode,
         },
         // ...(dbParking && routed.parking?.mode === 'database'
         //   ? {
@@ -530,9 +533,9 @@ export default function App() {
       mapGuidanceSig.current = ''
       offRouteStreak.current = 0
       rerouteInFlight.current = false
-      travelModeRef.current = null
+      travelModeRef.current = routeMode
       travelModeSwitchStreak.current = 0
-      setTravelMode(null)
+      setTravelMode(routeMode)
       prevMotionFixRef.current = null
       // Short hold so step voice settles — do not block off-route recalculation for long.
       manualHoldUntil.current = Date.now() + (mode === 'demo' ? 4000 : 1500)
@@ -623,6 +626,7 @@ export default function App() {
     setStartReady(true)
     setLiveSelected(true)
     setLiveNav(true)
+    setRouteMode('walk')
     setCustomOrigin(null)
     setPickerOpen(false)
   }
@@ -1188,28 +1192,52 @@ export default function App() {
               onChange={selectUnit}
             />
             <div className="demo-controls__go">
-              {/* Via parking — disabled for now
-              <label className="demo-via-parking">
-                <input
-                  type="checkbox"
-                  checked={viaParking}
-                  onChange={(e) => setViaParking(e.target.checked)}
-                />
-                Via parking
-              </label>
-              */}
+              <div
+                className="demo-route-mode"
+                role="group"
+                aria-label="Travel mode"
+              >
+                <button
+                  type="button"
+                  className={routeMode === 'walk' ? 'is-active' : ''}
+                  disabled={loading || locating}
+                  onClick={() => setRouteMode('walk')}
+                >
+                  Walk
+                </button>
+                <button
+                  type="button"
+                  role="switch"
+                  className={`demo-route-mode__switch${routeMode === 'drive' ? ' is-drive' : ''}`}
+                  aria-checked={routeMode === 'drive'}
+                  aria-label={
+                    routeMode === 'drive' ? 'Drive selected' : 'Walk selected'
+                  }
+                  disabled={loading || locating}
+                  onClick={() =>
+                    setRouteMode((m) => (m === 'walk' ? 'drive' : 'walk'))
+                  }
+                >
+                  <span className="demo-route-mode__knob" />
+                </button>
+                <button
+                  type="button"
+                  className={routeMode === 'drive' ? 'is-active' : ''}
+                  disabled={loading || locating}
+                  onClick={() => setRouteMode('drive')}
+                >
+                  Drive
+                </button>
+              </div>
               <button type="submit" disabled={loading || locating || !canNavigate}>
                 {loading ? 'Calling API…' : 'Navigate'}
               </button>
             </div>
           </div>
           <p className="demo-hint demo-hint--tight">
-            {/* {viaParking
-              ? databaseParking
-                ? `Drive to “${databaseParking.label}” (database parking) → walk pathways to entrance → indoor.`
-                : 'Via parking needs a Parking location in this property’s database (e.g. Black truck).'
-              : 'Point-to-point: your start → entrance → unit (no parking stop).'} */}
-            Point-to-point: your start → entrance → unit.
+            {routeMode === 'walk'
+              ? 'Walk along streets / pathways: your start → entrance → unit.'
+              : 'Drive on roads: your start → destination.'}
           </p>
         </section>
       </form>
