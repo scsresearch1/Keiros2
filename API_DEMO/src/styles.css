@@ -1847,9 +1847,26 @@ code {
     margin-top: 0.15rem;
   }
 
-  .demo-controls__go > button {
+  .demo-controls__go > button[type='submit'] {
     min-width: 0;
     flex: 1;
+  }
+
+  .demo-route-mode {
+    gap: 0.35rem;
+    min-height: 36px;
+    margin-right: 0;
+    width: 100%;
+    justify-content: center;
+  }
+
+  .demo-route-mode__switch {
+    width: 2.6rem;
+    height: 1.45rem;
+  }
+
+  .demo-route-mode__switch.is-drive .demo-route-mode__knob {
+    transform: translateX(16px);
   }
 
   .demo-mode {
