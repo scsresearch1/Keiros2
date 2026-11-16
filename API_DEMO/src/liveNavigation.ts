@@ -432,9 +432,11 @@ export type PuckAimTarget = {
 }
 
 /**
- * Google-class puck pose: stick to the corridor and point along it while on-route.
- * Near the destination (or when standing / compass-frozen), face the aim pin — never
- * leave the arrow stuck pointing north while D is beside you.
+ * Google-class puck pose:
+ * - Moving → face the way you are actually walking/driving (even if away from D)
+ * - On-route and moving with the corridor → follow look-ahead toward D
+ * - Standing → compass / last course (not locked to D)
+ * Destination bearing is last resort only when no motion/compass signal exists.
  */
 export function resolvePuckPose(
   fix: LiveFix,
@@ -465,68 +467,95 @@ export function resolvePuckPose(
     progress!.snapped != null &&
     progress!.routeHeadingDeg != null
 
-  // HARD RULE: when we know D, heading must face D (never reverse / downward).
-  if (aimBearing != null) {
-    const snap = onRoute && progress!.snapped ? progress!.snapped : null
-    const t =
-      snap != null ? Math.min(0.35, Math.max(0.08, (fix.accuracy || 15) / 80)) : 0
-    let heading = normalizeHeading(aimBearing)
-    // Optional: ease along the corridor only if it still points toward D.
-    if (onRoute && progress!.routeHeadingDeg != null) {
-      const routeH = normalizeHeading(progress!.routeHeadingDeg)
-      const disagree = Math.abs(((aimBearing - routeH + 540) % 360) - 180)
-      if (disagree < 70) {
-        const d = ((routeH - aimBearing + 540) % 360) - 180
-        heading = normalizeHeading(aimBearing + d * 0.4)
-      }
-    }
-    return {
-      lat: snap ? snap.latitude * (1 - t) + fix.latitude * t : fix.latitude,
-      lng: snap ? snap.longitude * (1 - t) + fix.longitude * t : fix.longitude,
-      heading,
-      onRoute: Boolean(snap),
-      source: 'step',
-    }
-  }
-
   let movedBearing: number | null = null
+  let movedM = 0
   if (prevFix) {
-    const moved = haversineM(prevFix.latitude, prevFix.longitude, fix.latitude, fix.longitude)
-    if (moved > 1.2) {
+    movedM = haversineM(prevFix.latitude, prevFix.longitude, fix.latitude, fix.longitude)
+    if (movedM > 1.5 || (movedM > 0.8 && speed >= 0.6)) {
       movedBearing = bearingDeg(prevFix.latitude, prevFix.longitude, fix.latitude, fix.longitude)
     }
   }
 
+  const snapPos = () => {
+    if (onRoute && progress!.snapped) {
+      const snap = progress!.snapped
+      const t = Math.min(0.35, Math.max(0.08, (fix.accuracy || 15) / 80))
+      return {
+        lat: snap.latitude * (1 - t) + fix.latitude * t,
+        lng: snap.longitude * (1 - t) + fix.longitude * t,
+      }
+    }
+    return { lat: fix.latitude, lng: fix.longitude }
+  }
+
+  // 1) Actually moving → arrow = travel direction (shows walking backward correctly).
   if (movedBearing != null) {
+    const pos = snapPos()
+    if (onRoute && progress!.routeHeadingDeg != null) {
+      const routeH = normalizeHeading(progress!.routeHeadingDeg)
+      const vsRoute = Math.abs(((movedBearing - routeH + 540) % 360) - 180)
+      // Moving with the route → keep corridor look-ahead (toward D along the path).
+      if (vsRoute < 85) {
+        return {
+          ...pos,
+          heading: routeH,
+          onRoute: true,
+          source: 'route',
+        }
+      }
+      // Moving against the route (walking back) → show real motion, not fake "forward".
+    }
     return {
-      lat: fix.latitude,
-      lng: fix.longitude,
+      ...pos,
       heading: movedBearing,
       onRoute: false,
       source: 'gps-move',
     }
   }
 
-  if (fix.headingSource === 'gps' && fix.heading != null && speed >= 1.0) {
-    return {
-      lat: fix.latitude,
-      lng: fix.longitude,
-      heading: normalizeHeading(fix.heading),
-      onRoute: false,
-      source: 'gps-course',
+  // 2) GPS course while moving.
+  if (fix.headingSource === 'gps' && fix.heading != null && speed >= 0.7) {
+    const course = normalizeHeading(fix.heading)
+    const pos = snapPos()
+    if (onRoute && progress!.routeHeadingDeg != null) {
+      const routeH = normalizeHeading(progress!.routeHeadingDeg)
+      const vsRoute = Math.abs(((course - routeH + 540) % 360) - 180)
+      if (vsRoute < 85) {
+        return { ...pos, heading: routeH, onRoute: true, source: 'route' }
+      }
     }
+    return { ...pos, heading: course, onRoute: false, source: 'gps-course' }
   }
 
+  // 3) Standing on corridor → face along remaining path toward D (not frozen north).
+  if (onRoute && progress!.snapped && progress!.routeHeadingDeg != null) {
+    const pos = snapPos()
+    let heading = normalizeHeading(progress!.routeHeadingDeg)
+    // Keep look-ahead toward D if the tangent was reversed.
+    if (aimBearing != null) {
+      const disagree = Math.abs(((aimBearing - heading + 540) % 360) - 180)
+      if (disagree > 100) heading = normalizeHeading(heading + 180)
+    }
+    return { ...pos, heading, onRoute: true, source: 'route' }
+  }
+
+  // 4) Nearby corridor heading.
   if (progress?.routeHeadingDeg != null && progress.distanceToRouteM < 55) {
+    let heading = normalizeHeading(progress.routeHeadingDeg)
+    if (aimBearing != null) {
+      const disagree = Math.abs(((aimBearing - heading + 540) % 360) - 180)
+      if (disagree > 100) heading = normalizeHeading(heading + 180)
+    }
     return {
       lat: fix.latitude,
       lng: fix.longitude,
-      heading: normalizeHeading(progress.routeHeadingDeg),
+      heading,
       onRoute: false,
       source: 'route',
     }
   }
 
+  // 5) Compass / phone facing while standing.
   if (fix.heading != null) {
     return {
       lat: fix.latitude,
@@ -534,6 +563,17 @@ export function resolvePuckPose(
       heading: normalizeHeading(fix.heading),
       onRoute: false,
       source: fix.headingSource === 'compass' ? 'compass' : 'gps-course',
+    }
+  }
+
+  // 6) Last resort only — no motion/compass: point at D so the chevron is not blank.
+  if (aimBearing != null) {
+    return {
+      lat: fix.latitude,
+      lng: fix.longitude,
+      heading: normalizeHeading(aimBearing),
+      onRoute: false,
+      source: 'step',
     }
   }
 

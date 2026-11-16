@@ -17,7 +17,7 @@ import {
   fetchPedestrianRoute,
   isLongCrowFliesPath,
 } from '../pedestrianRoute'
-import { bearingDeg, resolvePuckPose, type LiveFix, type LiveProgress } from '../liveNavigation'
+import { resolvePuckPose, type LiveFix, type LiveProgress } from '../liveNavigation'
 import { metersBetween, resolveOutdoorLegs, type OutdoorLeg } from '../outdoorLegs'
 
 /** Highlight extracted site driveways so the visible driveway is obvious. */
@@ -1349,32 +1349,19 @@ export function OutdoorMap({
       longitude: result.destination.longitude,
     }
     const pose = resolvePuckPose(liveFix, liveProgress, prev, aimTarget)
-    // HARD RULE: chevron + map-up always face the destination. Never point reverse/down.
-    const toDestHeading = bearingDeg(
-      pose.lat,
-      pose.lng,
-      aimTarget.latitude,
-      aimTarget.longitude,
-    )
-    let rawHeading = toDestHeading
-    // Soft pull along the corridor only when it still aims toward D (not opposite).
-    if (
-      pose.heading != null &&
-      Number.isFinite(pose.heading) &&
-      headingDeltaDeg(pose.heading, toDestHeading) < 75
-    ) {
-      const d = ((pose.heading - toDestHeading + 540) % 360) - 180
-      rawHeading = normalizeDeg(toDestHeading + d * 0.35)
-    }
-
-    // Snap instantly on big corrections so a reversed heading cannot linger.
-    if (Number.isFinite(rawHeading)) {
+    // Use real travel / route heading — do NOT lock to D (that faked "forward" while walking back).
+    let rawHeading = pose.heading
+    if (rawHeading != null && Number.isFinite(rawHeading)) {
       const prevH = smoothHeadingRef.current
-      if (prevH == null || headingDeltaDeg(prevH, rawHeading) > 60) {
+      // Motion / wrong-way flips must snap; small noise can ease.
+      const trustMove = pose.source === 'gps-move' || pose.source === 'gps-course'
+      const trustRoute = pose.source === 'route' || pose.source === 'step'
+      if (prevH == null || headingDeltaDeg(prevH, rawHeading) > (trustMove ? 35 : 70)) {
         smoothHeadingRef.current = rawHeading
       } else {
+        const t = trustMove ? 0.75 : trustRoute ? 0.55 : 0.3
         const d = ((rawHeading - prevH + 540) % 360) - 180
-        smoothHeadingRef.current = normalizeDeg(prevH + d * 0.85)
+        smoothHeadingRef.current = normalizeDeg(prevH + d * t)
       }
     }
     const heading = smoothHeadingRef.current
