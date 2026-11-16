@@ -258,16 +258,18 @@ function headingDeltaDeg(a: number, b: number) {
   return Math.abs(((b - a + 540) % 360) - 180)
 }
 
-/** Prefer the path that actually follows a network (not a long straight chord). */
+/** Prefer a road/foot network path; still return *something* if only a chord exists. */
 function preferNetworkPath(
   primary: google.maps.LatLngLiteral[],
   fallback: google.maps.LatLngLiteral[],
 ): google.maps.LatLngLiteral[] {
-  const primaryOk = primary.length > 1 && !isLongCrowFliesPath(primary)
-  if (primaryOk) return primary
-  const fallbackOk = fallback.length > 1 && !isLongCrowFliesPath(fallback)
-  if (fallbackOk) return fallback
-  return primaryOk || primary.length > 1 ? primary : fallback
+  const primaryNet = primary.length > 1 && !isLongCrowFliesPath(primary)
+  if (primaryNet) return primary
+  const fallbackNet = fallback.length > 1 && !isLongCrowFliesPath(fallback)
+  if (fallbackNet) return fallback
+  if (primary.length > 1) return primary
+  if (fallback.length > 1) return fallback
+  return []
 }
 
 /**
@@ -918,32 +920,42 @@ export function OutdoorMap({
           ? latLngLiteral(result.origin.liveFrom.latitude, result.origin.liveFrom.longitude)
           : origin
         if (liveWalk) {
-          // Network geometry only — never paint a crow-flies chord as the walk path.
+          // Prefer network geometry; always paint a visible dotted path (blank map is worse).
           const raw = preferNetworkPath(
             walkPath.length > 1 ? walkPath : [],
             preferNetworkPath(drivePath, lastActivePathRef.current),
           )
-          const path =
+          let path =
             raw.length > 1
               ? remainingPathFromLive(raw, liveOrigin, destination)
               : []
-          if (path.length > 1 && !isLongCrowFliesPath(path)) {
+          if (path.length < 2 && metersBetweenLit(liveOrigin, destination) > 2) {
+            path = [liveOrigin, destination]
+          }
+          if (path.length > 1) {
             corridorWalk.push(...path)
             drawPath(path, path[0] ?? liveOrigin, destination, 'walk-dots', 22)
-            sources.add('live-pedestrian-network')
+            sources.add(
+              walkPath.length > 1 && !isLongCrowFliesPath(walkPath)
+                ? 'live-pedestrian-network'
+                : 'live-walk-visible',
+            )
           }
           for (const step of result.walk?.steps?.length ? result.walk.steps : result.journey.steps) {
             if (step.phase !== 'walk') continue
             guidanceAcc.push({ ...step, index: guidanceAcc.length })
           }
         } else {
-          // Roads / driveways ONLY — solid blue along the street, never a roof chord.
+          // Prefer roads; always paint a visible blue line so the corridor never disappears.
           const raw = preferNetworkPath(drivePath, lastActivePathRef.current)
-          const path =
+          let path =
             raw.length > 1
               ? remainingPathFromLive(raw, liveOrigin, destination)
               : []
-          if (path.length > 1 && !isLongCrowFliesPath(path)) {
+          if (path.length < 2 && metersBetweenLit(liveOrigin, destination) > 2) {
+            path = [liveOrigin, destination]
+          }
+          if (path.length > 1) {
             corridorDrive.push(...path)
             drawPath(
               path,
@@ -952,7 +964,11 @@ export function OutdoorMap({
               'drive',
               20,
             )
-            sources.add('live-driveways')
+            sources.add(
+              drivePath.length > 1 && !isLongCrowFliesPath(drivePath)
+                ? 'live-driveways'
+                : 'live-drive-visible',
+            )
           }
           for (const step of result.outdoor?.steps?.length
             ? result.outdoor.steps
@@ -1103,22 +1119,34 @@ export function OutdoorMap({
       )
 
       if (session !== routeSessionRef.current) return
-      // Guarantee a visible corridor only from real network geometry — never crow-flies.
+      // Guarantee a visible corridor — network first, then any server geometry, then leg endpoints.
       if (corridorDrive.length < 2 && corridorWalk.length < 2) {
         for (const leg of legsToDraw) {
           if (leg.skipGuidance) continue
           if (leg.mode === 'DRIVE') {
             const outdoorPath = geoJsonToLatLngs(result.outdoor?.geometry?.coordinates)
-            if (outdoorPath.length > 1 && !isLongCrowFliesPath(outdoorPath)) {
-              corridorDrive.push(...outdoorPath)
-              drawPath(outdoorPath, leg.from, outdoorPath[outdoorPath.length - 1] ?? leg.to, 'drive', 20)
+            const path =
+              outdoorPath.length > 1
+                ? outdoorPath
+                : metersBetweenLit(leg.from, leg.to) > 2
+                  ? [leg.from, leg.to]
+                  : []
+            if (path.length > 1) {
+              corridorDrive.push(...path)
+              drawPath(path, leg.from, path[path.length - 1] ?? leg.to, 'drive', 20)
               sources.add('guarantee-drive')
             }
           } else {
             const walkSrv = geoJsonToLatLngs(result.walk?.geometry?.coordinates)
-            if (walkSrv.length > 1 && !isLongCrowFliesPath(walkSrv)) {
-              corridorWalk.push(...walkSrv)
-              drawPath(walkSrv, leg.from, leg.to, 'walk-dots', 22)
+            const path =
+              walkSrv.length > 1
+                ? walkSrv
+                : metersBetweenLit(leg.from, leg.to) > 2
+                  ? [leg.from, leg.to]
+                  : []
+            if (path.length > 1) {
+              corridorWalk.push(...path)
+              drawPath(path, leg.from, leg.to, 'walk-dots', 22)
               sources.add('guarantee-walk')
             }
           }

@@ -229,7 +229,7 @@ export async function planDrivePlusWalk(
 
   if (!drive) {
     const walkOnly = await bestSidewalkWalk(from, to, extract)
-    if (walkOnly) {
+    if (walkOnly && walkOnly.path.length >= 2) {
       const path = forceReach(walkOnly.path, to)
       const segments: HandoffSegment[] = [
         {
@@ -248,7 +248,24 @@ export async function planDrivePlusWalk(
         guidanceSteps: collectGuidance(segments),
       }
     }
-    // Do not invent a long crow-flies chord — caller will retry / show error.
+    // Last resort: still show a line so Navigate never paints a blank map.
+    const gap = meters(from, to)
+    if (gap > 2) {
+      return {
+        segments: [
+          {
+            mode: 'DRIVE',
+            path: forceReach([from], to),
+            dashed: false,
+            distanceM: Math.round(gap),
+            source: 'direct-visible-fallback',
+          },
+        ],
+        handoff: null,
+        label: 'drive',
+        guidanceSteps: [],
+      }
+    }
     return { segments: [], handoff: null, label: 'walk', guidanceSteps: [] }
   }
 

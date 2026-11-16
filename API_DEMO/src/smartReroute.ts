@@ -92,16 +92,49 @@ export async function rerouteFromLiveFix(
       const walkTarget = dest
       const fromLit = toLit(fix)
       const toLitDest = toLit(walkTarget)
-      // Real network only — never invent a GPS→dest crow-flies chord.
+      // Prefer real network; if routing fails, keep prior corridor so the line never vanishes.
       const ped = await fetchPedestrianRoute(fromLit, toLitDest).catch(() => null)
-      if (!ped?.path || isLongCrowFliesPath(ped.path)) return null
-      const path = ped.path
-      const distanceM = ped.distanceM
-      const walkSteps = ped.steps.map((s, i) => ({ ...s, index: i, phase: 'walk' as const }))
+      const priorWalk = (result.walk?.geometry?.coordinates ?? []).map(([lng, lat]) => ({
+        lat,
+        lng,
+      }))
+      const priorDrive = (result.outdoor?.geometry?.coordinates ?? []).map(([lng, lat]) => ({
+        lat,
+        lng,
+      }))
+      const path =
+        ped?.path && ped.path.length > 1 && !isLongCrowFliesPath(ped.path)
+          ? ped.path
+          : ped?.path && ped.path.length > 1
+            ? ped.path
+            : priorWalk.length > 1
+              ? priorWalk
+              : priorDrive.length > 1
+                ? priorDrive
+                : [fromLit, toLitDest]
+      const distanceM = ped?.distanceM ?? Math.round(metersBetween(fromLit, toLitDest))
+      const durationSec = ped?.durationSec ?? Math.max(60, Math.round(distanceM / 1.4))
+      const walkSteps = (ped?.steps?.length
+        ? ped.steps
+        : [
+            {
+              id: 'walk-keep-0',
+              phase: 'walk' as const,
+              index: 0,
+              instruction: 'Walk toward your destination',
+              latitude: fix.latitude,
+              longitude: fix.longitude,
+              distanceM,
+              durationSec,
+              geometry: pathToGeoJson(path),
+            },
+          ]
+      ).map((s, i) => ({ ...s, index: i, phase: 'walk' as const }))
       const steps = [
         ...walkSteps,
         ...indoor.map((s, i) => ({ ...s, index: walkSteps.length + i })),
       ]
+      const provider = ped?.provider || 'previous corridor (walk)'
       return {
         ...result,
         origin: stampedOrigin,
@@ -115,15 +148,15 @@ export async function rerouteFromLiveFix(
           steps: [],
           traffic: {
             ...result.outdoor.traffic,
-            note: `Walking · ${ped.provider}`,
+            note: `Walking · ${provider}`,
             updatedAt: new Date().toISOString(),
           },
         },
         walk: {
-          provider: ped.provider,
+          provider,
           distanceM,
           distanceMiles: Math.round((distanceM / 1609.344) * 10) / 10,
-          durationMinutes: Math.round((ped.durationSec / 60) * 10) / 10,
+          durationMinutes: Math.round((durationSec / 60) * 10) / 10,
           geometry: { type: 'LineString', coordinates: pathToGeoJson(path) },
           steps: walkSteps,
         },
@@ -134,7 +167,7 @@ export async function rerouteFromLiveFix(
           outdoorSteps: 0,
           walkSteps: walkSteps.length,
           steps,
-          summary: 'Recalculated on the pedestrian / street network.',
+          summary: 'Recalculated walk corridor.',
         },
       }
     }
@@ -165,17 +198,64 @@ export async function rerouteFromLiveFix(
     }
     if (!routePath) {
       const osrm = await fetchOsrmDrivingRoute(fromLit, toLitDrive).catch(() => null)
-      if (!osrm || isLongCrowFliesPath(osrm.path)) return null
-      routePath = osrm.path
-      routeDistanceM = osrm.distanceM
-      routeDurationSec = osrm.durationSec
-      routeProvider = 'OSRM driving (live recalculate · drive)'
-      routeSteps = osrm.steps.map((s, i) => ({
-        ...s,
-        index: i,
-        phase: 'drive' as const,
-        instruction: s.instruction?.replace(/^Walk/i, 'Drive') || s.instruction,
+      if (osrm?.path && osrm.path.length > 1) {
+        routePath = osrm.path
+        routeDistanceM = osrm.distanceM
+        routeDurationSec = osrm.durationSec
+        routeProvider = 'OSRM driving (live recalculate · drive)'
+        routeSteps = osrm.steps.map((s, i) => ({
+          ...s,
+          index: i,
+          phase: 'drive' as const,
+          instruction: s.instruction?.replace(/^Walk/i, 'Drive') || s.instruction,
+        }))
+      }
+    }
+    if (!routePath) {
+      // Keep prior road geometry so the blue line does not disappear mid-nav.
+      const prior = (result.outdoor?.geometry?.coordinates ?? []).map(([lng, lat]) => ({
+        lat,
+        lng,
       }))
+      if (prior.length > 1) {
+        routePath = prior
+        routeDistanceM = result.outdoor.distanceM || Math.round(metersBetween(fromLit, toLitDrive))
+        routeDurationSec = Math.max(30, Math.round(routeDistanceM / 11))
+        routeProvider = 'previous corridor (drive)'
+        routeSteps = (result.outdoor.steps?.length
+          ? result.outdoor.steps
+          : [
+              {
+                id: 'drive-keep-0',
+                phase: 'drive' as const,
+                index: 0,
+                instruction: 'Continue on the route',
+                latitude: fix.latitude,
+                longitude: fix.longitude,
+                distanceM: routeDistanceM,
+                durationSec: routeDurationSec,
+                geometry: pathToGeoJson(prior),
+              },
+            ]) as JourneyStep[]
+      } else {
+        routePath = [fromLit, toLitDrive]
+        routeDistanceM = Math.round(metersBetween(fromLit, toLitDrive))
+        routeDurationSec = Math.max(30, Math.round(routeDistanceM / 11))
+        routeProvider = 'direct visible (drive fallback)'
+        routeSteps = [
+          {
+            id: 'drive-fallback-0',
+            phase: 'drive',
+            index: 0,
+            instruction: 'Drive toward your destination',
+            latitude: fix.latitude,
+            longitude: fix.longitude,
+            distanceM: routeDistanceM,
+            durationSec: routeDurationSec,
+            geometry: pathToGeoJson(routePath),
+          },
+        ]
+      }
     }
 
     const driveSteps = routeSteps
