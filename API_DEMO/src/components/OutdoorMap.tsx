@@ -1229,12 +1229,18 @@ export function OutdoorMap({
     const prev = lastLiveRef.current
     const speed = liveFix.speed != null && Number.isFinite(liveFix.speed) ? liveFix.speed : 0
 
-    // Google-class pose: on-route → stick to corridor + point along look-ahead tangent.
-    const pose = resolvePuckPose(liveFix, liveProgress, prev)
+    // Aim the arrow at the outdoor destination (D). Near D / slow walk this overrides
+    // a frozen compass that otherwise leaves the chevron pointing north.
+    const aimTarget = {
+      latitude: result.destination.latitude,
+      longitude: result.destination.longitude,
+    }
+    const pose = resolvePuckPose(liveFix, liveProgress, prev, aimTarget)
     let rawHeading = pose.heading
-    // If off-route and we have a clear next step, keep a light pull toward it.
+    // If off-route, pull toward the active outdoor step / destination.
     if (
       !pose.onRoute &&
+      pose.source !== 'step' &&
       rawHeading != null &&
       activeStep &&
       activeStep.phase !== 'indoor' &&
@@ -1248,16 +1254,17 @@ export function OutdoorMap({
         activeStep.longitude,
       )
       const delta = ((toStep - rawHeading + 540) % 360) - 180
-      if (Math.abs(delta) < 90) rawHeading = normalizeDeg(rawHeading + delta * 0.25)
+      if (Math.abs(delta) < 120) rawHeading = normalizeDeg(rawHeading + delta * 0.45)
     }
 
-    // Route heading is high-trust → snappy blend; compass/GPS noise → heavier damp.
+    // Route / destination aim is high-trust → snappy blend; compass/GPS noise → heavier damp.
     if (rawHeading != null && Number.isFinite(rawHeading)) {
       const prevH = smoothHeadingRef.current
-      if (prevH == null || pose.source === 'route') {
+      const highTrust = pose.source === 'route' || pose.source === 'step'
+      if (prevH == null || highTrust) {
         const delta = prevH == null ? 180 : headingDeltaDeg(prevH, rawHeading)
-        // Catch corners fast when following the painted path.
-        const t = pose.source === 'route' ? (delta > 25 ? 0.85 : 0.55) : 0.28
+        // Catch corners / face D fast — do not linger pointing north.
+        const t = highTrust ? (delta > 25 ? 0.9 : 0.65) : 0.28
         if (prevH == null) smoothHeadingRef.current = rawHeading
         else {
           const d = ((rawHeading - prevH + 540) % 360) - 180
@@ -1400,7 +1407,7 @@ export function OutdoorMap({
       accuracyRef.current.setCenter(pos)
       accuracyRef.current.setRadius(accRadius)
     }
-  }, [liveFix, liveProgress, followLive, mapReady, activeStep])
+  }, [liveFix, liveProgress, followLive, mapReady, activeStep, result.destination.latitude, result.destination.longitude])
 
   // When Live GPS turns off, reset to north-up and re-assert the stored basemap.
   useEffect(() => {

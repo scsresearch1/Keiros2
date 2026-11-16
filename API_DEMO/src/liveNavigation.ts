@@ -390,14 +390,21 @@ export function matchLiveProgress(
   }
 }
 
+export type PuckAimTarget = {
+  latitude: number
+  longitude: number
+}
+
 /**
  * Google-class puck pose: stick to the corridor and point along it while on-route.
- * Off-route → GPS movement / course. Compass is last resort only.
+ * Near the destination (or when standing / compass-frozen), face the aim pin — never
+ * leave the arrow stuck pointing north while D is beside you.
  */
 export function resolvePuckPose(
   fix: LiveFix,
   progress: LiveProgress | null | undefined,
   prevFix: LiveFix | null,
+  aim?: PuckAimTarget | null,
 ): {
   lat: number
   lng: number
@@ -405,6 +412,23 @@ export function resolvePuckPose(
   onRoute: boolean
   source: 'route' | 'gps-move' | 'gps-course' | 'compass' | 'step' | null
 } {
+  const speed =
+    fix.speed != null && Number.isFinite(fix.speed) ? Math.max(0, fix.speed) : 0
+  const aimOk =
+    aim != null &&
+    Number.isFinite(aim.latitude) &&
+    Number.isFinite(aim.longitude) &&
+    !(aim.latitude === 0 && aim.longitude === 0)
+  const distToAim = aimOk
+    ? haversineM(fix.latitude, fix.longitude, aim!.latitude, aim!.longitude)
+    : Infinity
+  const aimBearing = aimOk
+    ? bearingDeg(fix.latitude, fix.longitude, aim!.latitude, aim!.longitude)
+    : null
+  // Arrival / short last meters: always face the pin (matches Google arrival cue).
+  const faceAim =
+    aimBearing != null && (distToAim < 70 || (speed < 1.15 && distToAim < 160))
+
   const onRoute =
     Boolean(progress) &&
     !progress!.offRoute &&
@@ -419,9 +443,9 @@ export function resolvePuckPose(
     return {
       lat: snap.latitude * (1 - t) + fix.latitude * t,
       lng: snap.longitude * (1 - t) + fix.longitude * t,
-      heading: normalizeHeading(progress!.routeHeadingDeg),
+      heading: normalizeHeading(faceAim ? aimBearing! : progress!.routeHeadingDeg),
       onRoute: true,
-      source: 'route',
+      source: faceAim ? 'step' : 'route',
     }
   }
 
@@ -433,7 +457,8 @@ export function resolvePuckPose(
     }
   }
 
-  if (movedBearing != null) {
+  // Moving with a clear track → keep movement bearing, unless we're almost at D.
+  if (movedBearing != null && !faceAim) {
     return {
       lat: fix.latitude,
       lng: fix.longitude,
@@ -443,7 +468,17 @@ export function resolvePuckPose(
     }
   }
 
-  if (fix.headingSource === 'gps' && fix.heading != null) {
+  if (faceAim && aimBearing != null) {
+    return {
+      lat: fix.latitude,
+      lng: fix.longitude,
+      heading: normalizeHeading(aimBearing),
+      onRoute: false,
+      source: 'step',
+    }
+  }
+
+  if (fix.headingSource === 'gps' && fix.heading != null && speed >= 1.0) {
     return {
       lat: fix.latitude,
       lng: fix.longitude,
@@ -458,9 +493,22 @@ export function resolvePuckPose(
     return {
       lat: fix.latitude,
       lng: fix.longitude,
-      heading: normalizeHeading(progress.routeHeadingDeg),
+      heading: normalizeHeading(
+        faceAim && aimBearing != null ? aimBearing : progress.routeHeadingDeg,
+      ),
       onRoute: false,
-      source: 'route',
+      source: faceAim ? 'step' : 'route',
+    }
+  }
+
+  // Standing / slow: prefer destination over a frozen compass (often stuck at north).
+  if (aimBearing != null && speed < 1.4) {
+    return {
+      lat: fix.latitude,
+      lng: fix.longitude,
+      heading: normalizeHeading(aimBearing),
+      onRoute: false,
+      source: 'step',
     }
   }
 
@@ -471,6 +519,16 @@ export function resolvePuckPose(
       heading: normalizeHeading(fix.heading),
       onRoute: false,
       source: fix.headingSource === 'compass' ? 'compass' : 'gps-course',
+    }
+  }
+
+  if (aimBearing != null) {
+    return {
+      lat: fix.latitude,
+      lng: fix.longitude,
+      heading: normalizeHeading(aimBearing),
+      onRoute: false,
+      source: 'step',
     }
   }
 
