@@ -42,6 +42,34 @@ const FOOT_BASES = [
   'https://routing.openstreetmap.de/routed-foot/route/v1/foot',
 ]
 
+const DRIVING_BASES = [
+  'https://router.project-osrm.org/route/v1/driving',
+  'https://routing.openstreetmap.de/routed-car/route/v1/driving',
+]
+
+/** True when the path is a long straight chord (not a real road/foot network). */
+export function isLongCrowFliesPath(
+  path: { lat: number; lng: number }[],
+  minChordM = 40,
+): boolean {
+  if (path.length < 2) return true
+  const chord = metersBetween(path[0], path[path.length - 1])
+  if (chord < minChordM) return false
+  if (path.length <= 2) return true
+  // A few nearly colinear points still count as a chord (bad engine / fallback).
+  if (path.length <= 5) {
+    let maxOff = 0
+    for (let i = 1; i < path.length - 1; i += 1) {
+      const ab = chord || 1
+      const ap = metersBetween(path[0], path[i])
+      const pb = metersBetween(path[i], path[path.length - 1])
+      maxOff = Math.max(maxOff, Math.abs(ap + pb - ab))
+    }
+    return maxOff < Math.max(8, chord * 0.04)
+  }
+  return false
+}
+
 function metersBetween(a: google.maps.LatLngLiteral, b: google.maps.LatLngLiteral) {
   const R = 6371000
   const toRad = (d: number) => (d * Math.PI) / 180
@@ -164,24 +192,80 @@ async function fetchOsrmFoot(
   throw lastErr ?? new Error('OSRM foot unavailable')
 }
 
+async function fetchOsrmProfile(
+  bases: string[],
+  from: google.maps.LatLngLiteral,
+  to: google.maps.LatLngLiteral,
+  label: string,
+): Promise<PedestrianRoute> {
+  let lastErr: Error | null = null
+  for (const base of bases) {
+    try {
+      const url =
+        `${base}/` +
+        `${from.lng},${from.lat};${to.lng},${to.lat}` +
+        `?overview=full&geometries=geojson&steps=true`
+      const res = await fetch(url)
+      if (!res.ok) throw new Error(`${label} ${res.status}`)
+      const json = (await res.json()) as { routes?: OsrmRoute[]; message?: string }
+      const route = json.routes?.[0]
+      if (!route?.geometry?.coordinates?.length) {
+        throw new Error(json.message || `No ${label} route`)
+      }
+      const path = route.geometry.coordinates.map(([lng, lat]) => ({ lat, lng }))
+      if (isLongCrowFliesPath(path)) {
+        throw new Error(`${label} returned crow-flies chord`)
+      }
+      return {
+        path,
+        distanceM: Math.round(route.distance),
+        durationSec: Math.round(route.duration),
+        steps: stepsFromOsrm(route),
+        provider: label,
+      }
+    } catch (err) {
+      lastErr = err instanceof Error ? err : new Error(String(err))
+    }
+  }
+  throw lastErr ?? new Error(`${label} unavailable`)
+}
+
+/** OSRM car/driving network — real roads/driveways (never a straight chord). */
+export async function fetchOsrmDrivingRoute(
+  from: google.maps.LatLngLiteral,
+  to: google.maps.LatLngLiteral,
+): Promise<PedestrianRoute> {
+  return fetchOsrmProfile(DRIVING_BASES, from, to, 'OSRM driving (road network)')
+}
+
 /**
- * Route for walking: OSRM pedestrian network first, Google WALK only as fallback.
- * No geometric kerb offsets — those cut through buildings.
+ * Route for walking: OSRM foot → Google WALK → OSRM driving (street follow).
+ * Never invent a crow-flies chord — that is what looked like “not following the path”.
  */
 export async function fetchPedestrianRoute(
   from: google.maps.LatLngLiteral,
   to: google.maps.LatLngLiteral,
 ): Promise<PedestrianRoute> {
   try {
-    return await fetchOsrmFoot(from, to)
+    const foot = await fetchOsrmFoot(from, to)
+    if (!isLongCrowFliesPath(foot.path)) return foot
   } catch {
-    const g = await fetchRoadRouteLive(from, to, 'WALK')
-    return {
-      path: g.path,
-      distanceM: g.distanceM,
-      durationSec: g.durationSec,
-      steps: g.steps.map((s) => ({ ...s, phase: 'walk' as const })),
-      provider: 'Google Routes WALK (fallback)',
-    }
+    /* try next */
   }
+  try {
+    const g = await fetchRoadRouteLive(from, to, 'WALK')
+    if (g.path.length > 1 && !isLongCrowFliesPath(g.path)) {
+      return {
+        path: g.path,
+        distanceM: g.distanceM,
+        durationSec: g.durationSec,
+        steps: g.steps.map((s) => ({ ...s, phase: 'walk' as const })),
+        provider: 'Google Routes WALK (fallback)',
+      }
+    }
+  } catch {
+    /* try next */
+  }
+  // Sparse sidewalk areas (e.g. Patriot Way): still follow the residential street.
+  return fetchOsrmDrivingRoute(from, to)
 }

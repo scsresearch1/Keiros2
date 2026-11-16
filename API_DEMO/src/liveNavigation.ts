@@ -425,9 +425,8 @@ export function resolvePuckPose(
   const aimBearing = aimOk
     ? bearingDeg(fix.latitude, fix.longitude, aim!.latitude, aim!.longitude)
     : null
-  // Arrival / short last meters: always face the pin (matches Google arrival cue).
-  const faceAim =
-    aimBearing != null && (distToAim < 70 || (speed < 1.15 && distToAim < 160))
+  // Face D only for the final approach — while on a corridor, follow the path direction.
+  const faceAim = aimBearing != null && distToAim < 28
 
   const onRoute =
     Boolean(progress) &&
@@ -440,12 +439,18 @@ export function resolvePuckPose(
     // Soft stick-to-road: mostly snapped, slight pull toward raw GPS (feels alive).
     const snap = progress!.snapped
     const t = Math.min(0.35, Math.max(0.08, (fix.accuracy || 15) / 80))
+    const routeH = normalizeHeading(progress!.routeHeadingDeg)
+    // Only snap arrow to D when it agrees with travel direction (not back along the line).
+    const useAim =
+      faceAim &&
+      aimBearing != null &&
+      Math.abs(((aimBearing - routeH + 540) % 360) - 180) < 95
     return {
       lat: snap.latitude * (1 - t) + fix.latitude * t,
       lng: snap.longitude * (1 - t) + fix.longitude * t,
-      heading: normalizeHeading(faceAim ? aimBearing! : progress!.routeHeadingDeg),
+      heading: useAim ? normalizeHeading(aimBearing!) : routeH,
       onRoute: true,
-      source: faceAim ? 'step' : 'route',
+      source: useAim ? 'step' : 'route',
     }
   }
 
@@ -457,8 +462,8 @@ export function resolvePuckPose(
     }
   }
 
-  // Moving with a clear track → keep movement bearing, unless we're almost at D.
-  if (movedBearing != null && !faceAim) {
+  // Moving with a clear track → keep movement bearing (path of travel).
+  if (movedBearing != null) {
     return {
       lat: fix.latitude,
       lng: fix.longitude,

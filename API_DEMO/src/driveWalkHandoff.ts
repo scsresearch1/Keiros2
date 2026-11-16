@@ -7,7 +7,7 @@
 import type { JourneyStep } from './api'
 import type { SiteWaysExtract } from './extractSiteWays'
 import { fetchRoadRoute, pathEndGapM, type RoadRoute, type RouteTravelMode } from './googleRoute'
-import { fetchPedestrianRoute } from './pedestrianRoute'
+import { fetchOsrmDrivingRoute, fetchPedestrianRoute, isLongCrowFliesPath } from './pedestrianRoute'
 import { routeOnSiteWays } from './siteGraphRoute'
 
 /** Only switch to walk when the drive network ends this far from the entry door. */
@@ -93,7 +93,7 @@ async function bestDriveRoute(
 
   try {
     const g: RoadRoute = await fetchRoadRoute(from, to, 'DRIVE')
-    if (g.path.length >= 2) {
+    if (g.path.length >= 2 && !isLongCrowFliesPath(g.path)) {
       // Google often stops on the public road and never enters the visible site driveway.
       // Stitch OSM driveway from Google's end onto `to` (curb / driveway snap).
       let path = g.path
@@ -117,6 +117,21 @@ async function bestDriveRoute(
       }
 
       candidates.push({ path, distanceM, source, gap, steps })
+    }
+  } catch {
+    /* ignore */
+  }
+
+  try {
+    const osrm = await fetchOsrmDrivingRoute(from, to)
+    if (osrm.path.length >= 2 && !isLongCrowFliesPath(osrm.path)) {
+      candidates.push({
+        path: osrm.path,
+        distanceM: osrm.distanceM,
+        source: 'osrm-driving',
+        gap: pathEndGapM(osrm.path, to),
+        steps: osrm.steps,
+      })
     }
   } catch {
     /* ignore */
@@ -233,16 +248,8 @@ export async function planDrivePlusWalk(
         guidanceSteps: collectGuidance(segments),
       }
     }
-    const segments: HandoffSegment[] = [
-      {
-        mode: 'WALK',
-        path: forceReach([from], to),
-        dashed: true,
-        distanceM: Math.round(meters(from, to)),
-        source: 'direct-to-destination',
-      },
-    ]
-    return { segments, handoff: null, label: 'walk', guidanceSteps: [] }
+    // Do not invent a long crow-flies chord — caller will retry / show error.
+    return { segments: [], handoff: null, label: 'walk', guidanceSteps: [] }
   }
 
   // Never let blue run past the destination pin.
@@ -337,7 +344,8 @@ export async function planWalkOnly(
     }
   }
   const gap = meters(from, to)
-  if (gap > 2) {
+  // Short last meters only — never a long roof chord as the “path”.
+  if (gap > 2 && gap <= 40) {
     return {
       segments: [
         {

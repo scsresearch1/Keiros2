@@ -1,7 +1,11 @@
 import type { JourneyStep, NavigateResult } from './api'
 import { fetchRoadRouteLive } from './googleRoute'
 import { AT_ENTRANCE_M, metersBetween } from './outdoorLegs'
-import { fetchPedestrianRoute } from './pedestrianRoute'
+import {
+  fetchOsrmDrivingRoute,
+  fetchPedestrianRoute,
+  isLongCrowFliesPath,
+} from './pedestrianRoute'
 
 type LatLng = { latitude: number; longitude: number }
 
@@ -88,38 +92,16 @@ export async function rerouteFromLiveFix(
       const walkTarget = dest
       const fromLit = toLit(fix)
       const toLitDest = toLit(walkTarget)
-      // OSRM foot primary (Google WALK inside fetchPedestrianRoute). Never drop the corridor —
-      // if both fail, keep a GPS→dest line so OutdoorMap can still paint red dots.
+      // Real network only — never invent a GPS→dest crow-flies chord.
       const ped = await fetchPedestrianRoute(fromLit, toLitDest).catch(() => null)
-      const path =
-        ped?.path?.length && ped.path.length > 1
-          ? ped.path
-          : [fromLit, toLitDest]
-      const distanceM =
-        ped?.distanceM ??
-        Math.round(metersBetween(fromLit, toLitDest))
-      const durationSec = ped?.durationSec ?? Math.max(60, Math.round(distanceM / 1.4))
-      const walkSteps = (ped?.steps?.length
-        ? ped.steps
-        : [
-            {
-              id: 'walk-fallback-0',
-              phase: 'walk' as const,
-              index: 0,
-              instruction: 'Walk toward your destination',
-              latitude: fix.latitude,
-              longitude: fix.longitude,
-              distanceM,
-              durationSec,
-              geometry: pathToGeoJson(path),
-            },
-          ]
-      ).map((s, i) => ({ ...s, index: i, phase: 'walk' as const }))
+      if (!ped?.path || isLongCrowFliesPath(ped.path)) return null
+      const path = ped.path
+      const distanceM = ped.distanceM
+      const walkSteps = ped.steps.map((s, i) => ({ ...s, index: i, phase: 'walk' as const }))
       const steps = [
         ...walkSteps,
         ...indoor.map((s, i) => ({ ...s, index: walkSteps.length + i })),
       ]
-      const provider = ped?.provider || 'direct walk (fallback line)'
       return {
         ...result,
         origin: stampedOrigin,
@@ -133,15 +115,15 @@ export async function rerouteFromLiveFix(
           steps: [],
           traffic: {
             ...result.outdoor.traffic,
-            note: `Walking · ${provider}`,
+            note: `Walking · ${ped.provider}`,
             updatedAt: new Date().toISOString(),
           },
         },
         walk: {
-          provider,
+          provider: ped.provider,
           distanceM,
           distanceMiles: Math.round((distanceM / 1609.344) * 10) / 10,
-          durationMinutes: Math.round((durationSec / 60) * 10) / 10,
+          durationMinutes: Math.round((ped.durationSec / 60) * 10) / 10,
           geometry: { type: 'LineString', coordinates: pathToGeoJson(path) },
           steps: walkSteps,
         },
@@ -152,25 +134,51 @@ export async function rerouteFromLiveFix(
           outdoorSteps: 0,
           walkSteps: walkSteps.length,
           steps,
-          summary: ped
-            ? 'Recalculated on OSM pedestrian network (OSRM foot).'
-            : 'Walking — showing path to destination.',
+          summary: 'Recalculated on the pedestrian / street network.',
         },
       }
     }
 
     const driveTarget: LatLng = parking ?? dest
-    // One DRIVE call only — second WALK fetch was doubling latency at 10–40 mph.
-    // Keep prior walk steps for after parking; OutdoorMap paints drive geometry immediately.
-    const route = await fetchRoadRouteLive(toLit(fix), toLit(driveTarget), 'DRIVE')
-    const driveSteps = route.steps.map((s, i) => ({
-      ...s,
-      index: i,
-      phase: 'drive' as const,
-    })) as JourneyStep[]
+    const fromLit = toLit(fix)
+    const toLitDrive = toLit(driveTarget)
+    // Google roads first, OSRM driving if Google fails or returns a chord.
+    let routePath: { lat: number; lng: number }[] | null = null
+    let routeDistanceM = 0
+    let routeDurationSec = 0
+    let routeSteps: JourneyStep[] = []
+    let routeProvider = 'Google Routes (live recalculate · drive)'
+    try {
+      const g = await fetchRoadRouteLive(fromLit, toLitDrive, 'DRIVE')
+      if (g.path.length > 1 && !isLongCrowFliesPath(g.path)) {
+        routePath = g.path
+        routeDistanceM = g.distanceM
+        routeDurationSec = g.durationSec
+        routeSteps = g.steps.map((s, i) => ({
+          ...s,
+          index: i,
+          phase: 'drive' as const,
+        }))
+      }
+    } catch {
+      /* OSRM below */
+    }
+    if (!routePath) {
+      const osrm = await fetchOsrmDrivingRoute(fromLit, toLitDrive).catch(() => null)
+      if (!osrm || isLongCrowFliesPath(osrm.path)) return null
+      routePath = osrm.path
+      routeDistanceM = osrm.distanceM
+      routeDurationSec = osrm.durationSec
+      routeProvider = 'OSRM driving (live recalculate · drive)'
+      routeSteps = osrm.steps.map((s, i) => ({
+        ...s,
+        index: i,
+        phase: 'drive' as const,
+        instruction: s.instruction?.replace(/^Walk/i, 'Drive') || s.instruction,
+      }))
+    }
 
-    // While driving: drive corridor ONLY (roads/driveways). Do not keep walk geometry
-    // that paints red dots on top of the blue line — walk resumes after park / mode flip.
+    const driveSteps = routeSteps
     const steps = [
       ...driveSteps,
       ...indoor.map((s, i) => ({ ...s, index: driveSteps.length + i })),
@@ -181,11 +189,11 @@ export async function rerouteFromLiveFix(
       origin: stampedOrigin,
       outdoor: {
         ...result.outdoor,
-        provider: 'Google Routes (live recalculate · drive)',
-        distanceM: route.distanceM,
-        distanceMiles: Math.round((route.distanceM / 1609.344) * 10) / 10,
-        durationMinutes: Math.round((route.durationSec / 60) * 10) / 10,
-        geometry: { type: 'LineString', coordinates: pathToGeoJson(route.path) },
+        provider: routeProvider,
+        distanceM: routeDistanceM,
+        distanceMiles: Math.round((routeDistanceM / 1609.344) * 10) / 10,
+        durationMinutes: Math.round((routeDurationSec / 60) * 10) / 10,
+        geometry: { type: 'LineString', coordinates: pathToGeoJson(routePath) },
         steps: driveSteps,
         traffic: {
           ...result.outdoor.traffic,
