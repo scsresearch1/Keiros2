@@ -134,19 +134,19 @@ export default function App() {
   const [unitId, setUnitId] = useState('')
   const [result, setResult] = useState<NavigateResult | null>(null)
   const [journeyIndex, setJourneyIndex] = useState(0)
-  const [startMode, setStartMode] = useState<StartMode>('demo')
+  const [startMode, setStartMode] = useState<StartMode>('live')
   /** Via parking UI/flow disabled for now — always point-to-point to the unit. */
   // const [viaParking, setViaParking] = useState(false)
-  /** Demo Mode is the default start — destination can be chosen immediately. */
+  /** Live is the default start — GPS is read when the user taps Navigate. */
   const [startReady, setStartReady] = useState(true)
-  const [liveSelected, setLiveSelected] = useState(false)
+  const [liveSelected, setLiveSelected] = useState(true)
   const [customOrigin, setCustomOrigin] = useState<StartPoint | null>(null)
   const [pickerOpen, setPickerOpen] = useState(false)
   const [locating, setLocating] = useState(false)
   /** Indoor 2D + voice only starts when the user taps Start — never auto. */
   const [indoorNavStarted, setIndoorNavStarted] = useState(false)
   /** Google Maps–style live GPS follow. Next/Previous stay available as optional manual control. */
-  const [liveNav, setLiveNav] = useState(false)
+  const [liveNav, setLiveNav] = useState(true)
   const [liveProgress, setLiveProgress] = useState<LiveProgress | null>(null)
   const [recalculating, setRecalculating] = useState(false)
   const manualHoldUntil = useRef(0)
@@ -619,9 +619,10 @@ export default function App() {
     setUnitId('')
     setKeyInput(DEFAULT_API_KEY)
     setOperatorInput(operatorName || localStorage.getItem(OPERATOR_STORAGE) || '')
-    setStartMode('demo')
+    setStartMode('live')
     setStartReady(true)
-    setLiveSelected(false)
+    setLiveSelected(true)
+    setLiveNav(true)
     setCustomOrigin(null)
     setPickerOpen(false)
   }
@@ -1136,7 +1137,7 @@ export default function App() {
                 ? 'Custom map point is the drive start.'
                 : startMode === 'live' && startReady
                   ? 'Using this device as the start.'
-                  : 'Demo Mode uses a simulated start. Switch to Live or set a point anytime.'}
+                  : 'Live uses this device as the start. Switch to Demo Mode or set a point anytime.'}
             </span>
           </div>
           {pickerOpen ? (
@@ -1516,7 +1517,7 @@ export default function App() {
         </>
       ) : (
         <p className="demo-placeholder">
-          Select Complex → Building → Floor → Unit, then press Navigate. Demo Mode is already the start.
+          Select Complex → Building → Floor → Unit, then press Navigate. Live (this device) is the default start.
         </p>
       )}
     </div>
