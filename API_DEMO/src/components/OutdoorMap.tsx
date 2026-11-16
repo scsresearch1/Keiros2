@@ -867,37 +867,60 @@ export function OutdoorMap({
             : null
       if (liveRecalc) {
         paintRetainedTrail()
+        // Exclusive: walk → red dots; drive (or unknown) → solid blue. Never leave a blank corridor.
         const liveWalk = exclusiveMode === 'walk'
-        const liveDrive = exclusiveMode !== 'walk'
         const drivePath = geoJsonToLatLngs(result.outdoor?.geometry?.coordinates)
         const walkPath = geoJsonToLatLngs(result.walk?.geometry?.coordinates)
         const liveOrigin = result.origin.liveFrom
           ? latLngLiteral(result.origin.liveFrom.latitude, result.origin.liveFrom.longitude)
           : origin
+        const fallbackLine = (from: google.maps.LatLngLiteral, to: google.maps.LatLngLiteral) =>
+          metersBetweenLit(from, to) > 2 ? [from, to] : []
 
         if (liveWalk) {
-          // Paint OSRM / pedestrian-network geometry as-is (no kerb hacks).
-          const path = walkPath.length > 1 ? walkPath : []
+          // Prefer pedestrian geometry; if empty, still show dots (never a blank map).
+          let path =
+            walkPath.length > 1
+              ? walkPath
+              : drivePath.length > 1
+                ? drivePath
+                : lastActivePathRef.current.length > 1
+                  ? lastActivePathRef.current
+                  : fallbackLine(liveOrigin, destination)
           if (path.length > 1) {
             corridorWalk.push(...path)
             drawPath(path, path[0] ?? liveOrigin, destination, 'walk-dots', 22)
-            sources.add('live-pedestrian-network')
+            sources.add(
+              walkPath.length > 1
+                ? 'live-pedestrian-network'
+                : drivePath.length > 1
+                  ? 'live-walk-fallback-geometry'
+                  : 'live-walk-fallback-line',
+            )
           }
           for (const step of result.walk?.steps?.length ? result.walk.steps : result.journey.steps) {
             if (step.phase !== 'walk') continue
             guidanceAcc.push({ ...step, index: guidanceAcc.length })
           }
-        } else if (liveDrive && drivePath.length > 1) {
-          // Roads / driveways ONLY — never paint walk dots alongside the blue line.
-          corridorDrive.push(...drivePath)
-          drawPath(
-            drivePath,
-            drivePath[0] ?? liveOrigin,
-            drivePath[drivePath.length - 1] ?? destination,
-            'drive',
-            20,
-          )
-          sources.add('live-driveways')
+        } else {
+          // Roads / driveways ONLY — solid blue; never paint walk dots alongside.
+          let path =
+            drivePath.length > 1
+              ? drivePath
+              : lastActivePathRef.current.length > 1
+                ? lastActivePathRef.current
+                : fallbackLine(liveOrigin, destination)
+          if (path.length > 1) {
+            corridorDrive.push(...path)
+            drawPath(
+              path,
+              path[0] ?? liveOrigin,
+              path[path.length - 1] ?? destination,
+              'drive',
+              20,
+            )
+            sources.add(drivePath.length > 1 ? 'live-driveways' : 'live-drive-fallback-line')
+          }
           for (const step of result.outdoor?.steps?.length
             ? result.outdoor.steps
             : result.journey.steps) {
@@ -913,8 +936,8 @@ export function OutdoorMap({
           driveways: prev?.driveways ?? 0,
           sidewalks: prev?.sidewalks ?? 0,
           routedOn: liveWalk
-            ? `Walking · ${result.walk?.provider || 'footpaths / kerbs'}`
-            : 'Driving · roads / driveways',
+            ? `Walking · ${result.walk?.provider || 'dotted path'}`
+            : 'Driving · blue road line',
         }))
         setMapError('')
         // Live recalc: keep current zoom (walk↔drive must not zoom in/out).
@@ -1047,6 +1070,39 @@ export function OutdoorMap({
       )
 
       if (session !== routeSessionRef.current) return
+      // Guarantee a visible corridor: blue for drive legs, red dots for walk legs.
+      if (corridorDrive.length < 2 && corridorWalk.length < 2) {
+        for (const leg of legsToDraw) {
+          if (leg.skipGuidance) continue
+          if (leg.mode === 'DRIVE') {
+            const outdoorPath = geoJsonToLatLngs(result.outdoor?.geometry?.coordinates)
+            const path =
+              outdoorPath.length > 1
+                ? outdoorPath
+                : metersBetweenLit(leg.from, leg.to) > 2
+                  ? [leg.from, leg.to]
+                  : []
+            if (path.length > 1) {
+              corridorDrive.push(...path)
+              drawPath(path, leg.from, path[path.length - 1] ?? leg.to, 'drive', 20)
+              sources.add('guarantee-drive')
+            }
+          } else {
+            const walkSrv = geoJsonToLatLngs(result.walk?.geometry?.coordinates)
+            const path =
+              walkSrv.length > 1
+                ? walkSrv
+                : metersBetweenLit(leg.from, leg.to) > 2
+                  ? [leg.from, leg.to]
+                  : []
+            if (path.length > 1) {
+              corridorWalk.push(...path)
+              drawPath(path, leg.from, leg.to, 'walk-dots', 22)
+              sources.add('guarantee-walk')
+            }
+          }
+        }
+      }
       const activePath = [...corridorDrive, ...corridorWalk]
       if (activePath.length > 1) lastActivePathRef.current = activePath
       const src = [...sources].join('+') || 'google'

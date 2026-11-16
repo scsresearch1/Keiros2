@@ -88,22 +88,44 @@ export async function rerouteFromLiveFix(
       const walkTarget = dest
       const fromLit = toLit(fix)
       const toLitDest = toLit(walkTarget)
-      // NEW strategy: OSRM foot pedestrian network (not Google-centerline + kerb hacks).
+      // OSRM foot primary (Google WALK inside fetchPedestrianRoute). Never drop the corridor —
+      // if both fail, keep a GPS→dest line so OutdoorMap can still paint red dots.
       const ped = await fetchPedestrianRoute(fromLit, toLitDest).catch(() => null)
-      if (!ped?.path?.length) return null
-      const path = ped.path
-      const distanceM = ped.distanceM
-      const walkSteps = ped.steps.map((s, i) => ({ ...s, index: i, phase: 'walk' as const }))
+      const path =
+        ped?.path?.length && ped.path.length > 1
+          ? ped.path
+          : [fromLit, toLitDest]
+      const distanceM =
+        ped?.distanceM ??
+        Math.round(metersBetween(fromLit, toLitDest))
+      const durationSec = ped?.durationSec ?? Math.max(60, Math.round(distanceM / 1.4))
+      const walkSteps = (ped?.steps?.length
+        ? ped.steps
+        : [
+            {
+              id: 'walk-fallback-0',
+              phase: 'walk' as const,
+              index: 0,
+              instruction: 'Walk toward your destination',
+              latitude: fix.latitude,
+              longitude: fix.longitude,
+              distanceM,
+              durationSec,
+              geometry: pathToGeoJson(path),
+            },
+          ]
+      ).map((s, i) => ({ ...s, index: i, phase: 'walk' as const }))
       const steps = [
         ...walkSteps,
         ...indoor.map((s, i) => ({ ...s, index: walkSteps.length + i })),
       ]
+      const provider = ped?.provider || 'direct walk (fallback line)'
       return {
         ...result,
         origin: stampedOrigin,
         outdoor: {
           ...result.outdoor,
-          provider: 'OSRM foot (live recalculate · walk)',
+          provider: 'live recalculate · walk',
           distanceM: 0,
           distanceMiles: 0,
           durationMinutes: 0,
@@ -111,15 +133,15 @@ export async function rerouteFromLiveFix(
           steps: [],
           traffic: {
             ...result.outdoor.traffic,
-            note: `Walking on pedestrian network · ${ped.provider}`,
+            note: `Walking · ${provider}`,
             updatedAt: new Date().toISOString(),
           },
         },
         walk: {
-          provider: ped.provider,
+          provider,
           distanceM,
           distanceMiles: Math.round((distanceM / 1609.344) * 10) / 10,
-          durationMinutes: Math.round((ped.durationSec / 60) * 10) / 10,
+          durationMinutes: Math.round((durationSec / 60) * 10) / 10,
           geometry: { type: 'LineString', coordinates: pathToGeoJson(path) },
           steps: walkSteps,
         },
@@ -130,7 +152,9 @@ export async function rerouteFromLiveFix(
           outdoorSteps: 0,
           walkSteps: walkSteps.length,
           steps,
-          summary: 'Recalculated on OSM pedestrian network (OSRM foot).',
+          summary: ped
+            ? 'Recalculated on OSM pedestrian network (OSRM foot).'
+            : 'Walking — showing path to destination.',
         },
       }
     }
