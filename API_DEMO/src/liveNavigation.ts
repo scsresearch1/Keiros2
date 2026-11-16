@@ -455,15 +455,9 @@ export function resolvePuckPose(
     Number.isFinite(aim.latitude) &&
     Number.isFinite(aim.longitude) &&
     !(aim.latitude === 0 && aim.longitude === 0)
-  const distToAim = aimOk
-    ? haversineM(fix.latitude, fix.longitude, aim!.latitude, aim!.longitude)
-    : Infinity
   const aimBearing = aimOk
     ? bearingDeg(fix.latitude, fix.longitude, aim!.latitude, aim!.longitude)
     : null
-  // Face D only for the final approach — while on a corridor, follow the path direction.
-  const faceAim = aimBearing != null && distToAim < 28
-
   const onRoute =
     Boolean(progress) &&
     !progress!.offRoute &&
@@ -471,27 +465,27 @@ export function resolvePuckPose(
     progress!.snapped != null &&
     progress!.routeHeadingDeg != null
 
-  if (onRoute && progress!.snapped && progress!.routeHeadingDeg != null) {
-    // Soft stick-to-road: mostly snapped, slight pull toward raw GPS (feels alive).
-    const snap = progress!.snapped
-    const t = Math.min(0.35, Math.max(0.08, (fix.accuracy || 15) / 80))
-    let routeH = normalizeHeading(progress!.routeHeadingDeg)
-    // Safety: if corridor tangent aims away from D, flip so the chevron is not reversed.
-    if (aimBearing != null && distToAim > 10) {
+  // HARD RULE: when we know D, heading must face D (never reverse / downward).
+  if (aimBearing != null) {
+    const snap = onRoute && progress!.snapped ? progress!.snapped : null
+    const t =
+      snap != null ? Math.min(0.35, Math.max(0.08, (fix.accuracy || 15) / 80)) : 0
+    let heading = normalizeHeading(aimBearing)
+    // Optional: ease along the corridor only if it still points toward D.
+    if (onRoute && progress!.routeHeadingDeg != null) {
+      const routeH = normalizeHeading(progress!.routeHeadingDeg)
       const disagree = Math.abs(((aimBearing - routeH + 540) % 360) - 180)
-      if (disagree > 100) routeH = normalizeHeading(routeH + 180)
+      if (disagree < 70) {
+        const d = ((routeH - aimBearing + 540) % 360) - 180
+        heading = normalizeHeading(aimBearing + d * 0.4)
+      }
     }
-    // Final meters: face the pin when it still agrees with travel direction.
-    const useAim =
-      faceAim &&
-      aimBearing != null &&
-      Math.abs(((aimBearing - routeH + 540) % 360) - 180) < 95
     return {
-      lat: snap.latitude * (1 - t) + fix.latitude * t,
-      lng: snap.longitude * (1 - t) + fix.longitude * t,
-      heading: useAim ? normalizeHeading(aimBearing!) : routeH,
-      onRoute: true,
-      source: useAim ? 'step' : 'route',
+      lat: snap ? snap.latitude * (1 - t) + fix.latitude * t : fix.latitude,
+      lng: snap ? snap.longitude * (1 - t) + fix.longitude * t : fix.longitude,
+      heading,
+      onRoute: Boolean(snap),
+      source: 'step',
     }
   }
 
@@ -503,7 +497,6 @@ export function resolvePuckPose(
     }
   }
 
-  // Moving with a clear track → keep movement bearing (path of travel).
   if (movedBearing != null) {
     return {
       lat: fix.latitude,
@@ -511,16 +504,6 @@ export function resolvePuckPose(
       heading: movedBearing,
       onRoute: false,
       source: 'gps-move',
-    }
-  }
-
-  if (faceAim && aimBearing != null) {
-    return {
-      lat: fix.latitude,
-      lng: fix.longitude,
-      heading: normalizeHeading(aimBearing),
-      onRoute: false,
-      source: 'step',
     }
   }
 
@@ -534,27 +517,13 @@ export function resolvePuckPose(
     }
   }
 
-  // Even off-route, if we still have a corridor heading nearby, prefer it over compass.
   if (progress?.routeHeadingDeg != null && progress.distanceToRouteM < 55) {
     return {
       lat: fix.latitude,
       lng: fix.longitude,
-      heading: normalizeHeading(
-        faceAim && aimBearing != null ? aimBearing : progress.routeHeadingDeg,
-      ),
+      heading: normalizeHeading(progress.routeHeadingDeg),
       onRoute: false,
-      source: faceAim ? 'step' : 'route',
-    }
-  }
-
-  // Standing / slow: prefer destination over a frozen compass (often stuck at north).
-  if (aimBearing != null && speed < 1.4) {
-    return {
-      lat: fix.latitude,
-      lng: fix.longitude,
-      heading: normalizeHeading(aimBearing),
-      onRoute: false,
-      source: 'step',
+      source: 'route',
     }
   }
 
@@ -565,16 +534,6 @@ export function resolvePuckPose(
       heading: normalizeHeading(fix.heading),
       onRoute: false,
       source: fix.headingSource === 'compass' ? 'compass' : 'gps-course',
-    }
-  }
-
-  if (aimBearing != null) {
-    return {
-      lat: fix.latitude,
-      lng: fix.longitude,
-      heading: normalizeHeading(aimBearing),
-      onRoute: false,
-      source: 'step',
     }
   }
 

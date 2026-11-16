@@ -214,15 +214,6 @@ function normalizeDeg(d: number) {
   return ((d % 360) + 360) % 360
 }
 
-/** Shortest-path blend — snappy for phone turns, still damps GPS jitter. */
-function blendHeading(prev: number | null, next: number): number {
-  if (prev == null || !Number.isFinite(prev)) return next
-  const delta = ((next - prev + 540) % 360) - 180
-  // Large phone turns: catch up fast. Small noise: soften.
-  const t = Math.abs(delta) > 35 ? 0.7 : 0.28
-  return (prev + delta * t + 360) % 360
-}
-
 type SmoothPos = { lat: number; lng: number }
 
 /**
@@ -1353,49 +1344,37 @@ export function OutdoorMap({
     const prev = lastLiveRef.current
     const speed = liveFix.speed != null && Number.isFinite(liveFix.speed) ? liveFix.speed : 0
 
-    // Aim the arrow at the outdoor destination (D). Near D / slow walk this overrides
-    // a frozen compass that otherwise leaves the chevron pointing north.
     const aimTarget = {
       latitude: result.destination.latitude,
       longitude: result.destination.longitude,
     }
     const pose = resolvePuckPose(liveFix, liveProgress, prev, aimTarget)
-    let rawHeading = pose.heading
-    // If off-route, pull toward the active outdoor step / destination.
+    // HARD RULE: chevron + map-up always face the destination. Never point reverse/down.
+    const toDestHeading = bearingDeg(
+      pose.lat,
+      pose.lng,
+      aimTarget.latitude,
+      aimTarget.longitude,
+    )
+    let rawHeading = toDestHeading
+    // Soft pull along the corridor only when it still aims toward D (not opposite).
     if (
-      !pose.onRoute &&
-      pose.source !== 'step' &&
-      rawHeading != null &&
-      activeStep &&
-      activeStep.phase !== 'indoor' &&
-      Number.isFinite(activeStep.latitude) &&
-      Number.isFinite(activeStep.longitude)
+      pose.heading != null &&
+      Number.isFinite(pose.heading) &&
+      headingDeltaDeg(pose.heading, toDestHeading) < 75
     ) {
-      const toStep = bearingDeg(
-        pose.lat,
-        pose.lng,
-        activeStep.latitude,
-        activeStep.longitude,
-      )
-      const delta = ((toStep - rawHeading + 540) % 360) - 180
-      if (Math.abs(delta) < 120) rawHeading = normalizeDeg(rawHeading + delta * 0.45)
+      const d = ((pose.heading - toDestHeading + 540) % 360) - 180
+      rawHeading = normalizeDeg(toDestHeading + d * 0.35)
     }
 
-    // Route / destination aim is high-trust → snappy blend; compass/GPS noise → heavier damp.
-    if (rawHeading != null && Number.isFinite(rawHeading)) {
+    // Snap instantly on big corrections so a reversed heading cannot linger.
+    if (Number.isFinite(rawHeading)) {
       const prevH = smoothHeadingRef.current
-      const highTrust = pose.source === 'route' || pose.source === 'step'
-      if (prevH == null || highTrust) {
-        const delta = prevH == null ? 180 : headingDeltaDeg(prevH, rawHeading)
-        // Catch corners / face D fast — do not linger pointing north.
-        const t = highTrust ? (delta > 25 ? 0.9 : 0.65) : 0.28
-        if (prevH == null) smoothHeadingRef.current = rawHeading
-        else {
-          const d = ((rawHeading - prevH + 540) % 360) - 180
-          smoothHeadingRef.current = normalizeDeg(prevH + d * t)
-        }
+      if (prevH == null || headingDeltaDeg(prevH, rawHeading) > 60) {
+        smoothHeadingRef.current = rawHeading
       } else {
-        smoothHeadingRef.current = blendHeading(smoothHeadingRef.current, rawHeading)
+        const d = ((rawHeading - prevH + 540) % 360) - 180
+        smoothHeadingRef.current = normalizeDeg(prevH + d * 0.85)
       }
     }
     const heading = smoothHeadingRef.current
@@ -1478,22 +1457,24 @@ export function OutdoorMap({
     }
 
     const appliedMapHeading =
-      canHeadingUp &&
-      typeof map.getHeading === 'function' &&
-      Number.isFinite(map.getHeading())
+      typeof map.getHeading === 'function' && Number.isFinite(map.getHeading())
         ? normalizeDeg(map.getHeading() as number)
         : lastCameraHeadingRef.current ?? 0
     setMapHeading(appliedMapHeading)
-    // Heading-up Map → arrow stays screen-up. Satellite north-up → rotate puck by bearing.
+    // Only pin the chevron to screen-up when the camera truly rotated heading-up.
+    // If Map stayed north-up, rotate the SVG so the tip still faces the destination.
+    const headingUpActive =
+      Boolean(shouldFollow && canHeadingUp && heading != null) &&
+      headingDeltaDeg(appliedMapHeading, heading as number) < 30
     const puckRot =
       heading != null
-        ? shouldFollow && canHeadingUp
+        ? headingUpActive
           ? 0
           : normalizeDeg(heading - appliedMapHeading)
         : null
     const puckRotChanged =
       puckRot != null &&
-      (lastPuckRotRef.current == null || headingDeltaDeg(lastPuckRotRef.current, puckRot) >= 2)
+      (lastPuckRotRef.current == null || headingDeltaDeg(lastPuckRotRef.current, puckRot) >= 1)
 
     if (!liveMarkerRef.current) {
       const puck = createAdvancedMarker({
