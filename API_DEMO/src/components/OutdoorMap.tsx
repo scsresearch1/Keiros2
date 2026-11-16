@@ -12,7 +12,11 @@ import {
 import { planDrivePlusWalk, planWalkOnly } from '../driveWalkHandoff'
 import { extractSiteWays, type SiteWaysExtract } from '../extractSiteWays'
 import { pinPathToEndpoints } from '../googleRoute'
-import { isLongCrowFliesPath } from '../pedestrianRoute'
+import {
+  fetchOsrmDrivingRoute,
+  fetchPedestrianRoute,
+  isLongCrowFliesPath,
+} from '../pedestrianRoute'
 import { bearingDeg, resolvePuckPose, type LiveFix, type LiveProgress } from '../liveNavigation'
 import { metersBetween, resolveOutdoorLegs, type OutdoorLeg } from '../outdoorLegs'
 
@@ -912,49 +916,60 @@ export function OutdoorMap({
             : null
       if (liveRecalc) {
         paintRetainedTrail()
-        // Exclusive: walk → red dots; drive (or unknown) → solid blue. Never leave a blank corridor.
+        // Exclusive: walk → red dots; drive (or unknown) → solid blue.
+        // Always snap long chords onto the OSM/Google road network before paint.
         const liveWalk = exclusiveMode === 'walk'
         const drivePath = geoJsonToLatLngs(result.outdoor?.geometry?.coordinates)
         const walkPath = geoJsonToLatLngs(result.walk?.geometry?.coordinates)
         const liveOrigin = result.origin.liveFrom
           ? latLngLiteral(result.origin.liveFrom.latitude, result.origin.liveFrom.longitude)
           : origin
+
+        async function snapToRoads(
+          candidate: google.maps.LatLngLiteral[],
+          mode: 'walk' | 'drive',
+        ): Promise<google.maps.LatLngLiteral[]> {
+          let path =
+            candidate.length > 1
+              ? remainingPathFromLive(candidate, liveOrigin, destination)
+              : []
+          if (path.length > 1 && !isLongCrowFliesPath(path)) return path
+          try {
+            const routed =
+              mode === 'walk'
+                ? await fetchPedestrianRoute(liveOrigin, destination)
+                : await fetchOsrmDrivingRoute(liveOrigin, destination).catch(() =>
+                    fetchPedestrianRoute(liveOrigin, destination),
+                  )
+            if (routed.path.length > 1 && !isLongCrowFliesPath(routed.path)) {
+              return remainingPathFromLive(routed.path, liveOrigin, destination)
+            }
+          } catch {
+            /* keep candidate */
+          }
+          return path.length > 1 ? path : candidate
+        }
+
         if (liveWalk) {
-          // Prefer network geometry; always paint a visible dotted path (blank map is worse).
           const raw = preferNetworkPath(
             walkPath.length > 1 ? walkPath : [],
             preferNetworkPath(drivePath, lastActivePathRef.current),
           )
-          let path =
-            raw.length > 1
-              ? remainingPathFromLive(raw, liveOrigin, destination)
-              : []
-          if (path.length < 2 && metersBetweenLit(liveOrigin, destination) > 2) {
-            path = [liveOrigin, destination]
-          }
+          const path = await snapToRoads(raw, 'walk')
+          if (session !== routeSessionRef.current) return
           if (path.length > 1) {
             corridorWalk.push(...path)
             drawPath(path, path[0] ?? liveOrigin, destination, 'walk-dots', 22)
-            sources.add(
-              walkPath.length > 1 && !isLongCrowFliesPath(walkPath)
-                ? 'live-pedestrian-network'
-                : 'live-walk-visible',
-            )
+            sources.add('live-pedestrian-network')
           }
           for (const step of result.walk?.steps?.length ? result.walk.steps : result.journey.steps) {
             if (step.phase !== 'walk') continue
             guidanceAcc.push({ ...step, index: guidanceAcc.length })
           }
         } else {
-          // Prefer roads; always paint a visible blue line so the corridor never disappears.
           const raw = preferNetworkPath(drivePath, lastActivePathRef.current)
-          let path =
-            raw.length > 1
-              ? remainingPathFromLive(raw, liveOrigin, destination)
-              : []
-          if (path.length < 2 && metersBetweenLit(liveOrigin, destination) > 2) {
-            path = [liveOrigin, destination]
-          }
+          const path = await snapToRoads(raw, 'drive')
+          if (session !== routeSessionRef.current) return
           if (path.length > 1) {
             corridorDrive.push(...path)
             drawPath(
@@ -964,11 +979,7 @@ export function OutdoorMap({
               'drive',
               20,
             )
-            sources.add(
-              drivePath.length > 1 && !isLongCrowFliesPath(drivePath)
-                ? 'live-driveways'
-                : 'live-drive-visible',
-            )
+            sources.add('live-driveways')
           }
           for (const step of result.outdoor?.steps?.length
             ? result.outdoor.steps
@@ -985,8 +996,8 @@ export function OutdoorMap({
           driveways: prev?.driveways ?? 0,
           sidewalks: prev?.sidewalks ?? 0,
           routedOn: liveWalk
-            ? `Walking · ${result.walk?.provider || 'dotted path'}`
-            : 'Driving · blue road line',
+            ? `Walking · ${result.walk?.provider || 'street network'}`
+            : 'Driving · roads / driveways',
         }))
         setMapError('')
         // Live recalc: keep current zoom (walk↔drive must not zoom in/out).
@@ -1016,6 +1027,43 @@ export function OutdoorMap({
         if (exclusiveMode === 'walk' && leg.mode !== 'WALK') return
         if (exclusiveMode === 'drive' && leg.mode !== 'DRIVE') return
 
+        // Prefer already-fetched network geometry (withLiveDrive OSRM) — avoids a second
+        // Google call that can fail and paint a yard-cutting chord.
+        if (leg.mode === 'WALK') {
+          const existing = geoJsonToLatLngs(result.walk?.geometry?.coordinates)
+          if (existing.length > 1 && !isLongCrowFliesPath(existing)) {
+            corridorWalk.push(...existing)
+            drawPath(existing, leg.from, leg.to, 'walk-dots', 22)
+            sources.add(String(result.walk?.provider || 'server-walk-network'))
+            if (!leg.skipGuidance && result.walk?.steps?.length) {
+              for (const step of result.walk.steps) {
+                guidanceAcc.push({ ...step, index: guidanceAcc.length, id: `${leg.id}-${step.id}` })
+              }
+            }
+            return
+          }
+        }
+        if (leg.mode === 'DRIVE') {
+          const existing = geoJsonToLatLngs(result.outdoor?.geometry?.coordinates)
+          if (existing.length > 1 && !isLongCrowFliesPath(existing)) {
+            corridorDrive.push(...existing)
+            drawPath(existing, leg.from, existing[existing.length - 1] ?? leg.to, 'drive', 20 + index)
+            sources.add(String(result.outdoor?.provider || 'server-drive-network'))
+            if (!leg.skipGuidance && result.outdoor?.steps?.length) {
+              for (const step of result.outdoor.steps) {
+                if (step.phase !== 'drive' && step.phase !== 'outdoor') continue
+                guidanceAcc.push({
+                  ...step,
+                  index: guidanceAcc.length,
+                  id: `${leg.id}-${step.id}`,
+                  phase: 'drive',
+                })
+              }
+            }
+            return
+          }
+        }
+
         // Drive → roads/driveways. Walk → sidewalks/footpaths.
         const plan =
           leg.mode === 'WALK'
@@ -1024,6 +1072,26 @@ export function OutdoorMap({
 
         if (session !== routeSessionRef.current) return
         if (!plan.segments.length) {
+          // Final attempt: OSRM street network so we never show a blank or chord-only map.
+          try {
+            const osrm =
+              leg.mode === 'WALK'
+                ? await fetchPedestrianRoute(leg.from, leg.to)
+                : await fetchOsrmDrivingRoute(leg.from, leg.to)
+            if (osrm.path.length > 1 && !isLongCrowFliesPath(osrm.path)) {
+              if (leg.mode === 'WALK') {
+                corridorWalk.push(...osrm.path)
+                drawPath(osrm.path, leg.from, leg.to, 'walk-dots', 22)
+              } else {
+                corridorDrive.push(...osrm.path)
+                drawPath(osrm.path, leg.from, osrm.path[osrm.path.length - 1] ?? leg.to, 'drive', 20 + index)
+              }
+              sources.add(osrm.provider)
+              return
+            }
+          } catch {
+            /* fall through */
+          }
           serverFallbackForLeg(leg)
           return
         }

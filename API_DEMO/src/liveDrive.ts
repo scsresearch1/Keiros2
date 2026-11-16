@@ -611,23 +611,35 @@ export async function withLiveDrive(
         walkDistance = foot.distanceM
         walkGeom = foot.geometry.coordinates
       } catch {
-        walkSteps = [
-          {
-            id: 'wlk-0',
-            phase: 'walk',
-            index: 0,
-            instruction: 'Walk to the building entrance',
-            latitude: origin.latitude,
-            longitude: origin.longitude,
-            distanceM: walkDistance,
-            durationSec: Math.round(walkDistance / 1.35),
-            geometry: [
-              [origin.longitude, origin.latitude],
-              [entrance.longitude, entrance.latitude],
-            ],
-          },
-        ]
-        walkGeom = walkSteps[0].geometry ?? walkGeom
+        // Foot profile failed — still follow the residential street (never crow-flies).
+        try {
+          const alongRoad = await fetchOsrmRoute(DRIVING_BASES, origin, entrance)
+          walkSteps = walkStepsFromRoute(alongRoad).map((s) => ({
+            ...s,
+            phase: 'walk' as const,
+            instruction: (s.instruction || 'Continue').replace(/^Drive/i, 'Walk'),
+          }))
+          walkDistance = Math.round(alongRoad.distance)
+          walkGeom = alongRoad.geometry.coordinates
+        } catch {
+          walkSteps = [
+            {
+              id: 'wlk-0',
+              phase: 'walk',
+              index: 0,
+              instruction: 'Walk to the building entrance',
+              latitude: origin.latitude,
+              longitude: origin.longitude,
+              distanceM: walkDistance,
+              durationSec: Math.round(walkDistance / 1.35),
+              geometry: [
+                [origin.longitude, origin.latitude],
+                [entrance.longitude, entrance.latitude],
+              ],
+            },
+          ]
+          walkGeom = walkSteps[0].geometry ?? walkGeom
+        }
       }
     }
     const steps = [
@@ -673,7 +685,10 @@ export async function withLiveDrive(
         },
       },
       walk: {
-        provider: 'on-site walk',
+        provider:
+          walkGeom.length > 2
+            ? 'OSRM street network (on-site walk)'
+            : 'on-site walk',
         distanceM: walkDistance,
         distanceMiles: Math.round((walkDistance / 1609.344) * 10) / 10,
         durationMinutes: Math.round((walkDistance / 1.35 / 60) * 10) / 10,
@@ -690,7 +705,7 @@ export async function withLiveDrive(
         summary:
           toEntrance <= AT_ENTRANCE_M
             ? 'Already at the entrance — continue inside.'
-            : 'Walk to the entrance, then continue inside.',
+            : 'Walk along the street network to the entrance, then continue inside.',
       },
     }
   }

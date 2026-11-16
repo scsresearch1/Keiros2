@@ -248,23 +248,38 @@ export async function planDrivePlusWalk(
         guidanceSteps: collectGuidance(segments),
       }
     }
-    // Last resort: still show a line so Navigate never paints a blank map.
-    const gap = meters(from, to)
-    if (gap > 2) {
-      return {
-        segments: [
-          {
-            mode: 'DRIVE',
-            path: forceReach([from], to),
-            dashed: false,
-            distanceM: Math.round(gap),
-            source: 'direct-visible-fallback',
-          },
-        ],
-        handoff: null,
-        label: 'drive',
-        guidanceSteps: [],
+    // Last resort: OSRM street network — never a crow-flies chord across lots/yards.
+    try {
+      const osrm = await fetchOsrmDrivingRoute(from, to)
+      if (osrm.path.length >= 2 && !isLongCrowFliesPath(osrm.path)) {
+        const path = forceReach(osrm.path, to)
+        return {
+          segments: [
+            {
+              mode: 'DRIVE',
+              path,
+              dashed: false,
+              distanceM: osrm.distanceM,
+              source: 'osrm-driving',
+              steps: osrm.steps,
+            },
+          ],
+          handoff: null,
+          label: 'drive',
+          guidanceSteps: collectGuidance([
+            {
+              mode: 'DRIVE',
+              path,
+              dashed: false,
+              distanceM: osrm.distanceM,
+              source: 'osrm-driving',
+              steps: osrm.steps,
+            },
+          ]),
+        }
       }
+    } catch {
+      /* fall through */
     }
     return { segments: [], handoff: null, label: 'walk', guidanceSteps: [] }
   }
@@ -361,6 +376,32 @@ export async function planWalkOnly(
     }
   }
   const gap = meters(from, to)
+  if (gap > 2) {
+    try {
+      const osrm = await fetchOsrmDrivingRoute(from, to)
+      if (osrm.path.length >= 2 && !isLongCrowFliesPath(osrm.path)) {
+        const path = forceReach(osrm.path, to)
+        const segments: HandoffSegment[] = [
+          {
+            mode: 'WALK',
+            path,
+            dashed: true,
+            distanceM: osrm.distanceM,
+            source: 'osrm-driving-as-walk',
+            steps: osrm.steps,
+          },
+        ]
+        return {
+          segments,
+          handoff: null,
+          label: 'walk',
+          guidanceSteps: collectGuidance(segments),
+        }
+      }
+    } catch {
+      /* short gap only */
+    }
+  }
   // Short last meters only — never a long roof chord as the “path”.
   if (gap > 2 && gap <= 40) {
     return {

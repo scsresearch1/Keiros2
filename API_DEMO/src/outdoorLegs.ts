@@ -107,9 +107,20 @@ export function resolveOutdoorLegs(result: NavigateResult): OutdoorPlan {
   const liveDriving =
     result.origin.liveTravelMode === 'drive' ||
     /live recalculate · drive/i.test(String(result.outdoor?.provider || ''))
+  // withLiveDrive on-site / short trips stamp walk geometry and zero drive steps.
+  // Must NOT open a DRIVE leg (that re-fetched Google and painted a crow-flies chord).
+  const walkOnlyTrip =
+    !liveDriving &&
+    ((result.journey.driveSteps ?? 0) === 0 &&
+      ((result.journey.walkSteps ?? 0) > 0 ||
+        (result.walk?.geometry?.coordinates?.length ?? 0) > 1 ||
+        /on-site|walk/i.test(String(result.outdoor?.provider || '')) ||
+        /on-site walk|OSRM foot|pedestrian|street network/i.test(
+          String(result.walk?.provider || ''),
+        )))
 
   const waypoints: OutdoorWaypoint[] = []
-  if (parking && !liveWalking) {
+  if (parking && !liveWalking && !walkOnlyTrip) {
     waypoints.push({
       kind: 'parking',
       position: parking,
@@ -131,10 +142,10 @@ export function resolveOutdoorLegs(result: NavigateResult): OutdoorPlan {
   // Do NOT Google-route S → live GPS as a second blue drive (that forked with the
   // recalculated remaining path). OutdoorMap keeps the *actual* traveled corridor muted.
 
-  if (liveWalking) {
+  if (liveWalking || walkOnlyTrip) {
     if (metersBetween(corridorFrom, outdoorEnd) > 8) {
       legs.push({
-        id: 'walk-live-to-destination',
+        id: liveWalking ? 'walk-live-to-destination' : 'walk-to-destination',
         mode: 'WALK',
         from: corridorFrom,
         to: outdoorEnd,
