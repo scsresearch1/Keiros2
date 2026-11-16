@@ -239,13 +239,15 @@ function projectOnSegment(
 
 /**
  * Snap GPS to the planned route and return progress like Google Maps guidance.
+ * Optional `aim` keeps look-ahead pointing toward the destination (not reversed).
  */
 export function matchLiveProgress(
   steps: JourneyStep[],
   fix: LiveFix,
   currentIndex: number,
+  aim?: { latitude: number; longitude: number } | null,
 ): LiveProgress {
-  const points = flattenRoute(steps)
+  let points = flattenRoute(steps)
   if (!points.length) {
     // No corridor to follow → must recalculate (was false before, so reroute never fired).
     return {
@@ -257,6 +259,25 @@ export function matchLiveProgress(
       snapped: null,
       offRoute: true,
       routeHeadingDeg: null,
+    }
+  }
+
+  // Orient polyline so it ends nearer the destination — stops reverse arrows.
+  if (
+    aim &&
+    Number.isFinite(aim.latitude) &&
+    Number.isFinite(aim.longitude) &&
+    points.length >= 2
+  ) {
+    const d0 = haversineM(points[0].lat, points[0].lng, aim.latitude, aim.longitude)
+    const d1 = haversineM(
+      points[points.length - 1].lat,
+      points[points.length - 1].lng,
+      aim.latitude,
+      aim.longitude,
+    )
+    if (d0 + 8 < d1) {
+      points = [...points].reverse()
     }
   }
 
@@ -376,7 +397,22 @@ export function matchLiveProgress(
     walkPhase ? OFF_ROUTE_WALK_M : OFF_ROUTE_DRIVE_M,
     (fix.accuracy || 15) * 1.35,
   )
-  const routeHeadingDeg = lookAheadBearingDeg(points, best.seg, best.lat, best.lng, 32)
+  let routeHeadingDeg = lookAheadBearingDeg(points, best.seg, best.lat, best.lng, 32)
+  // If look-ahead points away from the destination, flip to the other direction.
+  if (
+    routeHeadingDeg != null &&
+    aim &&
+    Number.isFinite(aim.latitude) &&
+    Number.isFinite(aim.longitude)
+  ) {
+    const toDest = bearingDeg(best.lat, best.lng, aim.latitude, aim.longitude)
+    const disagree = Math.abs(((toDest - routeHeadingDeg + 540) % 360) - 180)
+    if (disagree > 100) {
+      const flipped = (routeHeadingDeg + 180) % 360
+      const flippedDisagree = Math.abs(((toDest - flipped + 540) % 360) - 180)
+      if (flippedDisagree + 8 < disagree) routeHeadingDeg = flipped
+    }
+  }
 
   return {
     stepIndex,
@@ -439,8 +475,13 @@ export function resolvePuckPose(
     // Soft stick-to-road: mostly snapped, slight pull toward raw GPS (feels alive).
     const snap = progress!.snapped
     const t = Math.min(0.35, Math.max(0.08, (fix.accuracy || 15) / 80))
-    const routeH = normalizeHeading(progress!.routeHeadingDeg)
-    // Only snap arrow to D when it agrees with travel direction (not back along the line).
+    let routeH = normalizeHeading(progress!.routeHeadingDeg)
+    // Safety: if corridor tangent aims away from D, flip so the chevron is not reversed.
+    if (aimBearing != null && distToAim > 10) {
+      const disagree = Math.abs(((aimBearing - routeH + 540) % 360) - 180)
+      if (disagree > 100) routeH = normalizeHeading(routeH + 180)
+    }
+    // Final meters: face the pin when it still agrees with travel direction.
     const useAim =
       faceAim &&
       aimBearing != null &&

@@ -820,7 +820,11 @@ export default function App() {
     const matchSteps = mapGuidance?.length
       ? voiceSteps
       : enrichStepsWithRouteGeometry(result, routeCorridorRef.current)
-    const progress = matchLiveProgress(matchSteps, liveFix, journeyIndex)
+    const dest = {
+      latitude: result.destination.latitude,
+      longitude: result.destination.longitude,
+    }
+    const progress = matchLiveProgress(matchSteps, liveFix, journeyIndex, dest)
     setLiveProgress(progress)
 
     // Step auto-advance can wait; off-route recalculation must not.
@@ -831,11 +835,6 @@ export default function App() {
           setJourneyIndex(progress.stepIndex)
         }
       }
-    }
-
-    const dest = {
-      latitude: result.destination.latitude,
-      longitude: result.destination.longitude,
     }
     const origin = {
       latitude: result.origin.latitude,

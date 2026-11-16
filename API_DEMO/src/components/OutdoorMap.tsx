@@ -277,8 +277,9 @@ function preferNetworkPath(
 }
 
 /**
- * Active corridor from the live fix forward to the destination end of the path.
- * Avoids painting the full S→D chord with the puck stuck in the middle.
+ * Active corridor from the live fix forward toward the destination.
+ * Picks the direction along the polyline that actually approaches D (avoids a
+ * reversed path that pointed the puck arrow backward).
  */
 function remainingPathFromLive(
   path: google.maps.LatLngLiteral[],
@@ -286,11 +287,7 @@ function remainingPathFromLive(
   dest: google.maps.LatLngLiteral,
 ): google.maps.LatLngLiteral[] {
   if (path.length < 2) return path
-  let pts = path.map((p) => ({ ...p }))
-  // Orient so the path ends at the destination side.
-  if (metersBetweenLit(pts[0], dest) + 3 < metersBetweenLit(pts[pts.length - 1], dest)) {
-    pts = pts.reverse()
-  }
+  const pts = path.map((p) => ({ ...p }))
   let bestI = 0
   let bestD = Infinity
   for (let i = 0; i < pts.length; i += 1) {
@@ -300,8 +297,18 @@ function remainingPathFromLive(
       bestI = i
     }
   }
-  const rem = pts.slice(Math.max(0, bestI))
-  if (rem.length < 2) return [live, pts[pts.length - 1] ?? dest]
+  const towardEnd = pts.slice(bestI)
+  const towardStart = pts.slice(0, bestI + 1).reverse()
+  const endAt = towardEnd[towardEnd.length - 1] ?? dest
+  const startAt = towardStart[towardStart.length - 1] ?? dest
+  // Prefer the branch whose far end is closer to the destination.
+  let rem =
+    metersBetweenLit(endAt, dest) <= metersBetweenLit(startAt, dest) + 4
+      ? towardEnd
+      : towardStart
+  if (rem.length < 2) {
+    rem = metersBetweenLit(live, dest) > 2 ? [live, dest] : pts.slice(-2)
+  }
   if (metersBetweenLit(rem[0], live) > 2) return [live, ...rem]
   return rem
 }
