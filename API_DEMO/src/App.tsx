@@ -14,7 +14,6 @@ import { NavGuidanceBanner } from './components/NavGuidanceBanner'
 import { AutocompleteField, type AutocompleteOption } from './components/AutocompleteField'
 import {
   resetVoiceDedupe,
-  speakWeakGpsAlert,
   unlockVoiceFromGesture,
   useDirectionVoice,
 } from './voiceGuide'
@@ -718,11 +717,6 @@ export default function App() {
       setLiveProgress(null)
       offRouteStreak.current = 0
       return
-    }
-
-    // Weak phone GPS — short voice nudge (throttled inside speakWeakGpsAlert).
-    if (liveFix.accuracy >= 25) {
-      speakWeakGpsAlert(liveFix.accuracy)
     }
 
     const phaseNow = result.journey.steps[journeyIndex]?.phase
@@ -1444,7 +1438,7 @@ export default function App() {
                       ? liveWatching && liveFix
                         ? liveProgress?.offRoute
                           ? 'Off route — finding a better path…'
-                          : `Following you · ${travelMode === 'walk' ? 'Walking' : travelMode === 'drive' ? 'Driving' : '…'} · ±${Math.round(liveFix.accuracy)} m`
+                          : `Following you · ${travelMode === 'walk' ? 'Walking' : travelMode === 'drive' ? 'Driving' : '…'}`
                         : liveGpsError || 'Waiting for GPS — allow location in the browser'
                       : 'Turn on to follow GPS and re-route when you leave the path'}
                 </span>
@@ -1502,9 +1496,7 @@ export default function App() {
                 </button>
                 <span className="demo-hint">
                   {wantsLiveGps && liveFix
-                    ? liveFix.accuracy >= 25
-                      ? `Following your phone · weak GPS ±${Math.round(liveFix.accuracy)} m`
-                      : `Following your phone · ±${Math.round(liveFix.accuracy)} m`
+                    ? 'Following your phone'
                     : wantsLiveGps
                       ? 'Waiting for phone GPS indoors…'
                       : 'Turn on Live GPS to follow your phone indoors'}
