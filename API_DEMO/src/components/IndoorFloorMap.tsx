@@ -88,9 +88,22 @@ export function IndoorFloorMap({
     return () => el.removeEventListener('wheel', onWheel)
   }, [scene])
 
+  // Always show a blue "you" marker. Prefer live GPS only when it falls near the
+  // indoor path — otherwise indoor GPS drifts off-canvas and the blue dot vanishes.
+  const pathYou: { x: number; y: number; heading: number } | null = scene
+    ? pointAlong(scene.leg, liveFix ? 0 : progress) || {
+        x: scene.youPin.x,
+        y: scene.youPin.y,
+        heading: 0,
+      }
+    : null
+  const liveNearPath =
+    Boolean(scene && liveFix) && nearestStopMeters(liveFix!, routeStops) <= 55
   const liveYou =
-    scene && liveFix ? scene.toXY(liveFix.latitude, liveFix.longitude) : null
-  const walker =
+    scene && liveFix && liveNearPath
+      ? scene.toXY(liveFix.latitude, liveFix.longitude)
+      : null
+  const walker: { x: number; y: number; heading: number } | null =
     liveYou != null
       ? {
           x: liveYou.x,
@@ -98,11 +111,20 @@ export function IndoorFloorMap({
           heading:
             liveFix?.heading != null && Number.isFinite(liveFix.heading)
               ? (liveFix.heading * Math.PI) / 180
-              : 0,
+              : pathYou?.heading ?? 0,
         }
-      : scene
-        ? pointAlong(scene.leg, progress)
-        : null
+      : pathYou
+        ? { x: pathYou.x, y: pathYou.y, heading: pathYou.heading }
+        : scene
+          ? { x: scene.youPin.x, y: scene.youPin.y, heading: 0 }
+          : null
+
+  const frame = useMemo(() => {
+    if (!scene) return null
+    const pts: XY[] = [scene.destPin, scene.youPin]
+    if (walker) pts.push({ x: walker.x, y: walker.y })
+    return frameAround(pts, 110)
+  }, [scene, walker])
 
   const onPointerDown = (event: RE<SVGSVGElement>) => {
     drag.current = { x: event.clientX, y: event.clientY, ox: view.x, oy: view.y }
@@ -120,11 +142,10 @@ export function IndoorFloorMap({
     drag.current = null
   }
 
-  if (!scene) {
+  if (!scene || !frame) {
     return <div className="floor-map floor-map--empty">No indoor map for this building</div>
   }
 
-  const frame = scene.frame
   const destLabel = mode === 'exit' ? 'Exit' : 'D'
 
   return (
@@ -159,18 +180,18 @@ export function IndoorFloorMap({
                   </text>
                 </g>
               ) : null}
-              {walker ? (
-                <g transform={`translate(${walker.x} ${walker.y})`}>
-                  <g transform={`rotate(${((walker.heading ?? 0) * 180) / Math.PI})`}>
-                    <circle r={16} fill="#1a73e8" stroke="#fff" strokeWidth={3} />
-                    <path d="M0 -9 L6 7 L0 3 L-6 7 Z" fill="#fff" />
-                  </g>
+              {/* Blue you — always drawn (live when near path, else route start) */}
+              <g transform={`translate(${walker?.x ?? scene.youPin.x} ${walker?.y ?? scene.youPin.y})`}>
+                <g transform={`rotate(${(((walker?.heading ?? 0) * 180) / Math.PI)})`}>
+                  <circle r={16} fill="#1a73e8" stroke="#fff" strokeWidth={3} />
+                  <path d="M0 -9 L6 7 L0 3 L-6 7 Z" fill="#fff" />
                 </g>
-              ) : null}
+              </g>
             </g>
           </svg>
           <p className="floor-map__legend">
             Blue = you · Red = {mode === 'exit' ? 'exit' : 'destination'}
+            {liveFix && !liveNearPath ? ' · GPS weak indoors — showing path start' : ''}
           </p>
         </div>
       </div>
@@ -196,7 +217,7 @@ export function IndoorFloorMap({
 
 function buildSimpleScene(
   map3d: NavigateResult['map3d'],
-  activeStep: number,
+  _activeStep: number,
   mode: 'exit' | 'enter',
   routeStops: NavigateResult['map3d']['routeStops'],
 ) {
@@ -229,20 +250,56 @@ function buildSimpleScene(
     }
   }
 
-  const start = stops[Math.min(activeStep, stops.length - 1)] || stops[0]
+  // Always anchor "you" at the first stop of this indoor segment (exit start / entrance).
+  const start = stops[0]
   const dest = stops[stops.length - 1]
-  const you = toXY(start.latitude, start.longitude)
+  let you = toXY(start.latitude, start.longitude)
   const destPin = toXY(dest.latitude, dest.longitude)
-  const leg = stops.map((s) => toXY(s.latitude, s.longitude))
-  const frame = frameAround([you, destPin, ...leg], 90)
+  // If start ≈ dest (single stop), nudge blue so it is not hidden under red.
+  if (Math.hypot(you.x - destPin.x, you.y - destPin.y) < 18) {
+    you = { x: destPin.x - 36, y: destPin.y + 28 }
+  }
+  const leg =
+    stops.length > 1
+      ? stops.map((s) => toXY(s.latitude, s.longitude))
+      : [you, destPin]
+  const frame = frameAround([you, destPin, ...leg], 110)
 
   return {
     toXY,
+    youPin: you,
     destPin,
-    leg: leg.length > 1 ? leg : [you, destPin],
+    leg,
     frame,
     mode,
   }
+}
+
+function nearestStopMeters(
+  fix: { latitude: number; longitude: number },
+  stops: NavigateResult['map3d']['routeStops'],
+) {
+  if (!stops.length) return Infinity
+  let best = Infinity
+  for (const stop of stops) {
+    const d = haversineM(fix, stop)
+    if (d < best) best = d
+  }
+  return best
+}
+
+function haversineM(
+  a: { latitude: number; longitude: number },
+  b: { latitude: number; longitude: number },
+) {
+  const R = 6371000
+  const p = Math.PI / 180
+  const dLat = (b.latitude - a.latitude) * p
+  const dLng = (b.longitude - a.longitude) * p
+  const h =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(a.latitude * p) * Math.cos(b.latitude * p) * Math.sin(dLng / 2) ** 2
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)))
 }
 
 function buildAllDirections(
