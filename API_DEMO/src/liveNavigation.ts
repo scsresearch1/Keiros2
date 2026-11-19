@@ -129,8 +129,8 @@ function flattenRoute(steps: JourneyStep[]): RoutePoint[] {
   return points
 }
 
-/** Final walk pin — ~5–10 ft. Do not announce arrival from across the street. */
-export const WALK_ARRIVE_M = 3
+/** Final walk pin — ~5–10 ft (≈ 3 m). Do not announce arrival from across the street. */
+export const WALK_ARRIVE_M = 3.2
 /** Intermediate walk turns — a bit looser so step advance still works. */
 const WALK_TURN_ARRIVE_M = 12
 /** Drive arrive / maneuvers. */
@@ -148,8 +148,8 @@ function arrivalRadiusM(
 ) {
   const acc = Number.isFinite(accuracyM) ? Math.max(0, accuracyM) : 15
   if (opts?.finalArrive && opts.phase === 'walk') {
-    // ~8–10 ft; never inflate with poor GPS accuracy (that was 40–50 ft early).
-    return Math.max(2, Math.min(WALK_ARRIVE_M, 2 + acc * 0.08))
+    // ~10 ft; allow a touch of accuracy but never balloon to street-crossing.
+    return Math.max(WALK_ARRIVE_M, Math.min(4, WALK_ARRIVE_M + Math.min(acc, 12) * 0.05))
   }
   if (opts?.phase === 'walk') {
     return Math.max(8, Math.min(WALK_TURN_ARRIVE_M, 8 + acc * 0.25))
@@ -379,7 +379,10 @@ export function matchLiveProgress(
     })
     let nearNext = false
     if (Number.isFinite(n.latitude) && Number.isFinite(n.longitude)) {
-      nearNext = haversineM(fix.latitude, fix.longitude, n.latitude, n.longitude) < arriveR
+      // Prefer snapped corridor point (what the puck shows) over raw GPS.
+      const dFix = haversineM(fix.latitude, fix.longitude, n.latitude, n.longitude)
+      const dSnap = haversineM(best.lat, best.lng, n.latitude, n.longitude)
+      nearNext = Math.min(dFix, dSnap) < arriveR
     }
     // Walk "arrived": only when the puck is within ~5–10 ft of the D pin — never from
     // polyline remainder alone (that fired 40–50 ft early).
@@ -406,6 +409,23 @@ export function matchLiveProgress(
   if (outdoorCap >= 0 && stepIndex > outdoorCap) stepIndex = outdoorCap
   if (steps[stepIndex]?.phase === 'indoor') {
     stepIndex = outdoorCap >= 0 ? outdoorCap : currentIndex
+  }
+
+  // Walk at the destination pin: snap to the last outdoor step even when the next
+  // journey step is indoor (manual Indoor navigation) — otherwise "arrived" never fires.
+  if (
+    aim &&
+    outdoorCap >= 0 &&
+    (steps[stepIndex]?.phase === 'walk' ||
+      steps[currentIndex]?.phase === 'walk' ||
+      steps[outdoorCap]?.phase === 'walk')
+  ) {
+    const walkArriveR = arrivalRadiusM(fix.accuracy, { phase: 'walk', finalArrive: true })
+    const dFix = haversineM(fix.latitude, fix.longitude, aim.latitude, aim.longitude)
+    const dSnap = haversineM(best.lat, best.lng, aim.latitude, aim.longitude)
+    if (Math.min(dFix, dSnap) <= walkArriveR) {
+      stepIndex = outdoorCap
+    }
   }
 
   const active = steps[stepIndex]

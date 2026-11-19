@@ -28,6 +28,7 @@ import {
   matchLiveProgress,
   requestCompassPermission,
   useGeolocationWatch,
+  WALK_ARRIVE_M,
   type LiveFix,
   type LiveProgress,
   type TravelMode,
@@ -159,6 +160,8 @@ export default function App() {
   const [indoorSession, setIndoorSession] = useState<IndoorKind | null>(null)
   /** After the user finishes (or skips) origin-exit indoor. */
   const [exitIndoorDone, setExitIndoorDone] = useState(false)
+  /** Outdoor walk: puck is within ~5–10 ft of destination D. */
+  const [outdoorArrived, setOutdoorArrived] = useState(false)
   /** Google Maps–style live GPS follow. Next/Previous stay available as optional manual control. */
   const [liveNav, setLiveNav] = useState(true)
   const [liveProgress, setLiveProgress] = useState<LiveProgress | null>(null)
@@ -548,6 +551,7 @@ export default function App() {
       setJourneyIndex(outdoorStart >= 0 ? outdoorStart : 0)
       setIndoorSession(null)
       setExitIndoorDone(false)
+      setOutdoorArrived(false)
       // Live / custom: keep GPS follow + re-route on. Demo: leave live off (simulated start).
       setLiveNav(mode === 'live' || mode === 'custom')
       setLiveProgress(null)
@@ -688,21 +692,33 @@ export default function App() {
     voiceStepRaw &&
     (voiceStepRaw.phase !== 'indoor' ||
       indoorSession === (voiceStepRaw.indoorKind || 'enter'))
-  const voiceCurrent = voiceStepAllowed
+  const arrivedLabel = result?.destination?.label
+    ? `You have arrived at ${result.destination.label}`
+    : 'You have arrived at your destination'
+  const voiceCurrent = outdoorArrived && !indoorSession
     ? {
-        ...voiceStepRaw,
-        id: `${result?.sessionId ?? 'route'}:i${journeyIndex}:${String(
-          voiceStepRaw.instruction || '',
-        )
-          .replace(/\s+/g, ' ')
-          .trim()
-          .slice(0, 72)
-          .toLowerCase()}`,
+        id: `${result?.sessionId ?? 'route'}:arrived-outdoor`,
+        phase: 'walk' as const,
+        index: journeyIndex,
+        instruction: arrivedLabel,
+        latitude: result?.destination.latitude ?? 0,
+        longitude: result?.destination.longitude ?? 0,
       }
-    : null
+    : voiceStepAllowed
+      ? {
+          ...voiceStepRaw,
+          id: `${result?.sessionId ?? 'route'}:i${journeyIndex}:${String(
+            voiceStepRaw.instruction || '',
+          )
+            .replace(/\s+/g, ' ')
+            .trim()
+            .slice(0, 72)
+            .toLowerCase()}`,
+        }
+      : null
   const voice = useDirectionVoice(
     voiceCurrent,
-    voiceStepAllowed ? voiceSteps[journeyIndex + 1] ?? null : null,
+    outdoorArrived || !voiceStepAllowed ? null : voiceSteps[journeyIndex + 1] ?? null,
   )
 
   const activePhase = voiceSteps[journeyIndex]?.phase
@@ -871,11 +887,42 @@ export default function App() {
     const progress = matchLiveProgress(matchSteps, liveFix, journeyIndex, dest)
     setLiveProgress(progress)
 
+    // Prefer snapped corridor position (what the blue puck shows) over raw GPS for arrival.
+    const snap = progress.snapped
+    const toDestRaw = approxMeters(
+      liveFix.latitude,
+      liveFix.longitude,
+      dest.latitude,
+      dest.longitude,
+    )
+    const toDestSnap = snap
+      ? approxMeters(snap.latitude, snap.longitude, dest.latitude, dest.longitude)
+      : Infinity
+    const toDestM = Math.min(toDestRaw, toDestSnap)
+    const walkLike =
+      routeMode === 'walk' ||
+      travelMode === 'walk' ||
+      travelModeRef.current === 'walk' ||
+      result.origin.liveTravelMode === 'walk'
+    // ~5–10 ft at D (use the closer of raw GPS vs snapped puck).
+    const arriveGateM = Math.max(WALK_ARRIVE_M, 3.5)
+    const atDestination = walkLike && !indoorSession && toDestM <= arriveGateM
+
     // Step auto-advance can wait; off-route recalculation must not.
     if (now >= manualHoldUntil.current) {
       const target = matchSteps[progress.stepIndex]
       if (target?.phase !== 'indoor') {
-        if (progress.stepIndex !== journeyIndex && progress.distanceToRouteM < 120) {
+        if (atDestination) {
+          let lastOut = -1
+          for (let i = matchSteps.length - 1; i >= 0; i -= 1) {
+            if (matchSteps[i].phase !== 'indoor') {
+              lastOut = i
+              break
+            }
+          }
+          if (lastOut >= 0 && journeyIndex !== lastOut) setJourneyIndex(lastOut)
+          if (!outdoorArrived) setOutdoorArrived(true)
+        } else if (progress.stepIndex !== journeyIndex && progress.distanceToRouteM < 120) {
           // Walk "arrived" voice only when within ~10 ft of D — not 40–50 ft early.
           const arriveCue = /arriv|reached destination|you have arrived/i.test(
             target.instruction || '',
@@ -887,20 +934,26 @@ export default function App() {
             const pinLng = Number.isFinite(target.longitude)
               ? target.longitude
               : dest.longitude
-            const toPin = approxMeters(
+            const toPinRaw = approxMeters(
               liveFix.latitude,
               liveFix.longitude,
               pinLat,
               pinLng,
             )
-            if (toPin > 3.5) {
+            const toPinSnap = snap
+              ? approxMeters(snap.latitude, snap.longitude, pinLat, pinLng)
+              : Infinity
+            if (Math.min(toPinRaw, toPinSnap) > arriveGateM) {
               /* hold current step until the marker is at D */
             } else {
               setJourneyIndex(progress.stepIndex)
+              setOutdoorArrived(true)
             }
           } else {
             setJourneyIndex(progress.stepIndex)
           }
+        } else if (outdoorArrived && toDestM > arriveGateM * 3) {
+          setOutdoorArrived(false)
         }
       }
     }
@@ -908,10 +961,9 @@ export default function App() {
       latitude: result.origin.latitude,
       longitude: result.origin.longitude,
     }
-    const toDestM = approxMeters(liveFix.latitude, liveFix.longitude, dest.latitude, dest.longitude)
     const toOriginM = approxMeters(liveFix.latitude, liveFix.longitude, origin.latitude, origin.longitude)
     // Ignore GPS that is nowhere near this trip (e.g. wrong continent vs Fresno demo).
-    if (toDestM > 25000 && toOriginM > 25000) return
+    if (toDestRaw > 25000 && toOriginM > 25000) return
 
     if (progress.offRoute) {
       offRouteStreak.current += 1
@@ -981,7 +1033,18 @@ export default function App() {
           }
         })
     }
-  }, [liveWatchOn, liveFix, result, journeyIndex, mapGuidance, voiceSteps, indoorSession, routeMode, travelMode])
+  }, [
+    liveWatchOn,
+    liveFix,
+    result,
+    journeyIndex,
+    mapGuidance,
+    voiceSteps,
+    indoorSession,
+    routeMode,
+    travelMode,
+    outdoorArrived,
+  ])
 
   function bumpJourney(delta: number) {
     manualHoldUntil.current = Date.now() + 10000
@@ -1590,8 +1653,18 @@ export default function App() {
           {active && showOutdoorMap ? (
             <div className="demo-map-guidance">
               <NavGuidanceBanner
-                active={active}
-                upcoming={steps[journeyIndex + 1] ?? null}
+                active={
+                  outdoorArrived
+                    ? {
+                        ...active,
+                        phase: active.phase === 'drive' ? 'walk' : active.phase,
+                        instruction: result.destination.label
+                          ? `You have arrived at ${result.destination.label}`
+                          : 'You have arrived at your destination',
+                      }
+                    : active
+                }
+                upcoming={outdoorArrived ? null : steps[journeyIndex + 1] ?? null}
                 progress={wantsLiveGps ? liveProgress : null}
                 recalculating={recalculating}
                 live={wantsLiveGps && Boolean(liveFix)}
