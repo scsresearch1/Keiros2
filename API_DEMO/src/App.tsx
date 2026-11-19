@@ -12,7 +12,12 @@ import { IndoorFloorMap } from './components/IndoorFloorMap'
 import { StartLocationPanel } from './components/StartLocationPanel'
 import { NavGuidanceBanner } from './components/NavGuidanceBanner'
 import { AutocompleteField, type AutocompleteOption } from './components/AutocompleteField'
-import { speakWeakGpsAlert, unlockVoiceFromGesture, useDirectionVoice } from './voiceGuide'
+import {
+  resetVoiceDedupe,
+  speakWeakGpsAlert,
+  unlockVoiceFromGesture,
+  useDirectionVoice,
+} from './voiceGuide'
 import { withLiveDrive } from './liveDrive'
 // import { attachLotToResult, withLiveDrive } from './liveDrive' // Via parking
 import {
@@ -543,6 +548,7 @@ export default function App() {
       setTravelMode(routeMode)
       userModeHoldUntil.current = Date.now() + 90_000
       prevMotionFixRef.current = null
+      resetVoiceDedupe()
       // Short hold so step voice settles — do not block off-route recalculation for long.
       manualHoldUntil.current = Date.now() + (mode === 'demo' ? 4000 : 1500)
       rerouteLockUntil.current = 0
@@ -663,8 +669,18 @@ export default function App() {
       ...indoor.map((s, i) => ({ ...s, index: mapGuidance.length + i })),
     ]
   }, [result, mapGuidance])
+  // Stable per step content — not regenerated guidance ids (those caused voice loops).
   const voiceCurrent = voiceSteps[journeyIndex]
-    ? { ...voiceSteps[journeyIndex], id: `${result?.sessionId ?? 'route'}:${voiceSteps[journeyIndex].id}` }
+    ? {
+        ...voiceSteps[journeyIndex],
+        id: `${result?.sessionId ?? 'route'}:i${journeyIndex}:${String(
+          voiceSteps[journeyIndex].instruction || '',
+        )
+          .replace(/\s+/g, ' ')
+          .trim()
+          .slice(0, 72)
+          .toLowerCase()}`,
+      }
     : null
   const voice = useDirectionVoice(voiceCurrent, voiceSteps[journeyIndex + 1] ?? null)
 

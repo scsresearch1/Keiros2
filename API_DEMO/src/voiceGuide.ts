@@ -11,6 +11,10 @@ const STORAGE = 'keiros-voice'
 let sessionUnlocked = false
 let pendingText: string | null = null
 let resumeTimer: number | null = null
+/** Prevent the same cue from being spoken again (GPS / guidance redraw loops). */
+let lastSpokenKey = ''
+let lastSpokenAt = 0
+let speakDelayTimer: number | null = null
 
 export function voicePreferenceOn() {
   try {
@@ -78,7 +82,18 @@ export function stopVoice() {
     window.clearInterval(resumeTimer)
     resumeTimer = null
   }
+  if (speakDelayTimer != null) {
+    window.clearTimeout(speakDelayTimer)
+    speakDelayTimer = null
+  }
   window.speechSynthesis?.cancel()
+}
+
+/** Reset dedupe when the user starts a new Navigate session. */
+export function resetVoiceDedupe() {
+  lastSpokenKey = ''
+  lastSpokenAt = 0
+  pendingText = null
 }
 
 /**
@@ -95,16 +110,26 @@ export function spokenCue(current: SpeakStep, _upcoming?: SpeakStep | null) {
   return capitalize(line)
 }
 
-export function speakDirection(text: string, opts?: { force?: boolean }) {
+export function speakDirection(text: string, opts?: { force?: boolean; dedupeKey?: string }) {
   if (typeof window === 'undefined' || !window.speechSynthesis) return
   const trimmed = text.trim()
   if (!trimmed) return
+
+  const key = (opts?.dedupeKey || trimmed).trim().toLowerCase()
+  const now = Date.now()
+  // Same cue again (guidance redraw / React effect) — speak once only.
+  if (!opts?.force && key && key === lastSpokenKey && now - lastSpokenAt < 180_000) {
+    return
+  }
 
   // Without a prior tap, queue the line until unlockVoiceFromGesture runs.
   if (!sessionUnlocked && !opts?.force) {
     pendingText = trimmed
     return
   }
+
+  lastSpokenKey = key
+  lastSpokenAt = now
 
   const synth = window.speechSynthesis
   try {
@@ -125,8 +150,12 @@ export function speakDirection(text: string, opts?: { force?: boolean }) {
     window.clearInterval(resumeTimer)
     resumeTimer = null
   }
+  if (speakDelayTimer != null) {
+    window.clearTimeout(speakDelayTimer)
+    speakDelayTimer = null
+  }
 
-  // iOS Safari often pauses mid-utterance unless resume() is poked.
+  // iOS Safari often pauses mid-utterance unless resume() is poked — do not restart speak.
   resumeTimer = window.setInterval(() => {
     if (!synth.speaking) {
       if (resumeTimer != null) window.clearInterval(resumeTimer)
@@ -155,8 +184,10 @@ export function speakDirection(text: string, opts?: { force?: boolean }) {
 
   synth.cancel()
   // Brief delay after cancel helps iOS actually start the next utterance.
-  window.setTimeout(() => {
+  speakDelayTimer = window.setTimeout(() => {
+    speakDelayTimer = null
     try {
+      if (synth.speaking || synth.pending) return
       synth.speak(utterance)
       synth.resume()
     } catch {
@@ -170,6 +201,7 @@ export function useDirectionVoice(current: SpeakStep | null, upcoming: SpeakStep
   const [unlocked, setUnlocked] = useState(sessionUnlocked)
   const upcomingRef = useRef(upcoming)
   const currentRef = useRef(current)
+  const lastStepSpokenRef = useRef<string | null>(null)
   upcomingRef.current = upcoming
   currentRef.current = current
   const supported = typeof window !== 'undefined' && 'speechSynthesis' in window
@@ -188,13 +220,18 @@ export function useDirectionVoice(current: SpeakStep | null, upcoming: SpeakStep
   useEffect(() => {
     if (!supported) return
     if (sessionUnlocked) setUnlocked(true)
-    if (!on || !current) {
+    if (!on) {
       stopVoice()
+      lastStepSpokenRef.current = null
       return
     }
-    // Auto-speak only after this browser session was unlocked by a tap (e.g. Navigate).
-    speakDirection(spokenCue(current, upcomingRef.current))
-    return () => stopVoice()
+    if (!current?.id) return
+    // One utterance per step id — never re-speak on guidance redraw / effect cleanup.
+    if (lastStepSpokenRef.current === current.id) return
+    lastStepSpokenRef.current = current.id
+    const cue = spokenCue(current, upcomingRef.current)
+    speakDirection(cue, { dedupeKey: current.id })
+    // Do not stopVoice on cleanup — that cancelled mid-phrase and retriggered loops.
   }, [current?.id, on, supported])
 
   function toggle() {
@@ -206,11 +243,17 @@ export function useDirectionVoice(current: SpeakStep | null, upcoming: SpeakStep
         setUnlocked(true)
         const step = currentRef.current
         if (step) {
-          speakDirection(spokenCue(step, upcomingRef.current), { force: true })
+          lastStepSpokenRef.current = step.id
+          speakDirection(spokenCue(step, upcomingRef.current), {
+            force: true,
+            dedupeKey: step.id,
+          })
         }
       } else {
         stopVoice()
         pendingText = null
+        lastStepSpokenRef.current = null
+        resetVoiceDedupe()
       }
       return next
     })
@@ -221,7 +264,8 @@ export function useDirectionVoice(current: SpeakStep | null, upcoming: SpeakStep
     if (!on || !step) return
     unlockVoiceFromGesture()
     setUnlocked(true)
-    speakDirection(spokenCue(step, upcomingRef.current), { force: true })
+    lastStepSpokenRef.current = step.id
+    speakDirection(spokenCue(step, upcomingRef.current), { force: true, dedupeKey: step.id })
   }
 
   /** Call from Navigate / other primary buttons so the first cue can play. */
