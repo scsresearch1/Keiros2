@@ -121,9 +121,13 @@ export function IndoorFloorMap({
 
   const frame = useMemo(() => {
     if (!scene) return null
-    const pts: XY[] = [scene.destPin, scene.youPin]
+    const pts: XY[] = [
+      scene.destPin,
+      scene.youPin,
+      ...scene.nodes.map((n) => ({ x: n.x, y: n.y })),
+    ]
     if (walker) pts.push({ x: walker.x, y: walker.y })
-    return frameAround(pts, 110)
+    return frameAround(pts, 120)
   }, [scene, walker])
 
   const onPointerDown = (event: RE<SVGSVGElement>) => {
@@ -147,6 +151,8 @@ export function IndoorFloorMap({
   }
 
   const destLabel = mode === 'exit' ? 'Exit' : 'D'
+  const youX = walker?.x ?? scene.youPin.x
+  const youY = walker?.y ?? scene.youPin.y
 
   return (
     <div className="floor-map floor-map--split">
@@ -161,13 +167,65 @@ export function IndoorFloorMap({
             onPointerMove={onPointerMove}
             onPointerUp={onPointerUp}
           >
+            <defs>
+              <filter id="indoorDotShadow" x="-40%" y="-40%" width="180%" height="180%">
+                <feDropShadow dx="0" dy="1" stdDeviation="1.2" floodOpacity="0.22" />
+              </filter>
+            </defs>
             <rect x={frame.x} y={frame.y} width={frame.w} height={frame.h} fill="#f7f5f1" />
             <g
               transform={`translate(${view.x} ${view.y}) translate(${frame.x + frame.w / 2} ${frame.y + frame.h / 2}) scale(${view.zoom}) translate(${-(frame.x + frame.w / 2)} ${-(frame.y + frame.h / 2)})`}
             >
+              {/* Soft path spine connecting mapped stops */}
+              {scene.pathD ? (
+                <>
+                  <path
+                    d={scene.pathD}
+                    fill="none"
+                    stroke="#c5d4ea"
+                    strokeWidth={10}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    opacity={0.55}
+                  />
+                  <path
+                    d={scene.pathD}
+                    fill="none"
+                    stroke="#5b8fd9"
+                    strokeWidth={3.5}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </>
+              ) : null}
+
+              {/* Interim waypoints from DB coordinates */}
+              {scene.nodes.map((node, index) => {
+                const isFirst = index === 0
+                const isLast = index === scene.nodes.length - 1
+                if (isFirst || isLast) return null
+                return (
+                  <g key={node.id} transform={`translate(${node.x} ${node.y})`} filter="url(#indoorDotShadow)">
+                    <circle r={8} fill="#fff" stroke="#3d5a80" strokeWidth={2.25} />
+                    <circle r={3.2} fill="#3d5a80" />
+                    <text
+                      y={22}
+                      textAnchor="middle"
+                      fill="#3d4a5c"
+                      fontSize={10}
+                      fontWeight={650}
+                      fontFamily="system-ui,sans-serif"
+                    >
+                      {node.short}
+                    </text>
+                  </g>
+                )
+              })}
+
+              {/* Destination */}
               {scene.destPin ? (
-                <g transform={`translate(${scene.destPin.x} ${scene.destPin.y})`}>
-                  <circle r={14} fill="#ea4335" stroke="#fff" strokeWidth={3} />
+                <g transform={`translate(${scene.destPin.x} ${scene.destPin.y})`} filter="url(#indoorDotShadow)">
+                  <circle r={15} fill="#ea4335" stroke="#fff" strokeWidth={3} />
                   <text
                     y={5}
                     textAnchor="middle"
@@ -178,10 +236,21 @@ export function IndoorFloorMap({
                   >
                     {destLabel === 'Exit' ? 'E' : 'D'}
                   </text>
+                  <text
+                    y={28}
+                    textAnchor="middle"
+                    fill="#9a3412"
+                    fontSize={10}
+                    fontWeight={700}
+                    fontFamily="system-ui,sans-serif"
+                  >
+                    {scene.nodes[scene.nodes.length - 1]?.short || destLabel}
+                  </text>
                 </g>
               ) : null}
-              {/* Blue you — always drawn (live when near path, else route start) */}
-              <g transform={`translate(${walker?.x ?? scene.youPin.x} ${walker?.y ?? scene.youPin.y})`}>
+
+              {/* Blue you — always on top */}
+              <g transform={`translate(${youX} ${youY})`} filter="url(#indoorDotShadow)">
                 <g transform={`rotate(${(((walker?.heading ?? 0) * 180) / Math.PI)})`}>
                   <circle r={16} fill="#1a73e8" stroke="#fff" strokeWidth={3} />
                   <path d="M0 -9 L6 7 L0 3 L-6 7 Z" fill="#fff" />
@@ -190,7 +259,7 @@ export function IndoorFloorMap({
             </g>
           </svg>
           <p className="floor-map__legend">
-            Blue = you · Red = {mode === 'exit' ? 'exit' : 'destination'}
+            Blue = you · Dots = path · Red = {mode === 'exit' ? 'exit' : 'destination'}
             {liveFix && !liveNearPath ? ' · GPS weak indoors — showing path start' : ''}
           </p>
         </div>
@@ -259,20 +328,82 @@ function buildSimpleScene(
   if (Math.hypot(you.x - destPin.x, you.y - destPin.y) < 18) {
     you = { x: destPin.x - 36, y: destPin.y + 28 }
   }
-  const leg =
-    stops.length > 1
-      ? stops.map((s) => toXY(s.latitude, s.longitude))
-      : [you, destPin]
-  const frame = frameAround([you, destPin, ...leg], 110)
+
+  const nodes = stops.map((stop, index) => {
+    const pt = toXY(stop.latitude, stop.longitude)
+    // Keep first node under blue even when nudged.
+    const xy = index === 0 ? you : index === stops.length - 1 ? destPin : pt
+    const hit = map3d.locations.find((loc) => loc.id === stop.id)
+    const raw = hit?.name || stop.name || `Stop ${index + 1}`
+    return {
+      id: `${stop.id || 'stop'}-${index}`,
+      x: xy.x,
+      y: xy.y,
+      name: raw,
+      short: shortenStopLabel(raw),
+      index,
+    }
+  })
+
+  // Soft orthogonal elbows when consecutive stops jump diagonally (reads clearer indoors).
+  const pathPts = hallwayElbows(nodes.map((n) => ({ x: n.x, y: n.y })))
+  const leg = pathPts.length > 1 ? pathPts : [you, destPin]
+  const pathD = roundedPath(leg, 14)
+  const frame = frameAround([you, destPin, ...nodes], 120)
 
   return {
     toXY,
     youPin: you,
     destPin,
+    nodes,
+    pathD,
     leg,
     frame,
     mode,
   }
+}
+
+function shortenStopLabel(name: string) {
+  const cleaned = name.replace(/\s*—\s*/g, ' · ').trim()
+  if (cleaned.length <= 14) return cleaned
+  return `${cleaned.slice(0, 13)}…`
+}
+
+function hallwayElbows(points: XY[]): XY[] {
+  if (points.length < 2) return points
+  const out: XY[] = [points[0]]
+  for (let i = 1; i < points.length; i += 1) {
+    const prev = out[out.length - 1]
+    const next = points[i]
+    const dx = Math.abs(prev.x - next.x)
+    const dy = Math.abs(prev.y - next.y)
+    if (dx > 14 && dy > 14) {
+      out.push({ x: next.x, y: prev.y })
+    }
+    out.push(next)
+  }
+  return out
+}
+
+function roundedPath(points: XY[], radius: number) {
+  if (points.length < 2) return ''
+  let d = `M ${points[0].x} ${points[0].y}`
+  for (let i = 1; i < points.length - 1; i += 1) {
+    const prev = points[i - 1]
+    const cur = points[i]
+    const next = points[i + 1]
+    const inLen = Math.hypot(cur.x - prev.x, cur.y - prev.y) || 1
+    const outLen = Math.hypot(next.x - cur.x, next.y - cur.y) || 1
+    const cut = Math.min(radius, inLen / 2, outLen / 2)
+    const ax = cur.x - ((cur.x - prev.x) / inLen) * cut
+    const ay = cur.y - ((cur.y - prev.y) / inLen) * cut
+    const bx = cur.x + ((next.x - cur.x) / outLen) * cut
+    const by = cur.y + ((next.y - cur.y) / outLen) * cut
+    d += ` L ${ax} ${ay} Q ${cur.x} ${cur.y} ${bx} ${by}`
+  }
+  const end = points[points.length - 1]
+  d += ` L ${end.x} ${end.y}`
+  return d
 }
 
 function nearestStopMeters(
