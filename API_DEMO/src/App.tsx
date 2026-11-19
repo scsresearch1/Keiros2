@@ -1544,8 +1544,8 @@ export default function App() {
               <div className="demo-indoor-head">
                 <p className="demo-indoor-banner">
                   {indoorSession === 'exit'
-                    ? 'Exit indoors — follow the text · blue = you · red = exit door'
-                    : 'Indoor — follow the text · blue = you · red = your unit'}
+                    ? 'Exit building — plain map (you + exit) · full text directions'
+                    : 'Inside — plain map (you + unit) · full text directions'}
                 </p>
               </div>
               <div className="demo-indoor-actions">
@@ -1554,27 +1554,14 @@ export default function App() {
                   className="demo-indoor-next"
                   onClick={() => {
                     unlockVoiceFromGesture()
-                    const list = steps
-                    const next = list[journeyIndex + 1]
-                    const leavingExit =
-                      indoorSession === 'exit' &&
-                      (!next || next.phase !== 'indoor' || next.indoorKind !== 'exit')
-                    if (leavingExit) {
+                    if (indoorSession === 'exit') {
                       leaveIndoorToOutdoor()
                       return
                     }
-                    if (journeyIndex >= list.length - 1) return
-                    bumpJourney(1)
+                    leaveIndoorToOutdoor()
                   }}
                 >
-                  {indoorSession === 'exit' &&
-                  (!steps[journeyIndex + 1] ||
-                    steps[journeyIndex + 1].phase !== 'indoor' ||
-                    steps[journeyIndex + 1].indoorKind !== 'exit')
-                    ? 'Continue outdoors'
-                    : journeyIndex >= steps.length - 1
-                      ? 'Arrived'
-                      : 'Next indoor step'}
+                  {indoorSession === 'exit' ? 'Continue outdoors' : 'Done — back to map'}
                 </button>
                 <button
                   type="button"
@@ -1584,24 +1571,23 @@ export default function App() {
                   Back to outdoor
                 </button>
                 <span className="demo-hint">
-                  {wantsLiveGps && liveFix
-                    ? 'Following your phone'
-                    : wantsLiveGps
-                      ? 'Waiting for phone GPS indoors…'
-                      : 'Turn on Live GPS to follow your phone indoors'}
+                  All indoor steps are listed at once — follow the blue marker to the red pin
                 </span>
               </div>
               <IndoorFloorMap
                 map3d={result.map3d}
                 activeStep={indoorStep}
                 instruction={active?.instruction}
+                directions={(indoorSession === 'exit' ? exitIndoorSteps : enterIndoorSteps)
+                  .map((s) => s.instruction)
+                  .filter(Boolean)}
                 liveFix={wantsLiveGps ? liveFix : null}
                 mode={indoorSession === 'exit' ? 'exit' : 'enter'}
               />
             </div>
           )}
 
-          {active && (showOutdoorMap || showIndoorNav) ? (
+          {active && showOutdoorMap ? (
             <div className="demo-map-guidance">
               <NavGuidanceBanner
                 active={active}
