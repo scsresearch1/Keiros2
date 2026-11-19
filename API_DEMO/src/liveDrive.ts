@@ -1,4 +1,4 @@
-import type { JourneyStep, NavigateResult } from './api'
+import { stitchOutdoorWithIndoor, type JourneyStep, type NavigateResult } from './api'
 
 type LatLng = { latitude: number; longitude: number }
 
@@ -408,19 +408,15 @@ export async function attachLotToResult(result: NavigateResult): Promise<Navigat
     try {
       const foot = await fetchWalkAlongRoads(parking, entrance)
       const driveSteps0 = base.journey.steps.filter((s) => s.phase === 'drive' || s.phase === 'outdoor')
-      const indoor0 = base.journey.steps.filter((s) => s.phase === 'indoor')
-      const rebuilt = [
+      const outdoor0 = [
         ...driveSteps0,
         ...foot.steps.map((step, index) => ({
           ...step,
           index: driveSteps0.length + index,
           phase: 'walk' as const,
         })),
-        ...indoor0.map((step, index) => ({
-          ...step,
-          index: driveSteps0.length + foot.steps.length + index,
-        })),
       ]
+      const rebuilt = stitchOutdoorWithIndoor(outdoor0, base.journey.steps)
       base = {
         ...base,
         walk: {
@@ -452,7 +448,6 @@ export async function attachLotToResult(result: NavigateResult): Promise<Navigat
 
   const driveSteps = base.journey.steps.filter((step) => step.phase === 'drive' || step.phase === 'outdoor')
   const walkSteps = base.journey.steps.filter((step) => step.phase === 'walk')
-  const indoorSteps = base.journey.steps.filter((step) => step.phase === 'indoor')
   const driveCoords = base.outdoor.geometry?.coordinates?.length
     ? base.outdoor.geometry.coordinates
     : driveSteps.flatMap((step) => step.geometry ?? [])
@@ -512,14 +507,11 @@ export async function attachLotToResult(result: NavigateResult): Promise<Navigat
   if (addedMeters === 0 && nextWalk.length === walkSteps.length && !walkChanged && !walkProviderChanged) {
     return base
   }
-  const steps = [
+  const outdoorMid = [
     ...nextDrive,
     ...nextWalk.map((step, index) => ({ ...step, index: nextDrive.length + index, phase: 'walk' as const })),
-    ...indoorSteps.map((step, index) => ({
-      ...step,
-      index: nextDrive.length + nextWalk.length + index,
-    })),
   ]
+  const steps = stitchOutdoorWithIndoor(outdoorMid, base.journey.steps)
   const distanceM = Math.round((base.outdoor.distanceM || 0) + addedMeters)
   const walkDistance = nextWalk.reduce((sum, step) => sum + (step.distanceM ?? 0), 0)
   return {
@@ -595,15 +587,8 @@ export async function withLiveDrive(
       latitude: result.destination.latitude,
       longitude: result.destination.longitude,
     }
-    const indoorSteps = result.journey.steps.filter((step) => step.phase === 'indoor')
     const packDrive = (drive: Awaited<ReturnType<typeof fetchDrive>>) => {
-      const steps = [
-        ...drive.steps,
-        ...indoorSteps.map((step, index) => ({
-          ...step,
-          index: drive.steps.length + index,
-        })),
-      ]
+      const steps = stitchOutdoorWithIndoor(drive.steps, result.journey.steps)
       return {
         ...result,
         origin: {
@@ -677,7 +662,6 @@ export async function withLiveDrive(
 
   // Walk (default) only — never steal a user Drive selection into red walk dots.
   if (!preferDrive && (preferWalk || toEntrance <= WALK_FROM_HERE_M)) {
-    const indoorSteps = result.journey.steps.filter((step) => step.phase === 'indoor')
     let walkSteps: JourneyStep[] = []
     let walkGeom: [number, number][] = [[origin.longitude, origin.latitude]]
     let walkDistance = Math.round(toEntrance)
@@ -735,13 +719,10 @@ export async function withLiveDrive(
         }
       }
     }
-    const steps = [
-      ...walkSteps.map((step, index) => ({ ...step, index, phase: 'walk' as const })),
-      ...indoorSteps.map((step, index) => ({
-        ...step,
-        index: walkSteps.length + index,
-      })),
-    ]
+    const steps = stitchOutdoorWithIndoor(
+      walkSteps.map((step, index) => ({ ...step, index, phase: 'walk' as const })),
+      result.journey.steps,
+    )
     return {
       ...result,
       origin: {
@@ -817,14 +798,10 @@ export async function withLiveDrive(
   if (meters(origin, parking) > meters(origin, entrance) + 80 && toEntrance <= 1200) {
     try {
       const foot = await fetchWalkAlongRoads(origin, entrance)
-      const indoorSteps = result.journey.steps.filter((step) => step.phase === 'indoor')
-      const steps = [
-        ...foot.steps.map((step, index) => ({ ...step, index, phase: 'walk' as const })),
-        ...indoorSteps.map((step, index) => ({
-          ...step,
-          index: foot.steps.length + index,
-        })),
-      ]
+      const steps = stitchOutdoorWithIndoor(
+        foot.steps.map((step, index) => ({ ...step, index, phase: 'walk' as const })),
+        result.journey.steps,
+      )
       return {
         ...result,
         origin: {
@@ -888,15 +865,13 @@ export async function withLiveDrive(
     throw err
   }
   const walkSteps = result.journey.steps.filter((step) => step.phase === 'walk')
-  const indoorSteps = result.journey.steps.filter((step) => step.phase === 'indoor')
-  const steps = [
-    ...drive.steps,
-    ...walkSteps.map((step, index) => ({ ...step, index: drive.steps.length + index })),
-    ...indoorSteps.map((step, index) => ({
-      ...step,
-      index: drive.steps.length + walkSteps.length + index,
-    })),
-  ]
+  const steps = stitchOutdoorWithIndoor(
+    [
+      ...drive.steps,
+      ...walkSteps.map((step, index) => ({ ...step, index: drive.steps.length + index })),
+    ],
+    result.journey.steps,
+  )
   const miles = Math.round(milesBetween(origin, parking) * 10) / 10
   return attachLotToResult({
     ...result,

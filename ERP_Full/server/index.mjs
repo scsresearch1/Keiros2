@@ -6,7 +6,7 @@ import { existsSync } from 'node:fs'
 import dotenv from 'dotenv'
 import { loadCollection, upsert, isUsingLocalFallback, dataSourceLabel } from './lib/firebase.mjs'
 import { authenticateApiKey, extractApiKey, requireScope } from './lib/auth.mjs'
-import { buildIndoorJourney, serializeStop } from './lib/indoor.mjs'
+import { buildIndoorExitJourney, buildIndoorJourney, serializeStop } from './lib/indoor.mjs'
 import {
   fetchDriveRoute,
   fetchWeather,
@@ -537,6 +537,21 @@ app.post('/api/v1/navigate', (req, res) =>
     const chosenLabel = cleanOriginLabel(req.body?.originLabel)
     const startMode = explicitStart ? requestedStart : 'demo'
 
+    // If the live/custom start is inside a mapped building, plan exit indoor first.
+    // Outdoor corridor then begins at that building's exit door (not the indoor pin).
+    const indoorExit = explicitStart
+      ? buildIndoorExitJourney(origin, indoorPool.length ? indoorPool : locations)
+      : null
+    const outdoorStart =
+      indoorExit?.exit &&
+      Number.isFinite(indoorExit.exit.latitude) &&
+      Number.isFinite(indoorExit.exit.longitude)
+        ? {
+            latitude: indoorExit.exit.latitude,
+            longitude: indoorExit.exit.longitude,
+          }
+        : origin
+
     const weatherPromise = fetchWeather(destination.latitude, destination.longitude)
     let parking
     let drive
@@ -597,30 +612,38 @@ app.post('/api/v1/navigate', (req, res) =>
         }
       }
 
-      const arrival = await chooseArrival(entrancePoint, origin, dbParking)
+      const arrival = await chooseArrival(entrancePoint, outdoorStart, dbParking)
       parking = arrival.parking
       drive = arrival.drive
       walk = arrival.walk
       arrivalMode = arrival.arrivalMode
       outdoorNote =
         arrivalMode === 'at-entrance'
-          ? 'You are already at the entrance — continue indoors.'
+          ? indoorExit
+            ? 'Exit the building, then continue indoors at the destination.'
+            : 'You are already at the entrance — continue indoors.'
           : arrivalMode === 'walk-from-origin'
-            ? 'Close enough to walk from your start to the entrance (no parking detour).'
+            ? indoorExit
+              ? 'Exit the building, then walk to the destination entrance.'
+              : 'Close enough to walk from your start to the entrance (no parking detour).'
             : dbParking
               ? `Drive to ${dbParking.label} (database parking). Walk pathways to entrance, then indoors.`
               : 'Drive ends at parking. Walk from parking to entrance, then continue indoors.'
     } else {
-      const arrival = await choosePointToPoint(origin, routeTarget, {
+      const arrival = await choosePointToPoint(outdoorStart, routeTarget, {
         destLabel: unit.name || entrancePoint.name,
       })
       parking = arrival.parking
       drive = arrival.drive
       walk = arrival.walk
       arrivalMode = 'point-to-point'
-      outdoorNote = indoorContinues
-        ? `Drive/walk to ${unit.name || 'destination'}, then continue indoors from ${entrancePoint.name}.`
-        : 'Point-to-point: start → destination.'
+      outdoorNote = indoorExit
+        ? indoorContinues
+          ? `Exit building → outdoors → enter at ${entrancePoint.name} → ${unit.name || 'unit'}.`
+          : 'Exit building → outdoors to destination.'
+        : indoorContinues
+          ? `Drive/walk to ${unit.name || 'destination'}, then continue indoors from ${entrancePoint.name}.`
+          : 'Point-to-point: start → destination.'
     }
     const weather = await weatherPromise
     const originMiles = Math.round(milesBetween(origin, routeTarget) * 10) / 10
@@ -658,7 +681,7 @@ app.post('/api/v1/navigate', (req, res) =>
 
     const buildingUnits = locations.filter((l) => l.buildingId === building.id)
     const buildingFloors = floors.filter((f) => f.buildingId === building.id)
-    const journeySteps = buildJourneySteps(drive, walk, indoor, unit.name)
+    const journeySteps = buildJourneySteps(drive, walk, indoor, unit.name, indoorExit)
 
     const sessionId = rid
     const session = {
@@ -760,16 +783,22 @@ app.post('/api/v1/navigate', (req, res) =>
           totalSteps: journeySteps.length,
           driveSteps: drive.steps?.length ?? 0,
           walkSteps: walk.steps?.length ?? 0,
-          indoorSteps: indoor.stops?.length ?? 0,
+          indoorSteps:
+            (indoor.stops?.length ?? 0) + (indoorExit?.stops?.length ?? 0),
           outdoorSteps: drive.steps?.length ?? 0,
           phases: [
+            ...(indoorExit ? ['indoor'] : []),
             ...((drive.steps?.length ?? 0) > 0 ? ['drive'] : []),
             ...((walk.steps?.length ?? 0) > 0 ? ['walk'] : []),
             'indoor',
           ],
-          summary: viaParking
-            ? 'Drive to parking → walk to building entrance → navigate inside to the unit.'
-            : 'Point-to-point: start → entrance → unit (no parking).',
+          summary: indoorExit
+            ? viaParking
+              ? 'Exit building → drive to parking → walk to entrance → inside to the unit.'
+              : 'Exit building → outdoors → entrance → unit.'
+            : viaParking
+              ? 'Drive to parking → walk to building entrance → navigate inside to the unit.'
+              : 'Point-to-point: start → entrance → unit (no parking).',
           steps: journeySteps,
         },
         indoor: {
@@ -778,6 +807,16 @@ app.post('/api/v1/navigate', (req, res) =>
           floorChanges: indoor.floorChanges,
           entry: indoor.entry ? serializeStop(indoor.entry) : null,
           stops: indoor.stops.map(serializeStop),
+          exit: indoorExit
+            ? {
+                distanceM: indoorExit.distanceM,
+                walkMinutes: indoorExit.walkMinutes,
+                floorChanges: indoorExit.floorChanges,
+                entry: indoorExit.exit ? serializeStop(indoorExit.exit) : null,
+                start: indoorExit.start ? serializeStop(indoorExit.start) : null,
+                stops: indoorExit.stops.map(serializeStop),
+              }
+            : null,
         },
         map3d: {
           building,
@@ -786,6 +825,7 @@ app.post('/api/v1/navigate', (req, res) =>
           selectedFloorId: floor.id,
           selectedUnitId: unit.id,
           routeStops: indoor.stops.map(serializeStop),
+          exitRouteStops: indoorExit ? indoorExit.stops.map(serializeStop) : [],
         },
       },
       logMeta: {

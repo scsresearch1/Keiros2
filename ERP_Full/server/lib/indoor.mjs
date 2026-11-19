@@ -461,6 +461,85 @@ function instructionForStop(stops, i, destinationLabel) {
   }
 }
 
+/** Max distance (m) from a mapped pin to treat the start as indoors. */
+const INSIDE_START_M = 45
+
+/**
+ * When the user starts inside a mapped building: nearest pin → building exit/entry.
+ * Returns null if the origin is outdoors (not near any mapped location).
+ */
+export function buildIndoorExitJourney(originPoint, allLocations) {
+  if (
+    !originPoint ||
+    !Number.isFinite(originPoint.latitude) ||
+    !Number.isFinite(originPoint.longitude)
+  ) {
+    return null
+  }
+  const enrichedAll = enrichLocations(allLocations).filter((l) => l.mapped !== false)
+  if (!enrichedAll.length) return null
+
+  const nearest = [...enrichedAll]
+    .filter((l) => Number.isFinite(l.latitude) && Number.isFinite(l.longitude))
+    .map((l) => ({ l, d: haversineMeters(originPoint, l) }))
+    .sort((a, b) => a.d - b.d)[0]
+  if (!nearest || nearest.d > INSIDE_START_M) return null
+
+  const startLoc = nearest.l
+  let buildingLocs = filterBuildingOutliers(
+    enrichedAll.filter((l) => l.buildingId === startLoc.buildingId && l.mapped !== false),
+  )
+  if (!buildingLocs.length) {
+    buildingLocs = enrichedAll.filter((l) => l.buildingId === startLoc.buildingId)
+  }
+  const exit =
+    nearestEntry(buildingLocs, startLoc) ||
+    nearestEntry(buildingLocs, startLoc, startLoc.floorId) ||
+    buildingLocs.find((l) => l.id !== startLoc.id) ||
+    startLoc
+  if (!exit || exit.id === startLoc.id) {
+    return null
+  }
+  const stops = routePath(startLoc, exit, buildingLocs)
+  if (!stops.length || stops.length < 2) return null
+  const floorChanges = Math.max(0, new Set(stops.map((s) => s.floorId)).size - 1)
+  const distanceM = pathDistanceMeters(stops)
+  const cues = stops.map((_, i) => instructionForExitStop(stops, i, exit.name))
+  return {
+    stops,
+    distanceM: Math.round(distanceM),
+    walkMinutes: estimateWalkMinutes(distanceM, floorChanges),
+    floorChanges,
+    entry: exit,
+    exit,
+    start: startLoc,
+    cues,
+    kind: 'exit',
+  }
+}
+
+function instructionForExitStop(stops, i, exitLabel) {
+  const stop = stops[i]
+  const prev = stops[i - 1]
+  const dist = prev ? Math.round(haversineMeters(prev, stop)) : 0
+  if (i === 0) {
+    return {
+      instruction: `Start inside at ${stop.name} — head toward the exit`,
+      title: 'Inside · Exit building',
+      maneuver: 'start',
+    }
+  }
+  if (i === stops.length - 1) {
+    return {
+      instruction: `Exit at ${stop.name || exitLabel || 'the door'} — continue outdoors`,
+      title: 'Inside · Exit',
+      maneuver: 'exit',
+      distanceM: dist,
+    }
+  }
+  return instructionForStop(stops, i, exitLabel)
+}
+
 export function buildIndoorJourney(destination, allLocations) {
   const enrichedAll = enrichLocations(allLocations)
   const dest = enrichLocation(destination)
@@ -511,9 +590,17 @@ export function buildIndoorJourney(destination, allLocations) {
 }
 
 /** Build journey step payloads for the navigate API response. */
-export function buildIndoorSteps(indoor, destinationLabel, indexOffset = 0) {
+export function buildIndoorSteps(indoor, destinationLabel, indexOffset = 0, indoorKind = 'enter') {
+  const kind = indoorKind === 'exit' || indoor?.kind === 'exit' ? 'exit' : 'enter'
+  const prefix = kind === 'exit' ? 'in-exit' : 'in-enter'
   const stops = indoor.stops || []
-  const cues = indoor.cues || stops.map((_, i) => instructionForStop(stops, i, destinationLabel))
+  const cues =
+    indoor.cues ||
+    stops.map((_, i) =>
+      kind === 'exit'
+        ? instructionForExitStop(stops, i, destinationLabel)
+        : instructionForStop(stops, i, destinationLabel),
+    )
   return stops.map((stop, i) => {
     const cue = cues[i] || {}
     const prev = stops[i - 1]
@@ -523,10 +610,11 @@ export function buildIndoorSteps(indoor, destinationLabel, indexOffset = 0) {
         ? Math.round(haversineMeters(prev, stop))
         : 0)
     return {
-      id: `in-${i}`,
+      id: `${prefix}-${i}`,
       phase: 'indoor',
       index: indexOffset + i,
       indoorIndex: i,
+      indoorKind: kind,
       instruction: cue.instruction || `Go to ${stop.name}`,
       title: cue.title || `Inside · Step ${i + 1}`,
       maneuver: cue.maneuver || 'straight',

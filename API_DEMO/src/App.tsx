@@ -4,7 +4,10 @@ import {
   fetchHierarchy,
   navigate,
   phaseLabel,
+  splitIndoorByKind,
+  stitchOutdoorWithIndoor,
   type Hierarchy,
+  type IndoorKind,
   type NavigateResult,
 } from './api'
 import { OutdoorMap } from './components/OutdoorMap'
@@ -149,8 +152,13 @@ export default function App() {
   const [customOrigin, setCustomOrigin] = useState<StartPoint | null>(null)
   const [pickerOpen, setPickerOpen] = useState(false)
   const [locating, setLocating] = useState(false)
-  /** Indoor 2D + voice only starts when the user taps Start — never auto. */
-  const [indoorNavStarted, setIndoorNavStarted] = useState(false)
+  /**
+   * Indoor 2D only after an explicit tap — never auto.
+   * `exit` = leave start building; `enter` = go to destination unit.
+   */
+  const [indoorSession, setIndoorSession] = useState<IndoorKind | null>(null)
+  /** After the user finishes (or skips) origin-exit indoor. */
+  const [exitIndoorDone, setExitIndoorDone] = useState(false)
   /** Google Maps–style live GPS follow. Next/Previous stay available as optional manual control. */
   const [liveNav, setLiveNav] = useState(true)
   const [liveProgress, setLiveProgress] = useState<LiveProgress | null>(null)
@@ -531,9 +539,15 @@ export default function App() {
         //     }
         //   : {}),
       })
-      // Point-to-point starts at the first step (origin → destination).
-      setJourneyIndex(0)
-      setIndoorNavStarted(false)
+      // Prefer outdoor index so the map paints before any Indoor navigation tap.
+      // Exit/enter indoor stay available but never auto-start.
+      const planned = routed.journey.steps
+      const outdoorStart = planned.findIndex(
+        (s) => s.phase === 'drive' || s.phase === 'walk' || s.phase === 'outdoor',
+      )
+      setJourneyIndex(outdoorStart >= 0 ? outdoorStart : 0)
+      setIndoorSession(null)
+      setExitIndoorDone(false)
       // Live / custom: keep GPS follow + re-route on. Demo: leave live off (simulated start).
       setLiveNav(mode === 'live' || mode === 'custom')
       setLiveProgress(null)
@@ -662,18 +676,23 @@ export default function App() {
     // Live walk recalculate owns guidance — ignore stale drive mapGuidance.
     if (result?.origin.liveTravelMode === 'walk') return base
     if (!mapGuidance?.length) return base
-    const indoor = base.filter((s) => s.phase === 'indoor')
-    return [
-      ...mapGuidance.map((s, i) => ({ ...s, index: i })),
-      ...indoor.map((s, i) => ({ ...s, index: mapGuidance.length + i })),
-    ]
+    return stitchOutdoorWithIndoor(
+      mapGuidance.map((s, i) => ({ ...s, index: i })),
+      base,
+    )
   }, [result, mapGuidance])
   // Stable per step content — not regenerated guidance ids (those caused voice loops).
-  const voiceCurrent = voiceSteps[journeyIndex]
+  // Never voice an indoor segment until the user explicitly starts that indoor session.
+  const voiceStepRaw = voiceSteps[journeyIndex] ?? null
+  const voiceStepAllowed =
+    voiceStepRaw &&
+    (voiceStepRaw.phase !== 'indoor' ||
+      indoorSession === (voiceStepRaw.indoorKind || 'enter'))
+  const voiceCurrent = voiceStepAllowed
     ? {
-        ...voiceSteps[journeyIndex],
+        ...voiceStepRaw,
         id: `${result?.sessionId ?? 'route'}:i${journeyIndex}:${String(
-          voiceSteps[journeyIndex].instruction || '',
+          voiceStepRaw.instruction || '',
         )
           .replace(/\s+/g, ' ')
           .trim()
@@ -681,7 +700,10 @@ export default function App() {
           .toLowerCase()}`,
       }
     : null
-  const voice = useDirectionVoice(voiceCurrent, voiceSteps[journeyIndex + 1] ?? null)
+  const voice = useDirectionVoice(
+    voiceCurrent,
+    voiceStepAllowed ? voiceSteps[journeyIndex + 1] ?? null : null,
+  )
 
   const activePhase = voiceSteps[journeyIndex]?.phase
   const outdoorActive =
@@ -724,14 +746,17 @@ export default function App() {
 
     // Indoor: only after user starts indoor nav — follow GPS against stop pins.
     if (phaseNow === 'indoor') {
-      if (!indoorNavStarted) return
-      const indoorSteps = result.journey.steps.filter((s) => s.phase === 'indoor')
+      if (!indoorSession) return
+      const sessionKind = indoorSession
+      const indoorSteps = result.journey.steps.filter(
+        (s) => s.phase === 'indoor' && (s.indoorKind || 'enter') === sessionKind,
+      )
       if (!indoorSteps.length) return
       let bestIdx = journeyIndex
       let bestDist = Infinity
       for (let i = 0; i < result.journey.steps.length; i += 1) {
         const s = result.journey.steps[i]
-        if (s.phase !== 'indoor') continue
+        if (s.phase !== 'indoor' || (s.indoorKind || 'enter') !== sessionKind) continue
         const d = approxMeters(liveFix.latitude, liveFix.longitude, s.latitude, s.longitude)
         if (d < bestDist) {
           bestDist = d
@@ -750,10 +775,11 @@ export default function App() {
         routeHeadingDeg: null,
       })
       if (now >= manualHoldUntil.current && liveFix.accuracy < 35) {
-        // Advance when near the next indoor pin (or snapped onto a later one).
         const next = Math.min(result.journey.steps.length - 1, journeyIndex + 1)
         const nextStep = result.journey.steps[next]
-        if (nextStep?.phase === 'indoor') {
+        const sameSession =
+          nextStep?.phase === 'indoor' && (nextStep.indoorKind || 'enter') === sessionKind
+        if (sameSession) {
           const toNext = approxMeters(
             liveFix.latitude,
             liveFix.longitude,
@@ -763,6 +789,14 @@ export default function App() {
           if (toNext <= arriveR || (bestIdx > journeyIndex && bestDist <= arriveR * 1.4)) {
             setJourneyIndex(bestIdx > journeyIndex ? bestIdx : next)
           }
+        } else if (sessionKind === 'exit' && bestDist <= arriveR) {
+          // Finished exit indoor — hand off to outdoor (never auto-start enter indoor).
+          setIndoorSession(null)
+          setExitIndoorDone(true)
+          const outdoorIdx = result.journey.steps.findIndex(
+            (s) => s.phase === 'drive' || s.phase === 'walk' || s.phase === 'outdoor',
+          )
+          if (outdoorIdx >= 0) setJourneyIndex(outdoorIdx)
         }
       }
       return
@@ -947,18 +981,31 @@ export default function App() {
           }
         })
     }
-  }, [liveWatchOn, liveFix, result, journeyIndex, mapGuidance, voiceSteps, indoorNavStarted, routeMode, travelMode])
+  }, [liveWatchOn, liveFix, result, journeyIndex, mapGuidance, voiceSteps, indoorSession, routeMode, travelMode])
 
   function bumpJourney(delta: number) {
     manualHoldUntil.current = Date.now() + 10000
-    setJourneyIndex((i) => {
-      const list = result?.journey.steps ?? []
-      const max = Math.max(0, list.length - 1)
-      const next = Math.min(max, Math.max(0, i + delta))
-      // Never enter indoor steps until the user taps Start indoor navigation.
-      if (!indoorNavStarted && list[next]?.phase === 'indoor') return i
-      return next
-    })
+    const list = result?.journey.steps ?? []
+    const max = Math.max(0, list.length - 1)
+    const i = journeyIndex
+    const next = Math.min(max, Math.max(0, i + delta))
+    const nextStep = list[next]
+    // Never enter an indoor segment until the user taps Indoor navigation.
+    if (nextStep?.phase === 'indoor') {
+      const kind = (nextStep.indoorKind || 'enter') as IndoorKind
+      if (indoorSession !== kind) return
+    }
+    // Leaving exit indoor → outdoor clears the session.
+    if (
+      indoorSession === 'exit' &&
+      list[i]?.phase === 'indoor' &&
+      nextStep &&
+      (nextStep.phase !== 'indoor' || nextStep.indoorKind !== 'exit')
+    ) {
+      setIndoorSession(null)
+      setExitIndoorDone(true)
+    }
+    setJourneyIndex(next)
   }
 
   function jumpJourney(index: number) {
@@ -1027,29 +1074,44 @@ export default function App() {
     !(liveDriveMode && mapGuidance!.every((s) => s.phase === 'walk'))
   const steps =
     guidanceUsable && result
-      ? [
-          ...mapGuidance!.map((s, i) => ({ ...s, index: i })),
-          ...baseSteps
-            .filter((s) => s.phase === 'indoor')
-            .map((s, i) => ({ ...s, index: mapGuidance!.length + i })),
-        ]
+      ? stitchOutdoorWithIndoor(
+          mapGuidance!.map((s, i) => ({ ...s, index: i })),
+          baseSteps,
+        )
       : baseSteps
+  const { exit: exitIndoorSteps, enter: enterIndoorSteps } = splitIndoorByKind(steps)
   const active = steps[journeyIndex] ?? null
   const phase = active?.phase === 'outdoor' ? 'drive' : (active?.phase ?? 'drive')
   const indoorStep = active?.phase === 'indoor' ? (active.indoorIndex ?? 0) : 0
-  const firstIndoorIndex = steps.findIndex((s) => s.phase === 'indoor')
-  const indoorStepCount = steps.filter((s) => s.phase === 'indoor').length
-  const showIndoorNav = indoorNavStarted && firstIndoorIndex >= 0
-  // Stay on outdoor map until the user explicitly starts indoor navigation.
+  const firstExitIndex = steps.findIndex((s) => s.phase === 'indoor' && s.indoorKind === 'exit')
+  const firstEnterIndex = steps.findIndex(
+    (s) => s.phase === 'indoor' && (s.indoorKind === 'enter' || !s.indoorKind),
+  )
+  const firstOutdoorIndex = steps.findIndex(
+    (s) => s.phase === 'drive' || s.phase === 'walk' || s.phase === 'outdoor',
+  )
+  const showIndoorNav = indoorSession != null
+  // Stay on outdoor map until the user explicitly starts an indoor segment.
   const showOutdoorMap = !showIndoorNav
   const canNavigate = Boolean(complexId && buildingId && floorId && unitId)
 
+  // Which Indoor navigation CTA to offer (never auto).
+  const offerExitIndoor =
+    exitIndoorSteps.length > 0 && indoorSession == null && !exitIndoorDone
+  const offerEnterIndoor =
+    enterIndoorSteps.length > 0 && indoorSession == null && !offerExitIndoor
+  const offerIndoorKind: IndoorKind | null = offerExitIndoor
+    ? 'exit'
+    : offerEnterIndoor
+      ? 'enter'
+      : null
+
   function jumpToPhase(target: 'drive' | 'walk' | 'indoor') {
     if (target === 'indoor') {
-      startIndoorNavigation()
+      startIndoorNavigation(offerIndoorKind || (firstExitIndex >= 0 ? 'exit' : 'enter'))
       return
     }
-    setIndoorNavStarted(false)
+    setIndoorSession(null)
     const idx = steps.findIndex((s) => {
       if (target === 'drive') return s.phase === 'drive' || s.phase === 'outdoor'
       return s.phase === target
@@ -1057,11 +1119,18 @@ export default function App() {
     if (idx >= 0) jumpJourney(idx)
   }
 
-  function startIndoorNavigation() {
-    if (firstIndoorIndex < 0) return
+  function startIndoorNavigation(kind: IndoorKind) {
+    const idx = kind === 'exit' ? firstExitIndex : firstEnterIndex
+    if (idx < 0) return
     unlockVoiceFromGesture()
-    setIndoorNavStarted(true)
-    jumpJourney(firstIndoorIndex)
+    setIndoorSession(kind)
+    jumpJourney(idx)
+  }
+
+  function leaveIndoorToOutdoor() {
+    if (indoorSession === 'exit') setExitIndoorDone(true)
+    setIndoorSession(null)
+    if (firstOutdoorIndex >= 0) jumpJourney(firstOutdoorIndex)
   }
   const selectedUnit =
     (hierarchy?.units.find((unit) => unit.id === unitId) ?? null) ||
@@ -1340,73 +1409,75 @@ export default function App() {
       {result ? (
         <>
           <div className="demo-phase-strip" aria-label="Journey phases">
+            {exitIndoorSteps.length > 0 ? (
+              <button
+                type="button"
+                className={indoorSession === 'exit' ? 'is-active phase-inside' : 'phase-inside'}
+                onClick={() => startIndoorNavigation('exit')}
+              >
+                Exit building
+                {` (${exitIndoorSteps.length})`}
+              </button>
+            ) : null}
             {steps.some((s) => s.phase === 'drive' || s.phase === 'outdoor') ? (
               <>
                 <button
                   type="button"
-                  className={phase === 'drive' ? 'is-active phase-drive' : 'phase-drive'}
+                  className={phase === 'drive' && !showIndoorNav ? 'is-active phase-drive' : 'phase-drive'}
                   onClick={() => jumpToPhase('drive')}
                 >
-                  {/* {result.origin.viaParking ? '1 · Drive to parking' : '1 · Drive to destination'} */}
-                  1 · Drive to destination
+                  Drive
                 </button>
-                <button
-                  type="button"
-                  className={phase === 'walk' ? 'is-active phase-walk' : 'phase-walk'}
-                  onClick={() => jumpToPhase('walk')}
-                >
-                  {/* {result.origin.viaParking ? '2 · Walk to entrance' : '2 · Walk to door'} */}
-                  2 · Walk to door
-                </button>
-                <button
-                  type="button"
-                  className={showIndoorNav ? 'is-active phase-inside' : 'phase-inside'}
-                  onClick={() => jumpToPhase('indoor')}
-                  disabled={firstIndoorIndex < 0}
-                >
-                  3 · Inside building
-                  {indoorStepCount ? ` (${indoorStepCount})` : ''}
-                </button>
-              </>
-            ) : steps.some((s) => s.phase === 'walk') ? (
-              <>
                 <button
                   type="button"
                   className={phase === 'walk' && !showIndoorNav ? 'is-active phase-walk' : 'phase-walk'}
                   onClick={() => jumpToPhase('walk')}
                 >
-                  1 · Walk to entrance
-                </button>
-                <button
-                  type="button"
-                  className={showIndoorNav ? 'is-active phase-inside' : 'phase-inside'}
-                  onClick={() => jumpToPhase('indoor')}
-                  disabled={firstIndoorIndex < 0}
-                >
-                  2 · Inside building
-                  {indoorStepCount ? ` (${indoorStepCount})` : ''}
+                  Walk
                 </button>
               </>
-            ) : (
+            ) : steps.some((s) => s.phase === 'walk') ? (
               <button
                 type="button"
-                className={showIndoorNav ? 'is-active phase-inside' : 'phase-inside'}
-                onClick={() => jumpToPhase('indoor')}
-                disabled={firstIndoorIndex < 0}
+                className={phase === 'walk' && !showIndoorNav ? 'is-active phase-walk' : 'phase-walk'}
+                onClick={() => jumpToPhase('walk')}
               >
-                Inside · to unit
-                {indoorStepCount ? ` (${indoorStepCount})` : ''}
+                Walk outdoors
               </button>
-            )}
+            ) : null}
+            {enterIndoorSteps.length > 0 ? (
+              <button
+                type="button"
+                className={indoorSession === 'enter' ? 'is-active phase-inside' : 'phase-inside'}
+                onClick={() => startIndoorNavigation('enter')}
+              >
+                Inside to unit
+                {` (${enterIndoorSteps.length})`}
+              </button>
+            ) : null}
           </div>
-          {firstIndoorIndex >= 0 && !indoorNavStarted ? (
+          {offerIndoorKind ? (
             <div className="demo-indoor-jump">
-              <button type="button" className="demo-indoor-next" onClick={startIndoorNavigation}>
-                Start indoor navigation
+              <button
+                type="button"
+                className="demo-indoor-next"
+                onClick={() => startIndoorNavigation(offerIndoorKind)}
+              >
+                Indoor navigation
               </button>
+              {offerIndoorKind === 'exit' ? (
+                <button
+                  type="button"
+                  className="demo-ghost demo-ghost--small"
+                  onClick={() => setExitIndoorDone(true)}
+                >
+                  Already outdoors
+                </button>
+              ) : null}
               <span className="demo-hint">
-                Optional — tap when you enter the building · 2D floor map · text + voice ·{' '}
-                {indoorStepCount} step{indoorStepCount === 1 ? '' : 's'}
+                {offerIndoorKind === 'exit'
+                  ? `Tap Indoor navigation to exit the building · ${exitIndoorSteps.length} step${exitIndoorSteps.length === 1 ? '' : 's'} · not automatic`
+                  : `Tap Indoor navigation for your unit · ${enterIndoorSteps.length} step${enterIndoorSteps.length === 1 ? '' : 's'} · not automatic`}
               </span>
             </div>
           ) : null}
@@ -1445,7 +1516,11 @@ export default function App() {
               </div>
               <OutdoorMap
                 result={result}
-                activeStep={active}
+                activeStep={
+                  active?.phase === 'indoor' && firstOutdoorIndex >= 0
+                    ? steps[firstOutdoorIndex]
+                    : active
+                }
                 weather={result.weather}
                 traffic={result.outdoor.traffic}
                 liveFix={wantsLiveGps ? liveFix : null}
@@ -1468,29 +1543,43 @@ export default function App() {
             <div className="demo-indoor-wrap">
               <div className="demo-indoor-head">
                 <p className="demo-indoor-banner">
-                  Indoor · 2D floor map — blue dot is you · red pin is your unit · text + voice guide each
-                  step
+                  {indoorSession === 'exit'
+                    ? 'Exit indoors — follow the text · blue = you · red = exit door'
+                    : 'Indoor — follow the text · blue = you · red = your unit'}
                 </p>
               </div>
               <div className="demo-indoor-actions">
                 <button
                   type="button"
                   className="demo-indoor-next"
-                  disabled={journeyIndex >= steps.length - 1}
                   onClick={() => {
                     unlockVoiceFromGesture()
+                    const list = steps
+                    const next = list[journeyIndex + 1]
+                    const leavingExit =
+                      indoorSession === 'exit' &&
+                      (!next || next.phase !== 'indoor' || next.indoorKind !== 'exit')
+                    if (leavingExit) {
+                      leaveIndoorToOutdoor()
+                      return
+                    }
+                    if (journeyIndex >= list.length - 1) return
                     bumpJourney(1)
                   }}
                 >
-                  {journeyIndex >= steps.length - 1 ? 'Arrived' : 'Next indoor step'}
+                  {indoorSession === 'exit' &&
+                  (!steps[journeyIndex + 1] ||
+                    steps[journeyIndex + 1].phase !== 'indoor' ||
+                    steps[journeyIndex + 1].indoorKind !== 'exit')
+                    ? 'Continue outdoors'
+                    : journeyIndex >= steps.length - 1
+                      ? 'Arrived'
+                      : 'Next indoor step'}
                 </button>
                 <button
                   type="button"
                   className="demo-ghost demo-ghost--small"
-                  onClick={() => {
-                    setIndoorNavStarted(false)
-                    jumpToPhase('walk')
-                  }}
+                  onClick={leaveIndoorToOutdoor}
                 >
                   Back to outdoor
                 </button>
@@ -1507,6 +1596,7 @@ export default function App() {
                 activeStep={indoorStep}
                 instruction={active?.instruction}
                 liveFix={wantsLiveGps ? liveFix : null}
+                mode={indoorSession === 'exit' ? 'exit' : 'enter'}
               />
             </div>
           )}

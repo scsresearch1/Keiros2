@@ -7,6 +7,8 @@ type Props = {
   activeStep: number
   instruction?: string
   liveFix?: LiveFix | null
+  /** exit = leave start building; enter = arrive at unit */
+  mode?: 'exit' | 'enter'
   onSelectFloor?: (floorId: string) => void
   onSelectUnit?: (unitId: string) => void
 }
@@ -25,14 +27,22 @@ export function IndoorFloorMap({
   activeStep,
   instruction,
   liveFix = null,
+  mode = 'enter',
   onSelectFloor,
   onSelectUnit,
 }: Props) {
+  const routeStops = useMemo(
+    () =>
+      mode === 'exit' && map3d.exitRouteStops?.length
+        ? map3d.exitRouteStops
+        : map3d.routeStops,
+    [mode, map3d.exitRouteStops, map3d.routeStops],
+  )
   const floors = useMemo(
     () => [...map3d.floors].sort((a, b) => a.level - b.level),
     [map3d.floors],
   )
-  const stepFloorId = map3d.routeStops[activeStep]?.floorId || map3d.selectedFloorId
+  const stepFloorId = routeStops[activeStep]?.floorId || map3d.selectedFloorId
   const [floorId, setFloorId] = useState(stepFloorId)
   const [view, setView] = useState({ x: 0, y: 0, zoom: 1 })
   const [progress, setProgress] = useState(0.18)
@@ -45,7 +55,7 @@ export function IndoorFloorMap({
 
   useEffect(() => {
     setView({ x: 0, y: 0, zoom: 1 })
-  }, [floorId, activeStep])
+  }, [floorId, activeStep, mode])
 
   // Demo walker only when we do not have a live phone fix.
   useEffect(() => {
@@ -64,9 +74,12 @@ export function IndoorFloorMap({
     }
     frame = requestAnimationFrame(tick)
     return () => cancelAnimationFrame(frame)
-  }, [activeStep, floorId, liveFix])
+  }, [activeStep, floorId, liveFix, mode])
 
-  const scene = useMemo(() => buildScene(map3d, floorId, activeStep), [map3d, floorId, activeStep])
+  const scene = useMemo(
+    () => buildScene(map3d, floorId, activeStep, mode, routeStops),
+    [map3d, floorId, activeStep, mode, routeStops],
+  )
   const hasScene = Boolean(scene)
 
   useEffect(() => {
@@ -89,7 +102,6 @@ export function IndoorFloorMap({
     scene && liveFix
       ? scene.toXY(liveFix.latitude, liveFix.longitude)
       : null
-  const weakGps = Boolean(liveFix && liveFix.accuracy >= 25)
   const walker =
     liveYou != null
       ? {
@@ -100,11 +112,11 @@ export function IndoorFloorMap({
               ? (liveFix.heading * Math.PI) / 180
               : 0,
           live: true as const,
-          weak: weakGps,
         }
       : scene && youAreHere
-        ? { ...pointAlong(scene.leg, progress), live: false as const, weak: false }
+        ? { ...pointAlong(scene.leg, progress), live: false as const }
         : null
+  const guide = scene?.guideText || instruction || 'Follow the map to your unit'
 
   const onPointerDown = (event: RE<SVGSVGElement>) => {
     drag.current = { x: event.clientX, y: event.clientY, ox: view.x, oy: view.y }
@@ -125,11 +137,13 @@ export function IndoorFloorMap({
   if (!scene) return <div className="floor-map floor-map--empty">No floor plan for this building</div>
 
   const frame = scene.legView
-  const minutes = scene.remainM > 0 ? Math.max(1, Math.round(scene.remainM / 75)) : 0
 
   return (
     <div className="floor-map">
       <div className="floor-map__canvas">
+        <p className="floor-map__guide" role="status">
+          {guide}
+        </p>
         <svg
           ref={svgRef}
           viewBox={`${frame.x} ${frame.y} ${frame.w} ${frame.h}`}
@@ -154,9 +168,9 @@ export function IndoorFloorMap({
                   width={room.w}
                   height={room.h}
                   rx={8}
-                  fill={room.here ? '#d9e4f2' : room.dest ? '#e7e0d4' : '#e6dfd4'}
-                  stroke={room.here ? '#7f9bbd' : '#d4cdc2'}
-                  strokeWidth={room.here || room.dest ? 1.6 : 1}
+                  fill={room.dest ? '#f5e6e0' : room.vertical ? '#e8eef7' : '#e6dfd4'}
+                  stroke={room.dest ? '#ea4335' : room.vertical ? '#7f9bbd' : '#d4cdc2'}
+                  strokeWidth={room.dest || room.vertical ? 1.6 : 1}
                 />
                 <text
                   x={room.x}
@@ -165,84 +179,23 @@ export function IndoorFloorMap({
                   fill="#5e584f"
                   fontSize={11}
                   fontFamily="system-ui, sans-serif"
-                  clipPath={`url(#clip-${room.id})`}
                 >
                   {room.short}
                 </text>
-                <clipPath id={`clip-${room.id}`}>
-                  <rect x={room.x - room.w / 2 + 8} y={room.y - 12} width={room.w - 16} height={22} />
-                </clipPath>
               </g>
             ))}
-            {scene.path ? (
-              <>
-                <path
-                  d={scene.path}
-                  fill="none"
-                  stroke="#93c5fd"
-                  strokeWidth={10}
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  opacity={0.55}
-                />
-                <path
-                  d={scene.path}
-                  fill="none"
-                  stroke="#1a73e8"
-                  strokeWidth={5}
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              </>
-            ) : null}
-            {/* Route stop dots — next indoor point is emphasized */}
-            {scene.stopDots.map((stop) => (
-              <g key={`stop-${stop.id}-${stop.index}`} transform={`translate(${stop.x} ${stop.y})`}>
-                <circle
-                  r={stop.isTarget ? 9 : 5}
-                  fill={stop.isTarget ? '#ea4335' : '#fff'}
-                  stroke={stop.isTarget ? '#fff' : '#1a73e8'}
-                  strokeWidth={stop.isTarget ? 2.5 : 2}
-                />
-              </g>
-            ))}
-            {/* Destination unit marker (pin) */}
+            {/* Destination only — no route polyline clutter */}
             {scene.destPin ? (
-              <g transform={`translate(${scene.destPin.x} ${scene.destPin.y - 22})`}>
-                <path
-                  d="M0 0 C-11 -14 -11 -28 0 -28 C11 -28 11 -14 0 0 Z"
-                  fill="#ea4335"
-                  stroke="#fff"
-                  strokeWidth={2}
-                />
-                <circle cx={0} cy={-18} r={5} fill="#fff" />
-                <text
-                  x={0}
-                  y={-16}
-                  textAnchor="middle"
-                  fill="#ea4335"
-                  fontSize={8}
-                  fontWeight={800}
-                  fontFamily="system-ui,sans-serif"
-                >
-                  D
-                </text>
+              <g transform={`translate(${scene.destPin.x} ${scene.destPin.y})`}>
+                <circle r={11} fill="#ea4335" stroke="#fff" strokeWidth={3} />
               </g>
             ) : null}
-            {/* You-are-here blue dot / puck */}
+            {/* You — blue marker */}
             {walker ? (
               <g transform={`translate(${walker.x} ${walker.y})`}>
-                {walker.live ? (
-                  <circle
-                    r={Math.max(14, Math.min(42, (liveFix?.accuracy || 12) * 0.55))}
-                    fill={walker.weak ? 'rgba(249, 115, 22, 0.18)' : 'rgba(26, 115, 232, 0.16)'}
-                    stroke={walker.weak ? 'rgba(249, 115, 22, 0.55)' : 'rgba(26, 115, 232, 0.35)'}
-                    strokeWidth={1}
-                  />
-                ) : null}
                 <g transform={`rotate(${((walker.heading ?? 0) * 180) / Math.PI})`}>
-                  <circle r={16} fill={walker.weak ? '#ea580c' : '#1a73e8'} stroke="#fff" strokeWidth={3} />
-                  <path d="M0 -10 L7 8 L0 4 L-7 8 Z" fill="#fff" />
+                  <circle r={15} fill="#1a73e8" stroke="#fff" strokeWidth={3} />
+                  <path d="M0 -9 L6 7 L0 3 L-6 7 Z" fill="#fff" />
                 </g>
               </g>
             ) : null}
@@ -265,19 +218,14 @@ export function IndoorFloorMap({
             </button>
           ))}
         </div>
-        <p className="floor-map__then">
-          <span aria-hidden>{scene.then.mark}</span>
-          {liveFix
-            ? weakGps
-              ? `Live GPS · weak ±${Math.round(liveFix.accuracy)} m`
-              : `Live GPS · ±${Math.round(liveFix.accuracy)} m`
-            : youAreHere
-              ? scene.then.text
-              : `Showing ${floors.find((item) => item.id === floorId)?.label || 'floor'}`}
-        </p>
         <div className="floor-map__stats">
-          <strong>{minutes > 0 ? `${minutes} min` : 'Here'}</strong>
-          <span>{scene.remainM > 0 ? `${scene.remainM} m` : instruction || 'At the stop'}</span>
+          <span>
+            {youAreHere
+              ? mode === 'exit'
+                ? 'Blue = you · Red = exit'
+                : 'Blue = you · Red = destination'
+              : `Viewing ${floors.find((f) => f.id === floorId)?.label || 'floor'}`}
+          </span>
           <button
             type="button"
             onClick={() => {
@@ -300,7 +248,13 @@ export function IndoorFloorMap({
   )
 }
 
-function buildScene(map3d: NavigateResult['map3d'], floorId: string, activeStep: number) {
+function buildScene(
+  map3d: NavigateResult['map3d'],
+  floorId: string,
+  activeStep: number,
+  mode: 'exit' | 'enter' = 'enter',
+  routeStops?: NavigateResult['map3d']['routeStops'],
+) {
   const onFloor = map3d.locations.filter((location) => location.floorId === floorId)
   const samples = onFloor.length ? onFloor : map3d.locations
   if (!samples.length) return null
@@ -347,7 +301,7 @@ function buildScene(map3d: NavigateResult['map3d'], floorId: string, activeStep:
   const typical = gaps[Math.floor(gaps.length / 2)] || 120
   const roomW = clamp(typical * 0.58, 86, 148)
   const roomH = clamp(roomW * 0.68, 62, 100)
-  const stops = map3d.routeStops
+  const stops = routeStops?.length ? routeStops : map3d.routeStops
   const current = stops[activeStep]
   const dest = stops[stops.length - 1]
   const rooms = placed.map((place) => ({
@@ -360,6 +314,7 @@ function buildScene(map3d: NavigateResult['map3d'], floorId: string, activeStep:
     h: roomH,
     here: place.id === current?.id,
     dest: place.id === dest?.id,
+    vertical: isVerticalAccess(`${place.type || ''} ${place.name || ''}`),
   }))
   const floorStops = stops
     .map((stop, index) => ({ ...stop, index, ...toXY(stop.latitude, stop.longitude) }))
@@ -387,7 +342,6 @@ function buildScene(map3d: NavigateResult['map3d'], floorId: string, activeStep:
   const hereIndex = floorStops.findIndex((stop) => stop.index === activeStep)
   const aheadDoors = hereIndex >= 0 ? doors.slice(hereIndex) : doors
   const elbows = hallway(aheadDoors)
-  const path = roundedPath(elbows, 16)
   const xs = rooms.map((room) => room.x)
   const ys = rooms.map((room) => room.y)
   const plate = {
@@ -402,31 +356,16 @@ function buildScene(map3d: NavigateResult['map3d'], floorId: string, activeStep:
   const nearby = rooms.filter((room) => anchor.some((point) => Math.hypot(room.x - point.x, room.y - point.y) < 190))
   const framePts = [...anchor, ...nearby.map((room) => ({ x: room.x, y: room.y }))]
   const legView = frameAround(framePts.length ? framePts : anchor, 110)
-  const then = nextCue(stops, activeStep, map3d.floors)
-  let remainM = 0
-  for (let i = activeStep; i < stops.length - 1; i += 1) {
-    remainM += haversine(stops[i], stops[i + 1])
-  }
-  const targetStop = stops[Math.min(activeStep + 1, stops.length - 1)]
-  const stopDots = floorStops.map((stop) => ({
-    id: stop.id,
-    index: stop.index,
-    x: stop.x,
-    y: stop.y,
-    isTarget: Boolean(targetStop && stop.id === targetStop.id && stop.floorId === floorId),
-  }))
+  const guideText = indoorGuideText(map3d, activeStep, mode, stops)
   const destOnFloor = dest && dest.floorId === floorId ? toXY(dest.latitude, dest.longitude) : null
 
   return {
     plate,
     rooms,
-    path,
     leg: leg.length > 1 ? leg : elbows.length > 1 ? elbows : floorStops.map((stop) => ({ x: stop.x, y: stop.y })),
     legView,
-    then,
-    remainM: Math.round(remainM),
+    guideText,
     toXY,
-    stopDots,
     destPin: destOnFloor,
   }
 }
@@ -455,27 +394,6 @@ function hallway(points: XY[]): XY[] {
     raw.push(next)
   }
   return raw
-}
-
-function roundedPath(points: XY[], radius: number) {
-  if (points.length < 2) return ''
-  let d = `M ${points[0].x} ${points[0].y}`
-  for (let i = 1; i < points.length - 1; i += 1) {
-    const prev = points[i - 1]
-    const cur = points[i]
-    const next = points[i + 1]
-    const inLen = Math.hypot(cur.x - prev.x, cur.y - prev.y) || 1
-    const outLen = Math.hypot(next.x - cur.x, next.y - cur.y) || 1
-    const cut = Math.min(radius, inLen / 2, outLen / 2)
-    const ax = cur.x - ((cur.x - prev.x) / inLen) * cut
-    const ay = cur.y - ((cur.y - prev.y) / inLen) * cut
-    const bx = cur.x + ((next.x - cur.x) / outLen) * cut
-    const by = cur.y + ((next.y - cur.y) / outLen) * cut
-    d += ` L ${ax} ${ay} Q ${cur.x} ${cur.y} ${bx} ${by}`
-  }
-  const end = points[points.length - 1]
-  d += ` L ${end.x} ${end.y}`
-  return d
 }
 
 function frameAround(points: XY[], pad: number) {
@@ -507,38 +425,63 @@ function pointAlong(points: XY[], t: number) {
   return { ...points[points.length - 1], heading: 0 }
 }
 
-function nextCue(
-  stops: NavigateResult['map3d']['routeStops'],
-  activeStep: number,
-  floors: NavigateResult['map3d']['floors'],
-) {
-  const here = stops[activeStep]
-  const nxt = stops[activeStep + 1]
-  const after = stops[activeStep + 2]
-  if (!here || !nxt) return { text: 'You have arrived', mark: '●' }
-  if (nxt.floorId !== here.floorId) {
-    const label = floors.find((floor) => floor.id === nxt.floorId)?.label || 'the next floor'
-    return { text: `Then stairs to ${label}`, mark: '↕' }
-  }
-  if (!after || after.floorId !== nxt.floorId) return { text: `Then toward ${nxt.name}`, mark: '↑' }
-  const h1 = Math.atan2(nxt.longitude - here.longitude, nxt.latitude - here.latitude)
-  const h2 = Math.atan2(after.longitude - nxt.longitude, after.latitude - nxt.latitude)
-  let delta = h2 - h1
-  while (delta > Math.PI) delta -= Math.PI * 2
-  while (delta < -Math.PI) delta += Math.PI * 2
-  const deg = (delta * 180) / Math.PI
-  if (Math.abs(deg) < 28) return { text: 'Then continue straight', mark: '↑' }
-  if (deg > 0) return { text: 'Then turn right', mark: '↱' }
-  return { text: 'Then turn left', mark: '↰' }
+function isVerticalAccess(label: string) {
+  return /stair|elevator|lift|escalator/i.test(label)
 }
 
-function haversine(a: { latitude: number; longitude: number }, b: { latitude: number; longitude: number }) {
-  const R = 6371000
-  const p = Math.PI / 180
-  const dLat = (b.latitude - a.latitude) * p
-  const dLng = (b.longitude - a.longitude) * p
-  const h =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(a.latitude * p) * Math.cos(b.latitude * p) * Math.sin(dLng / 2) ** 2
-  return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)))
+function verticalKind(label: string): 'elevator' | 'stairs' | null {
+  if (/elevator|lift/i.test(label)) return 'elevator'
+  if (/stair|escalator/i.test(label)) return 'stairs'
+  return null
+}
+
+function placeLabel(map3d: NavigateResult['map3d'], stop: NavigateResult['map3d']['routeStops'][number] | undefined) {
+  if (!stop) return ''
+  const hit = map3d.locations.find((loc) => loc.id === stop.id)
+  return `${hit?.type || ''} ${hit?.name || stop.name || ''}`
+}
+
+function indoorGuideText(
+  map3d: NavigateResult['map3d'],
+  activeStep: number,
+  mode: 'exit' | 'enter' = 'enter',
+  routeStops?: NavigateResult['map3d']['routeStops'],
+) {
+  const stops = routeStops?.length ? routeStops : map3d.routeStops
+  const here = stops[activeStep]
+  const nxt = stops[activeStep + 1]
+  if (!here) return 'Indoor navigation'
+  if (!nxt) {
+    return mode === 'exit'
+      ? `Exit at ${here.name} — continue outdoors`
+      : `You have arrived at ${here.name}`
+  }
+
+  const floorLabel = (floorId: string) =>
+    map3d.floors.find((floor) => floor.id === floorId)?.label || 'the next floor'
+
+  if (nxt.floorId !== here.floorId) {
+    const hereKind = verticalKind(placeLabel(map3d, here))
+    const nextKind = verticalKind(placeLabel(map3d, nxt))
+    const nearby = map3d.locations
+      .filter((loc) => loc.floorId === here.floorId && isVerticalAccess(`${loc.type || ''} ${loc.name || ''}`))
+      .map((loc) => verticalKind(`${loc.type || ''} ${loc.name || ''}`))
+      .find(Boolean)
+    const kind = hereKind || nextKind || nearby || 'stairs'
+    const to = floorLabel(nxt.floorId)
+    if (kind === 'elevator') return `Take the elevator to ${to}`
+    return `Take the stairs to ${to}`
+  }
+
+  const nextKind = verticalKind(placeLabel(map3d, nxt))
+  if (nextKind === 'elevator') return `Walk to the elevator (${nxt.name})`
+  if (nextKind === 'stairs') return `Walk to the stairs (${nxt.name})`
+
+  const dest = stops[stops.length - 1]
+  if (dest && nxt.id === dest.id) {
+    return mode === 'exit'
+      ? `Walk to the exit: ${dest.name}`
+      : `Walk to your destination: ${dest.name}`
+  }
+  return mode === 'exit' ? `Walk toward ${nxt.name}` : `Walk toward ${nxt.name}`
 }

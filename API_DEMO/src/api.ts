@@ -35,11 +35,15 @@ export type Hierarchy = {
 
 export type JourneyPhase = 'drive' | 'walk' | 'indoor' | 'outdoor'
 
+export type IndoorKind = 'exit' | 'enter'
+
 export type JourneyStep = {
   id: string
   phase: JourneyPhase
   index: number
   indoorIndex?: number
+  /** exit = leave start building; enter = arrive at destination unit */
+  indoorKind?: IndoorKind
   title?: string
   instruction: string
   roadName?: string | null
@@ -172,6 +176,23 @@ export type NavigateResult = {
       longitude: number
       elevation: number
     }[]
+    exit?: {
+      distanceM: number
+      walkMinutes: number
+      floorChanges: number
+      entry: Record<string, unknown> | null
+      start: Record<string, unknown> | null
+      stops: {
+        id: string
+        name: string
+        type: string
+        floorId: string
+        floorLabel: string
+        latitude: number
+        longitude: number
+        elevation: number
+      }[]
+    } | null
   }
   map3d: {
     building: { id: string; name: string; floors: number; complexId: string | null }
@@ -188,6 +209,15 @@ export type NavigateResult = {
     selectedFloorId: string
     selectedUnitId: string
     routeStops: {
+      id: string
+      name: string
+      floorId: string
+      latitude: number
+      longitude: number
+      elevation: number
+    }[]
+    /** Origin-building exit path when start is indoors (may be empty). */
+    exitRouteStops?: {
       id: string
       name: string
       floorId: string
@@ -263,7 +293,11 @@ export async function navigate(
   const parking = raw.parking ?? (raw.outdoor as { parking?: NavigateResult['parking'] } | undefined)?.parking
   const entrance =
     raw.entrance ?? (raw.outdoor as { entrance?: NavigateResult['entrance'] } | undefined)?.entrance
-  const steps = raw.journey?.steps ?? []
+  const steps = (raw.journey?.steps ?? []).map((step) =>
+    step.phase === 'indoor' && !step.indoorKind
+      ? ({ ...step, indoorKind: 'enter' as const })
+      : step,
+  )
   const result = {
     ...raw,
     walk,
@@ -289,7 +323,149 @@ export async function navigate(
     result.destination.latitude,
     result.destination.longitude,
   )
-  return result
+  return ensureOriginExitIndoor(result)
+}
+
+const INSIDE_START_M = 45
+
+function metersBetween(
+  a: { latitude: number; longitude: number },
+  b: { latitude: number; longitude: number },
+) {
+  const R = 6371000
+  const p = Math.PI / 180
+  const dLat = (b.latitude - a.latitude) * p
+  const dLng = (b.longitude - a.longitude) * p
+  const h =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(a.latitude * p) * Math.cos(b.latitude * p) * Math.sin(dLng / 2) ** 2
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)))
+}
+
+/**
+ * Client fallback when the API has not yet shipped origin-exit indoor:
+ * if the start pin sits on a mapped floor location, synthesize exit steps
+ * (start → entrance) and keep enter indoor after outdoor.
+ */
+function ensureOriginExitIndoor(result: NavigateResult): NavigateResult {
+  if (result.journey.steps.some((s) => s.phase === 'indoor' && s.indoorKind === 'exit')) {
+    return result
+  }
+  if (result.origin.startMode === 'demo') return result
+  const locs = result.map3d?.locations ?? []
+  if (!locs.length) return result
+  const origin = { latitude: result.origin.latitude, longitude: result.origin.longitude }
+  const nearest = [...locs]
+    .map((loc) => ({ loc, d: metersBetween(origin, loc) }))
+    .sort((a, b) => a.d - b.d)[0]
+  if (!nearest || nearest.d > INSIDE_START_M) return result
+
+  const entryStop =
+    (result.indoor?.entry as { id?: string; name?: string; type?: string; floorId?: string; latitude?: number; longitude?: number } | null) ||
+    null
+  const entryFromLocs =
+    locs.find((l) => /entry|lobby|door|exit/i.test(`${l.type} ${l.name}`)) ||
+    locs.find((l) => entryStop && l.id === entryStop.id) ||
+    null
+  const exitPin =
+    entryFromLocs ||
+    (entryStop && Number.isFinite(entryStop.latitude) && Number.isFinite(entryStop.longitude)
+      ? {
+          id: String(entryStop.id || 'exit'),
+          name: String(entryStop.name || 'Exit'),
+          type: String(entryStop.type || 'Entry'),
+          floorId: String(entryStop.floorId || nearest.loc.floorId),
+          latitude: entryStop.latitude as number,
+          longitude: entryStop.longitude as number,
+          elevation: 0,
+        }
+      : null)
+  if (!exitPin || exitPin.id === nearest.loc.id) return result
+
+  const exitStops = [
+    {
+      id: nearest.loc.id,
+      name: nearest.loc.name,
+      type: nearest.loc.type,
+      floorId: nearest.loc.floorId,
+      floorLabel: '',
+      latitude: nearest.loc.latitude,
+      longitude: nearest.loc.longitude,
+      elevation: nearest.loc.elevation,
+    },
+    {
+      id: exitPin.id,
+      name: exitPin.name,
+      type: exitPin.type || 'Entry',
+      floorId: exitPin.floorId,
+      floorLabel: '',
+      latitude: exitPin.latitude,
+      longitude: exitPin.longitude,
+      elevation: 0,
+    },
+  ]
+  const exitSteps: JourneyStep[] = exitStops.map((stop, i) => ({
+    id: `in-exit-${i}`,
+    phase: 'indoor',
+    index: i,
+    indoorIndex: i,
+    indoorKind: 'exit',
+    instruction:
+      i === 0
+        ? `Start inside at ${stop.name} — head toward the exit`
+        : `Exit at ${stop.name} — continue outdoors`,
+    title: i === 0 ? 'Inside · Exit building' : 'Inside · Exit',
+    latitude: stop.latitude,
+    longitude: stop.longitude,
+    floorId: stop.floorId,
+    stopId: stop.id,
+    stopName: stop.name,
+    stopType: stop.type,
+    distanceM: i === 0 ? 0 : Math.round(metersBetween(exitStops[0], exitStops[1])),
+  }))
+
+  const outdoor = result.journey.steps.filter((s) => s.phase !== 'indoor')
+  const enter = result.journey.steps
+    .filter((s) => s.phase === 'indoor')
+    .map((s) => ({ ...s, indoorKind: (s.indoorKind || 'enter') as IndoorKind }))
+  const steps = stitchOutdoorWithIndoor(
+    outdoor.map((s, i) => ({ ...s, index: i })),
+    [...exitSteps, ...enter],
+  )
+
+  return {
+    ...result,
+    map3d: {
+      ...result.map3d,
+      exitRouteStops: exitStops.map(({ id, name, floorId, latitude, longitude, elevation }) => ({
+        id,
+        name,
+        floorId,
+        latitude,
+        longitude,
+        elevation,
+      })),
+    },
+    indoor: {
+      ...result.indoor,
+      exit: {
+        distanceM: exitSteps.reduce((sum, s) => sum + (s.distanceM || 0), 0),
+        walkMinutes: 1,
+        floorChanges: 0,
+        entry: exitPin,
+        start: nearest.loc,
+        stops: exitStops,
+      },
+    },
+    journey: {
+      ...result.journey,
+      totalSteps: steps.length,
+      indoorSteps: exitSteps.length + enter.length,
+      phases: ['indoor', ...(result.journey.phases || []).filter((p) => p !== 'indoor'), 'indoor'],
+      summary: `Exit building → outdoors → ${result.journey.summary || 'to unit'}`,
+      steps,
+    },
+  }
 }
 
 const WMO: Record<number, string> = {
@@ -400,6 +576,26 @@ export async function refreshConditions(
   return live
 }
 
+/** Keep exit indoor before outdoor and enter indoor after — never flatten all indoor to the end. */
+export function splitIndoorByKind(steps: JourneyStep[]) {
+  const exit = steps.filter((step) => step.phase === 'indoor' && step.indoorKind === 'exit')
+  const enter = steps.filter((step) => step.phase === 'indoor' && step.indoorKind !== 'exit')
+  return { exit, enter }
+}
+
+export function stitchOutdoorWithIndoor(
+  outdoor: JourneyStep[],
+  prevSteps: JourneyStep[],
+): JourneyStep[] {
+  const { exit, enter } = splitIndoorByKind(prevSteps)
+  const mid = outdoor.map((step, index) => ({ ...step, index: exit.length + index }))
+  return [
+    ...exit.map((step, index) => ({ ...step, index })),
+    ...mid,
+    ...enter.map((step, index) => ({ ...step, index: exit.length + mid.length + index })),
+  ]
+}
+
 export function applyDriveRefresh(prev: NavigateResult, live: RefreshedConditions): NavigateResult {
   const drive = (live.outdoor.steps ?? []).map((step, index) => ({
     ...step,
@@ -409,14 +605,11 @@ export function applyDriveRefresh(prev: NavigateResult, live: RefreshedCondition
   }))
   const useDrive = drive.length > 0
   const walk = prev.journey.steps.filter((step) => step.phase === 'walk')
-  const indoor = prev.journey.steps.filter((step) => step.phase === 'indoor')
-  const steps = useDrive
-    ? [
-        ...drive,
-        ...walk.map((step, index) => ({ ...step, index: drive.length + index })),
-        ...indoor.map((step, index) => ({ ...step, index: drive.length + walk.length + index })),
-      ]
-    : prev.journey.steps
+  const outdoor = [
+    ...drive,
+    ...walk.map((step, index) => ({ ...step, index: drive.length + index })),
+  ]
+  const steps = useDrive ? stitchOutdoorWithIndoor(outdoor, prev.journey.steps) : prev.journey.steps
   return {
     ...prev,
     weather: live.weather,

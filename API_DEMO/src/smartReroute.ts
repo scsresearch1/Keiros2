@@ -1,4 +1,4 @@
-import type { JourneyStep, NavigateResult } from './api'
+import { stitchOutdoorWithIndoor, type JourneyStep, type NavigateResult } from './api'
 import { fetchRoadRouteLive } from './googleRoute'
 import { AT_ENTRANCE_M, metersBetween } from './outdoorLegs'
 import {
@@ -42,7 +42,6 @@ export async function rerouteFromLiveFix(
   fix: LatLng,
   opts?: RerouteOptions,
 ): Promise<NavigateResult | null> {
-  const indoor = result.journey.steps.filter((s) => s.phase === 'indoor')
   const phaseHint = opts?.phaseHint
   const phaseNow =
     phaseHint === 'walk' || phaseHint === 'drive' || phaseHint === 'outdoor'
@@ -130,10 +129,7 @@ export async function rerouteFromLiveFix(
             },
           ]
       ).map((s, i) => ({ ...s, index: i, phase: 'walk' as const }))
-      const steps = [
-        ...walkSteps,
-        ...indoor.map((s, i) => ({ ...s, index: walkSteps.length + i })),
-      ]
+      const steps = stitchOutdoorWithIndoor(walkSteps, result.journey.steps)
       const provider = ped?.provider || 'previous corridor (walk)'
       return {
         ...result,
@@ -259,10 +255,7 @@ export async function rerouteFromLiveFix(
     }
 
     const driveSteps = routeSteps
-    const steps = [
-      ...driveSteps,
-      ...indoor.map((s, i) => ({ ...s, index: driveSteps.length + i })),
-    ]
+    const steps = stitchOutdoorWithIndoor(driveSteps, result.journey.steps)
 
     return {
       ...result,

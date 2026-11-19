@@ -1299,21 +1299,34 @@ export async function fetchWeather(lat, lng) {
   }
 }
 
-export function buildJourneySteps(drive, walk, indoor, destinationLabel) {
+export function buildJourneySteps(drive, walk, indoor, destinationLabel, indoorExit = null) {
+  const exitSteps = indoorExit
+    ? buildIndoorSteps(
+        indoorExit,
+        indoorExit.exit?.name || indoorExit.entry?.name || 'Exit',
+        0,
+        'exit',
+      )
+    : []
   const driveSteps = (drive.steps || []).map((s, i) => ({
     ...s,
     phase: 'drive',
-    index: i,
+    index: exitSteps.length + i,
     title: s.title || `Drive · Step ${i + 1}`,
   }))
   const walkSteps = (walk.steps || []).map((s, i) => ({
     ...s,
     phase: 'walk',
-    index: driveSteps.length + i,
+    index: exitSteps.length + driveSteps.length + i,
     title: s.title || `Walk · Step ${i + 1}`,
   }))
-  const indoorSteps = buildIndoorSteps(indoor, destinationLabel, driveSteps.length + walkSteps.length)
-  return [...driveSteps, ...walkSteps, ...indoorSteps]
+  const indoorSteps = buildIndoorSteps(
+    indoor,
+    destinationLabel,
+    exitSteps.length + driveSteps.length + walkSteps.length,
+    'enter',
+  )
+  return [...exitSteps, ...driveSteps, ...walkSteps, ...indoorSteps]
 }
 
 export { MILES_START, PARKING_OFFSET_METERS }
