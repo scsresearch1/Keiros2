@@ -30,8 +30,8 @@ export type OutdoorPlan = {
   viaParking: boolean
 }
 
-/** Already at the destination pin — no outdoor route. */
-export const AT_DESTINATION_M = 25
+/** Already at the destination pin — no outdoor route (~10 ft for walk feel). */
+export const AT_DESTINATION_M = 4
 
 export const DRIVE_COLOR = '#1a73e8'
 export const WALK_COLOR = '#0d9488'

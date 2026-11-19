@@ -848,7 +848,31 @@ export default function App() {
       const target = matchSteps[progress.stepIndex]
       if (target?.phase !== 'indoor') {
         if (progress.stepIndex !== journeyIndex && progress.distanceToRouteM < 120) {
-          setJourneyIndex(progress.stepIndex)
+          // Walk "arrived" voice only when within ~10 ft of D — not 40–50 ft early.
+          const arriveCue = /arriv|reached destination|you have arrived/i.test(
+            target.instruction || '',
+          )
+          if (arriveCue && (target.phase === 'walk' || routeMode === 'walk')) {
+            const pinLat = Number.isFinite(target.latitude)
+              ? target.latitude
+              : dest.latitude
+            const pinLng = Number.isFinite(target.longitude)
+              ? target.longitude
+              : dest.longitude
+            const toPin = approxMeters(
+              liveFix.latitude,
+              liveFix.longitude,
+              pinLat,
+              pinLng,
+            )
+            if (toPin > 3.5) {
+              /* hold current step until the marker is at D */
+            } else {
+              setJourneyIndex(progress.stepIndex)
+            }
+          } else {
+            setJourneyIndex(progress.stepIndex)
+          }
         }
       }
     }

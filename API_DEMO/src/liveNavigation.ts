@@ -129,9 +129,32 @@ function flattenRoute(steps: JourneyStep[]): RoutePoint[] {
   return points
 }
 
-function arrivalRadiusM(accuracyM: number) {
-  const base = 45
-  return Math.max(base, Math.min(90, accuracyM * 1.15))
+/** Final walk pin — ~5–10 ft. Do not announce arrival from across the street. */
+export const WALK_ARRIVE_M = 3
+/** Intermediate walk turns — a bit looser so step advance still works. */
+const WALK_TURN_ARRIVE_M = 12
+/** Drive arrive / maneuvers. */
+const DRIVE_ARRIVE_M = 28
+
+function isArriveInstruction(instruction?: string | null) {
+  return /arriv|reached destination|you have arrived|park here|entrance — continue/i.test(
+    instruction || '',
+  )
+}
+
+function arrivalRadiusM(
+  accuracyM: number,
+  opts?: { phase?: string; finalArrive?: boolean },
+) {
+  const acc = Number.isFinite(accuracyM) ? Math.max(0, accuracyM) : 15
+  if (opts?.finalArrive && opts.phase === 'walk') {
+    // ~8–10 ft; never inflate with poor GPS accuracy (that was 40–50 ft early).
+    return Math.max(2, Math.min(WALK_ARRIVE_M, 2 + acc * 0.08))
+  }
+  if (opts?.phase === 'walk') {
+    return Math.max(8, Math.min(WALK_TURN_ARRIVE_M, 8 + acc * 0.25))
+  }
+  return Math.max(DRIVE_ARRIVE_M, Math.min(55, DRIVE_ARRIVE_M + acc * 0.35))
 }
 
 function lastOutdoorIndex(steps: JourneyStep[]) {
@@ -348,21 +371,32 @@ export function matchLiveProgress(
   if (next < steps.length && steps[next].phase !== 'indoor') {
     const n = steps[next]
     const cur = steps[Math.max(stepIndex, currentIndex)]
-    const arriveR = arrivalRadiusM(fix.accuracy)
+    const walkPhase = cur?.phase === 'walk' || n.phase === 'walk'
+    const finalArrive = isArriveInstruction(n.instruction) || next >= lastOutdoorIndex(steps)
+    const arriveR = arrivalRadiusM(fix.accuracy, {
+      phase: walkPhase ? 'walk' : cur?.phase,
+      finalArrive,
+    })
     let nearNext = false
     if (Number.isFinite(n.latitude) && Number.isFinite(n.longitude)) {
       nearNext = haversineM(fix.latitude, fix.longitude, n.latitude, n.longitude) < arriveR
     }
-    // Also advance when the current step polyline is nearly finished (Google-like).
-    if (
-      !nearNext &&
-      cur?.geometry &&
-      cur.geometry.length > 1 &&
-      remainingAlongGeometry(best.lat, best.lng, cur.geometry) < Math.max(25, arriveR * 0.6)
-    ) {
-      nearNext = true
+    // Walk "arrived": only when the puck is within ~5–10 ft of the D pin — never from
+    // polyline remainder alone (that fired 40–50 ft early).
+    if (finalArrive && walkPhase) {
+      if (nearNext) stepIndex = Math.max(stepIndex, next)
+    } else {
+      const remainGate = Math.max(walkPhase ? 10 : 25, arriveR * 0.6)
+      if (
+        !nearNext &&
+        cur?.geometry &&
+        cur.geometry.length > 1 &&
+        remainingAlongGeometry(best.lat, best.lng, cur.geometry) < remainGate
+      ) {
+        nearNext = true
+      }
+      if (nearNext) stepIndex = Math.max(stepIndex, next)
     }
-    if (nearNext) stepIndex = Math.max(stepIndex, next)
   }
   // Don't jump backwards while still near the current corridor
   if (stepIndex < currentIndex && best.distM < 90) {
