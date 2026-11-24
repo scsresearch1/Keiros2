@@ -1158,15 +1158,26 @@ export default function App() {
   const showOutdoorMap = !showIndoorNav
   const canNavigate = Boolean(complexId && buildingId && floorId && unitId)
 
-  // Which Indoor navigation CTA to offer (never auto).
-  const offerExitIndoor =
-    exitIndoorSteps.length > 0 && indoorSession == null && !exitIndoorDone
-  const offerEnterIndoor =
-    enterIndoorSteps.length > 0 && indoorSession == null && !offerExitIndoor
-  const offerIndoorKind: IndoorKind | null = offerExitIndoor
-    ? 'exit'
-    : offerEnterIndoor
-      ? 'enter'
+  // Indoor CTA only when mapped indoor route exists (not proximity-gated).
+  const indoorMapReady = (kind: IndoorKind) => {
+    const m = result?.map3d
+    if (!m) return false
+    if (kind === 'exit') {
+      return (m.exitRouteStops?.length ?? 0) > 1 || (m.routeStops?.length ?? 0) > 1
+    }
+    return (m.routeStops?.length ?? 0) > 1
+  }
+  const canOfferExitIndoor =
+    exitIndoorSteps.length > 0 && indoorMapReady('exit') && !exitIndoorDone
+  const canOfferEnterIndoor =
+    enterIndoorSteps.length > 0 && indoorMapReady('enter')
+  const offerIndoorKind: IndoorKind | null =
+    indoorSession == null
+      ? canOfferExitIndoor
+        ? 'exit'
+        : canOfferEnterIndoor
+          ? 'enter'
+          : null
       : null
 
   function jumpToPhase(target: 'drive' | 'walk' | 'indoor') {
@@ -1472,7 +1483,7 @@ export default function App() {
       {result ? (
         <>
           <div className="demo-phase-strip" aria-label="Journey phases">
-            {exitIndoorSteps.length > 0 ? (
+            {exitIndoorSteps.length > 0 && indoorMapReady('exit') ? (
               <button
                 type="button"
                 className={indoorSession === 'exit' ? 'is-active phase-inside' : 'phase-inside'}
@@ -1508,7 +1519,7 @@ export default function App() {
                 Walk outdoors
               </button>
             ) : null}
-            {enterIndoorSteps.length > 0 ? (
+            {enterIndoorSteps.length > 0 && indoorMapReady('enter') ? (
               <button
                 type="button"
                 className={indoorSession === 'enter' ? 'is-active phase-inside' : 'phase-inside'}
@@ -1519,31 +1530,6 @@ export default function App() {
               </button>
             ) : null}
           </div>
-          {offerIndoorKind ? (
-            <div className="demo-indoor-jump">
-              <button
-                type="button"
-                className="demo-indoor-next"
-                onClick={() => startIndoorNavigation(offerIndoorKind)}
-              >
-                Indoor navigation
-              </button>
-              {offerIndoorKind === 'exit' ? (
-                <button
-                  type="button"
-                  className="demo-ghost demo-ghost--small"
-                  onClick={() => setExitIndoorDone(true)}
-                >
-                  Already outdoors
-                </button>
-              ) : null}
-              <span className="demo-hint">
-                {offerIndoorKind === 'exit'
-                  ? `Tap Indoor navigation to exit the building · ${exitIndoorSteps.length} step${exitIndoorSteps.length === 1 ? '' : 's'} · not automatic`
-                  : `Tap Indoor navigation for your unit · ${enterIndoorSteps.length} step${enterIndoorSteps.length === 1 ? '' : 's'} · not automatic`}
-              </span>
-            </div>
-          ) : null}
 
           {showOutdoorMap ? (
             <>
@@ -1577,30 +1563,66 @@ export default function App() {
                       : 'Turn on to follow GPS and re-route when you leave the path'}
                 </span>
               </div>
-              <OutdoorMap
-                result={result}
-                activeStep={
-                  active?.phase === 'indoor' && firstOutdoorIndex >= 0
-                    ? steps[firstOutdoorIndex]
-                    : active
-                }
-                weather={result.weather}
-                traffic={result.outdoor.traffic}
-                liveFix={wantsLiveGps ? liveFix : null}
-                liveProgress={wantsLiveGps ? liveProgress : null}
-                travelMode={wantsLiveGps ? travelMode : null}
-                followLive={wantsLiveGps}
-              onRouteCorridor={(corridor) => {
-                routeCorridorRef.current = corridor
-              }}
-              onRouteGuidance={(guideSteps) => {
-                const sig = guideSteps.map((s) => `${s.instruction}|${s.distanceM ?? 0}`).join('·')
-                if (sig === mapGuidanceSig.current) return
-                mapGuidanceSig.current = sig
-                setMapGuidance(guideSteps)
-                setJourneyIndex(0)
-              }}
-            />
+              <div className="demo-outdoor-stage">
+                <OutdoorMap
+                  result={result}
+                  activeStep={
+                    active?.phase === 'indoor' && firstOutdoorIndex >= 0
+                      ? steps[firstOutdoorIndex]
+                      : active
+                  }
+                  weather={result.weather}
+                  traffic={result.outdoor.traffic}
+                  liveFix={wantsLiveGps ? liveFix : null}
+                  liveProgress={wantsLiveGps ? liveProgress : null}
+                  travelMode={wantsLiveGps ? travelMode : null}
+                  followLive={wantsLiveGps}
+                  onRouteCorridor={(corridor) => {
+                    routeCorridorRef.current = corridor
+                  }}
+                  onRouteGuidance={(guideSteps) => {
+                    const sig = guideSteps.map((s) => `${s.instruction}|${s.distanceM ?? 0}`).join('·')
+                    if (sig === mapGuidanceSig.current) return
+                    mapGuidanceSig.current = sig
+                    setMapGuidance(guideSteps)
+                    setJourneyIndex(0)
+                  }}
+                />
+                {offerIndoorKind ? (
+                  <div className="demo-indoor-overlay" role="region" aria-label="Indoor navigation">
+                    <div className="demo-indoor-overlay__copy">
+                      <strong>
+                        {offerIndoorKind === 'exit'
+                          ? 'Start Indoor Navigation when you are ready to exit the building'
+                          : 'Start Indoor Navigation when you reach the outdoor destination (D) / entrance'}
+                      </strong>
+                      <span>
+                        {offerIndoorKind === 'exit'
+                          ? `${exitIndoorSteps.length} indoor step${exitIndoorSteps.length === 1 ? '' : 's'} · tap when ready · not automatic`
+                          : `${enterIndoorSteps.length} indoor step${enterIndoorSteps.length === 1 ? '' : 's'} · tap when ready · not automatic`}
+                      </span>
+                    </div>
+                    <div className="demo-indoor-overlay__actions">
+                      <button
+                        type="button"
+                        className="demo-indoor-next"
+                        onClick={() => startIndoorNavigation(offerIndoorKind)}
+                      >
+                        Indoor navigation
+                      </button>
+                      {offerIndoorKind === 'exit' ? (
+                        <button
+                          type="button"
+                          className="demo-ghost demo-ghost--small"
+                          onClick={() => setExitIndoorDone(true)}
+                        >
+                          Already outdoors
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
+                ) : null}
+              </div>
             </>
           ) : (
             <div className="demo-indoor-wrap">

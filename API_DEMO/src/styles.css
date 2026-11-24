@@ -1495,16 +1495,70 @@ select:disabled {
   background: rgba(34, 197, 94, 0.15);
 }
 
-.demo-indoor-jump {
+/* Outdoor map stays fully visible; indoor CTA sits as a slim bottom overlay. */
+.demo-outdoor-stage {
+  position: relative;
+}
+
+.demo-indoor-overlay {
+  position: absolute;
+  left: auto;
+  right: 0.65rem;
+  bottom: 0.65rem;
+  z-index: 20;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.75rem;
-  margin: 0 0 0.85rem;
-  padding: 0.75rem 0.9rem;
+  justify-content: space-between;
+  gap: 0.65rem 0.85rem;
+  width: min(calc(100% - 4.5rem), 380px);
+  padding: 0.55rem 0.7rem;
   border-radius: 12px;
-  border: 1px solid rgba(34, 197, 94, 0.35);
-  background: rgba(34, 197, 94, 0.1);
+  border: 1px solid rgba(34, 197, 94, 0.45);
+  background: rgba(7, 18, 42, 0.88);
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.28);
+  pointer-events: auto;
+}
+
+.demo-indoor-overlay__copy {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+  flex: 1 1 160px;
+}
+
+.demo-indoor-overlay__copy strong {
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: #ecfdf5;
+  line-height: 1.25;
+}
+
+.demo-indoor-overlay__copy span {
+  font-size: 0.72rem;
+  color: rgba(226, 232, 240, 0.82);
+  line-height: 1.3;
+}
+
+.demo-indoor-overlay__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem;
+  flex: 0 0 auto;
+}
+
+.demo-indoor-overlay .demo-indoor-next {
+  margin: 0;
+  padding: 0.45rem 0.75rem;
+  font-size: 0.85rem;
+}
+
+@media (max-width: 640px) {
+  .demo-indoor-overlay {
+    max-width: none;
+  }
 }
 
 .demo-step-card.is-drive {

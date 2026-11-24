@@ -1,13 +1,9 @@
 /**
  * Pedestrian routing — NEW strategy (not kerb-offset / not Google-centerline hacks).
  *
- * Industry approach (OSRM foot / ORS foot-walking / GraphHopper foot):
- * route on the OSM *pedestrian network* (footways, paths, residential with foot
- * access). Never invent sidewalks by shifting a drive polyline sideways — that
- * cuts through buildings (what we just saw).
- *
- * Primary: OSRM public foot profile (proven for Hyderabad).
- * Fallback: Google Routes WALK (beta — may still hug roads; no geometric offset).
+ * Prefer Google Routes WALK first (better sidewalk / pedestrian geometry where
+ * available), then OSRM foot, then OSRM driving so we never invent a crow-flies
+ * chord across lots. Never invent sidewalks by shifting a drive polyline.
  */
 
 import type { JourneyStep } from './api'
@@ -238,33 +234,56 @@ export async function fetchOsrmDrivingRoute(
   return fetchOsrmProfile(DRIVING_BASES, from, to, 'OSRM driving (road network)')
 }
 
+function endGapM(
+  path: { lat: number; lng: number }[],
+  to: google.maps.LatLngLiteral,
+): number {
+  if (path.length < 1) return Number.POSITIVE_INFINITY
+  return metersBetween(path[path.length - 1], to)
+}
+
 /**
- * Route for walking: OSRM foot → Google WALK → OSRM driving (street follow).
- * Never invent a crow-flies chord — that is what looked like “not following the path”.
+ * Route for walking: Google WALK preferred, OSRM foot fallback, then OSRM driving.
+ * Fetches Google + OSRM in parallel; picks the best non-chord path (Google wins ties).
  */
 export async function fetchPedestrianRoute(
   from: google.maps.LatLngLiteral,
   to: google.maps.LatLngLiteral,
 ): Promise<PedestrianRoute> {
-  try {
-    const foot = await fetchOsrmFoot(from, to)
-    if (!isLongCrowFliesPath(foot.path)) return foot
-  } catch {
-    /* try next */
-  }
-  try {
-    const g = await fetchRoadRouteLive(from, to, 'WALK')
-    if (g.path.length > 1 && !isLongCrowFliesPath(g.path)) {
-      return {
-        path: g.path,
-        distanceM: g.distanceM,
-        durationSec: g.durationSec,
-        steps: g.steps.map((s) => ({ ...s, phase: 'walk' as const })),
-        provider: 'Google Routes WALK (fallback)',
+  const googleP = fetchRoadRouteLive(from, to, 'WALK')
+    .then((g): PedestrianRoute | null => {
+      if (g.path.length > 1 && !isLongCrowFliesPath(g.path)) {
+        return {
+          path: g.path,
+          distanceM: g.distanceM,
+          durationSec: g.durationSec,
+          steps: g.steps.map((s) => ({ ...s, phase: 'walk' as const })),
+          provider: 'Google Routes WALK',
+        }
       }
-    }
-  } catch {
-    /* try next */
+      return null
+    })
+    .catch(() => null)
+
+  const osrmP = fetchOsrmFoot(from, to)
+    .then((foot): PedestrianRoute | null =>
+      !isLongCrowFliesPath(foot.path) ? foot : null,
+    )
+    .catch(() => null)
+
+  const [googleWalk, osrmFoot] = await Promise.all([googleP, osrmP])
+  const candidates = [googleWalk, osrmFoot].filter(Boolean) as PedestrianRoute[]
+  if (candidates.length) {
+    // Prefer closer arrival at D, then Google over OSRM, then shorter distance.
+    candidates.sort((a, b) => {
+      const gapDiff = endGapM(a.path, to) - endGapM(b.path, to)
+      if (Math.abs(gapDiff) > 12) return gapDiff
+      const aGoogle = a.provider.includes('Google') ? 0 : 1
+      const bGoogle = b.provider.includes('Google') ? 0 : 1
+      if (aGoogle !== bGoogle) return aGoogle - bGoogle
+      return a.distanceM - b.distanceM
+    })
+    return candidates[0]
   }
   // Sparse sidewalk areas (e.g. Patriot Way): still follow the residential street.
   return fetchOsrmDrivingRoute(from, to)

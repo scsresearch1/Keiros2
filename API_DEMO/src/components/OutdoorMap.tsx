@@ -664,9 +664,10 @@ export function OutdoorMap({
           ? path.map((p) => ({ ...p }))
           : style === 'drive'
             ? pinPathToEndpoints(path, from, path[path.length - 1] ?? to, 12, 8)
-            : pinPathToEndpoints(path, from, to, 18, 35, {
+            : pinPathToEndpoints(path, from, to, 12, 18, {
                 alwaysReachEnd: true,
-                maxAlwaysReachM: 45,
+                // Cap hard — longer connects became rooftop / driveway chords.
+                maxAlwaysReachM: 22,
               })
       if (pinned.length < 2) return
       if (session !== routeSessionRef.current) return
@@ -875,6 +876,74 @@ export function OutdoorMap({
       const corridorWalk: google.maps.LatLngLiteral[] = []
       const guidanceAcc: JourneyStep[] = []
 
+      let lastMileDone = false
+      /** Drive last-mile: red-dot walk from road/parking drop-off to D (same as Walk mode). */
+      async function paintLastMileWalk(
+        from: google.maps.LatLngLiteral,
+        to: google.maps.LatLngLiteral,
+      ) {
+        if (session !== routeSessionRef.current || lastMileDone) return
+        const gapFrom = metersBetween(from, to)
+        if (gapFrom <= 2.5) {
+          lastMileDone = true
+          return
+        }
+        // Already have walk dots ending near D — don't double-paint.
+        if (corridorWalk.length > 1) {
+          const walkEnd = corridorWalk[corridorWalk.length - 1]
+          if (metersBetween(walkEnd, to) <= 8) {
+            lastMileDone = true
+            return
+          }
+        }
+
+        let path: google.maps.LatLngLiteral[] | null = null
+        let provider = 'drive-last-mile-walk'
+        let steps: JourneyStep[] = []
+
+        try {
+          const ped = await fetchPedestrianRoute(from, to)
+          if (session !== routeSessionRef.current) return
+          if (ped.path.length >= 2) {
+            // Prefer network path; still accept a short last-mile chord so D is never unmarked.
+            const chord = isLongCrowFliesPath(ped.path)
+            if (!chord || gapFrom <= 90) {
+              path = ped.path.map((p) => ({ ...p }))
+              provider = ped.provider || provider
+              steps = ped.steps ?? []
+            }
+          }
+        } catch {
+          /* fall through to guaranteed dots */
+        }
+
+        if (!path || path.length < 2) {
+          // Guaranteed visible last steps — never leave a blank gap to D.
+          path = [from, { ...to }]
+          provider = 'last-mile-direct'
+        }
+
+        const end = path[path.length - 1]
+        const endGap = metersBetween(end, to)
+        // Complete to D for last-mile visibility (unit pin is often on a roof).
+        if (endGap > 1.5 && endGap <= 45) path = [...path, { ...to }]
+        else if (endGap <= 1.5) path = [...path.slice(0, -1), { ...to }]
+
+        if (session !== routeSessionRef.current) return
+        corridorWalk.push(...path)
+        drawPath(path, from, to, 'walk-dots', 22)
+        sources.add(provider)
+        lastMileDone = true
+        for (const step of steps) {
+          guidanceAcc.push({
+            ...step,
+            phase: 'walk',
+            index: guidanceAcc.length,
+            id: `drive-last-mile-${step.id}`,
+          })
+        }
+      }
+
       // Prefer planned legs (drive → entrance). Fallback: Google drive to outdoor D.
       const legsToDraw: OutdoorLeg[] =
         outdoorPlan.legs.length > 0
@@ -953,7 +1022,21 @@ export function OutdoorMap({
             walkPath.length > 1 ? walkPath : [],
             preferNetworkPath(drivePath, lastActivePathRef.current),
           )
-          const path = await snapToRoads(raw, 'walk')
+          // Live walk: re-route when server path is missing, chord-like, or far from D.
+          let path = await snapToRoads(raw, 'walk')
+          const endFar =
+            path.length > 1 && metersBetween(path[path.length - 1], destination) > 25
+          if (path.length < 2 || isLongCrowFliesPath(path) || endFar) {
+            try {
+              const ped = await fetchPedestrianRoute(liveOrigin, destination)
+              if (ped.path.length > 1 && !isLongCrowFliesPath(ped.path)) {
+                path = remainingPathFromLive(ped.path, liveOrigin, destination)
+                sources.add(ped.provider)
+              }
+            } catch {
+              /* keep snapped */
+            }
+          }
           if (session !== routeSessionRef.current) return
           if (path.length > 1) {
             corridorWalk.push(...path)
@@ -978,6 +1061,8 @@ export function OutdoorMap({
               20,
             )
             sources.add('live-driveways')
+            // Task 2: last-mile walk (red dots) from road drop-off to D.
+            await paintLastMileWalk(path[path.length - 1] ?? liveOrigin, destination)
           }
           for (const step of result.outdoor?.steps?.length
             ? result.outdoor.steps
@@ -988,14 +1073,18 @@ export function OutdoorMap({
         }
 
         if (session !== routeSessionRef.current) return
-        const activePath = liveWalk ? [...corridorWalk] : [...corridorDrive]
+        const activePath = liveWalk
+          ? [...corridorWalk]
+          : [...corridorDrive, ...corridorWalk]
         if (activePath.length > 1) lastActivePathRef.current = activePath
         setSiteNet((prev) => ({
           driveways: prev?.driveways ?? 0,
           sidewalks: prev?.sidewalks ?? 0,
           routedOn: liveWalk
             ? `Walking · ${result.walk?.provider || 'street network'}`
-            : 'Driving · roads / driveways',
+            : corridorWalk.length > 1
+              ? 'Driving · roads + walk to D'
+              : 'Driving · roads / driveways',
         }))
         setMapError('')
         // Live recalc: keep current zoom (walk↔drive must not zoom in/out).
@@ -1025,14 +1114,20 @@ export function OutdoorMap({
         if (exclusiveMode === 'walk' && leg.mode !== 'WALK') return
         if (exclusiveMode === 'drive' && leg.mode !== 'DRIVE') return
 
-        // Prefer already-fetched network geometry (withLiveDrive OSRM) — avoids a second
-        // Google call that can fail and paint a yard-cutting chord.
+        // Prefer server walk only when it already looks like a Google/pedestrian path.
+        // OSRM/server stubs often sit in drive aisles — re-route client-side (Google first).
         if (leg.mode === 'WALK') {
           const existing = geoJsonToLatLngs(result.walk?.geometry?.coordinates)
-          if (existing.length > 1 && !isLongCrowFliesPath(existing)) {
+          const provider = String(result.walk?.provider || '')
+          const trustServerWalk =
+            existing.length > 1 &&
+            !isLongCrowFliesPath(existing) &&
+            /google|walk|pedestrian|sidewalk/i.test(provider) &&
+            !/osrm|driving|street network|fallback/i.test(provider)
+          if (trustServerWalk) {
             corridorWalk.push(...existing)
             drawPath(existing, leg.from, leg.to, 'walk-dots', 22)
-            sources.add(String(result.walk?.provider || 'server-walk-network'))
+            sources.add(provider || 'server-walk-network')
             if (!leg.skipGuidance && result.walk?.steps?.length) {
               for (const step of result.walk.steps) {
                 guidanceAcc.push({ ...step, index: guidanceAcc.length, id: `${leg.id}-${step.id}` })
@@ -1058,6 +1153,8 @@ export function OutdoorMap({
                 })
               }
             }
+            // Last-mile red dots to D (exclusive drive used to suppress these).
+            await paintLastMileWalk(existing[existing.length - 1] ?? leg.to, destination)
             return
           }
         }
@@ -1083,6 +1180,7 @@ export function OutdoorMap({
               } else {
                 corridorDrive.push(...osrm.path)
                 drawPath(osrm.path, leg.from, osrm.path[osrm.path.length - 1] ?? leg.to, 'drive', 20 + index)
+                await paintLastMileWalk(osrm.path[osrm.path.length - 1] ?? leg.to, destination)
               }
               sources.add(osrm.provider)
               return
@@ -1094,16 +1192,15 @@ export function OutdoorMap({
           return
         }
 
+        // Drive exclusive still keeps last-mile WALK (red dots to D); walk exclusive
+        // drops drive. Do not strip walk off drive+walk plans.
         const segs =
-          exclusiveMode === 'drive'
-            ? plan.segments.filter((s) => s.mode === 'DRIVE')
-            : exclusiveMode === 'walk'
-              ? plan.segments.filter((s) => s.mode === 'WALK')
-              : plan.segments
+          exclusiveMode === 'walk'
+            ? plan.segments.filter((s) => s.mode === 'WALK')
+            : plan.segments
 
         if (!leg.skipGuidance && plan.guidanceSteps?.length) {
           for (const step of plan.guidanceSteps) {
-            if (exclusiveMode === 'drive' && step.phase === 'walk') continue
             if (exclusiveMode === 'walk' && step.phase === 'drive') continue
             guidanceAcc.push({
               ...step,
@@ -1140,7 +1237,6 @@ export function OutdoorMap({
 
         if (
           plan.handoff &&
-          exclusiveMode !== 'drive' &&
           !(outdoorPlan.viaParking && leg.id === 'drive-to-parking')
         ) {
           track(
@@ -1156,14 +1252,14 @@ export function OutdoorMap({
         }
       }
 
-      // First Navigate only: brief OSM wait. Live walk/drive never reaches here.
-      const needsSidewalks = legsToDraw.some((l) => l.mode === 'WALK' && !l.skipGuidance)
+      // First Navigate: brief OSM wait for walk + drive last-mile sidewalks.
+      const needsSidewalks = legsToDraw.some((l) => !l.skipGuidance)
       let extractForDraw: SiteWaysExtract | null = null
       if (needsSidewalks) {
         extractForDraw = await Promise.race([
           extractPromise,
           new Promise<null>((resolve) => {
-            window.setTimeout(() => resolve(null), 600)
+            window.setTimeout(() => resolve(null), 900)
           }),
         ])
       }
@@ -1174,8 +1270,8 @@ export function OutdoorMap({
       await Promise.all(
         legsToDraw.map(async (leg, index) => {
           try {
-            // Walk: use sidewalk extract when ready. Drive: Google first (OSM optional).
-            await drawLegPlan(leg, index, leg.mode === 'WALK' ? extractForDraw : null)
+            // Walk + drive last-mile both benefit from site sidewalk extract.
+            await drawLegPlan(leg, index, extractForDraw)
           } catch (err) {
             if (session !== routeSessionRef.current) return
             serverFallbackForLeg(leg)
@@ -1185,6 +1281,21 @@ export function OutdoorMap({
       )
 
       if (session !== routeSessionRef.current) return
+      // If drive painted but walk does not reach D yet, add/finish red-dot last mile.
+      if (corridorDrive.length > 1) {
+        const driveEnd = corridorDrive[corridorDrive.length - 1]
+        const walkEnd = corridorWalk.length > 1 ? corridorWalk[corridorWalk.length - 1] : null
+        const nearD = walkEnd && metersBetween(walkEnd, destination) <= 8
+        if (!nearD) {
+          const handoff =
+            walkEnd && metersBetween(walkEnd, destination) < metersBetween(driveEnd, destination)
+              ? walkEnd
+              : driveEnd
+          if (metersBetween(handoff, destination) > 2.5) {
+            await paintLastMileWalk(handoff, destination)
+          }
+        }
+      }
       // Guarantee a visible corridor — network first, then any server geometry, then leg endpoints.
       if (corridorDrive.length < 2 && corridorWalk.length < 2) {
         for (const leg of legsToDraw) {

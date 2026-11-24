@@ -146,24 +146,30 @@ async function bestDriveRoute(
   return candidates[0]
 }
 
-/** Always land on the real destination coordinate. */
+/**
+ * Snap/connect to the real destination for a short/medium gap.
+ * Caps long campus chords; last-mile to a rooftop D may pass maxConnectM explicitly.
+ */
 function forceReach(
   path: google.maps.LatLngLiteral[],
   target: google.maps.LatLngLiteral,
+  maxConnectM = 22,
 ): google.maps.LatLngLiteral[] {
   if (!path.length) return [{ ...target }]
   const end = path[path.length - 1]
-  if (meters(end, target) <= 1.5) {
+  const gap = meters(end, target)
+  if (gap <= 1.5) {
     const out = path.map((p) => ({ ...p }))
     out[out.length - 1] = { ...target }
     return out
   }
-  return [...path.map((p) => ({ ...p })), { ...target }]
+  if (gap <= maxConnectM) return [...path.map((p) => ({ ...p })), { ...target }]
+  return path.map((p) => ({ ...p }))
 }
 
 /**
- * Pedestrian route via OSRM foot network (primary). Optional local OSM graph
- * only when it clearly reaches the door — never kerb-offset Google geometry.
+ * Pedestrian route: Google/OSRM first (fetchPedestrianRoute), then local OSM
+ * sidewalks only when they clearly reach closer to the door.
  */
 export async function bestSidewalkWalk(
   from: google.maps.LatLngLiteral,
@@ -175,6 +181,27 @@ export async function bestSidewalkWalk(
   source: string
   steps?: JourneyStep[]
 } | null> {
+  let network: {
+    path: google.maps.LatLngLiteral[]
+    distanceM: number
+    source: string
+    steps?: JourneyStep[]
+  } | null = null
+
+  try {
+    const ped = await fetchPedestrianRoute(from, to)
+    if (ped.path.length >= 2 && !isLongCrowFliesPath(ped.path)) {
+      network = {
+        path: forceReach(ped.path, to),
+        distanceM: ped.distanceM,
+        source: ped.provider.includes('OSRM') ? 'osrm-foot' : 'google-walk',
+        steps: ped.steps,
+      }
+    }
+  } catch {
+    /* try local / fail */
+  }
+
   // Campus extract: real mapped footways only (no synthetic kerbs for routing).
   if (extract?.sidewalks?.length) {
     const real = extract.sidewalks.filter((w) => !String(w.id).includes('osm-kerb-'))
@@ -182,27 +209,23 @@ export async function bestSidewalkWalk(
       const local = routeOnSiteWays({ ...extract, sidewalks: real }, from, to, 'WALK', {
         sidewalksOnly: true,
       })
-      if (local && local.path.length >= 2 && pathEndGapM(local.path, to) <= 45) {
-        return {
-          path: forceReach(local.path, to),
-          distanceM: local.distanceM,
-          source: 'osm-sidewalks',
+      if (local && local.path.length >= 2 && pathEndGapM(local.path, to) <= 25) {
+        const localPath = forceReach(local.path, to)
+        const localGap = pathEndGapM(localPath, to)
+        const netGap = network ? pathEndGapM(network.path, to) : Number.POSITIVE_INFINITY
+        // Prefer site sidewalks only when they land meaningfully closer to D.
+        if (!network || localGap + 8 < netGap) {
+          return {
+            path: localPath,
+            distanceM: local.distanceM,
+            source: 'osm-sidewalks',
+          }
         }
       }
     }
   }
 
-  try {
-    const ped = await fetchPedestrianRoute(from, to)
-    return {
-      path: forceReach(ped.path, to),
-      distanceM: ped.distanceM,
-      source: ped.provider.includes('OSRM') ? 'osrm-foot' : 'google-walk',
-      steps: ped.steps,
-    }
-  } catch {
-    return null
-  }
+  return network
 }
 
 function collectGuidance(segments: HandoffSegment[]): JourneyStep[] {
@@ -298,44 +321,33 @@ export async function planDrivePlusWalk(
     steps: drive.steps,
   }
 
-  // Vehicle network close enough — still walk any leftover meters to exact D.
-  if (endGap <= LAST_MILE_WALK_M) {
-    if (endGap <= 2) {
-      return {
-        segments: [driveSeg],
-        handoff: null,
-        label: 'drive',
-        guidanceSteps: collectGuidance([driveSeg]),
-      }
-    }
-    const segments: HandoffSegment[] = [
-      driveSeg,
-      {
-        mode: 'WALK',
-        path: forceReach([handoff], to),
-        dashed: true,
-        distanceM: Math.round(endGap),
-        source: 'last-meters-to-destination',
-      },
-    ]
+  // Already at D — drive only.
+  if (endGap <= 2) {
     return {
-      segments,
-      handoff,
-      label: 'drive+walk',
-      guidanceSteps: collectGuidance(segments),
+      segments: [driveSeg],
+      handoff: null,
+      label: 'drive',
+      guidanceSteps: collectGuidance([driveSeg]),
     }
   }
 
-  // Closest driveable point → walk pathways all the way to destination.
+  // Any leftover gap → pedestrian last mile (always mark steps to D).
   const walk = await bestSidewalkWalk(handoff, to, extract)
-  const walkPath = forceReach(walk && walk.path.length >= 2 ? walk.path : [handoff], to)
+  let walkPath =
+    walk && walk.path.length >= 2 ? forceReach(walk.path, to, 45) : null
+  // If routers fail or stop short, still mark the last steps to D.
+  if (!walkPath || walkPath.length < 2) {
+    walkPath = forceReach([handoff], to, Math.max(45, endGap + 1))
+  } else if (meters(walkPath[walkPath.length - 1], to) > 2.5) {
+    walkPath = forceReach(walkPath, to, 45)
+  }
   const segments: HandoffSegment[] = [
     driveSeg,
     {
       mode: 'WALK',
       path: walkPath,
       dashed: true,
-      distanceM: walk?.distanceM ?? Math.round(meters(handoff, to)),
+      distanceM: walk?.distanceM ?? Math.round(endGap),
       source: walk?.source ?? 'walk-to-destination',
       steps: walk?.steps,
     },
